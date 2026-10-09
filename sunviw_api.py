@@ -16,7 +16,7 @@ JSON /api/predict:
     {
       "ok": true,
       "phien": 12346,            # phiên được dự đoán (n)
-      "du_doan": "TÀI",          # TÀI | XỈU
+      "du_doan": "TÀI",          # TÀI | XỈU  (đã BẺ: = đảo ngược final của 21 logic; tắt bằng SUNVIW_FLIP=0 hoặc --no-flip)
       "do_tin_cay": 58.4,        # % = trung bình WR của 21 logic trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
@@ -26,6 +26,10 @@ JSON /api/predict:
       "stale": false,            # true nếu lần quét upstream gần nhất bị lỗi (đang trả kết quả cũ)
       "cap_nhat": "2026-10-09 12:30:01"
     }
+
+/api/predict?detail=1 -> chi_tiet có thêm:
+      "final_goc": "XỈU"                                     # final trước khi bẻ
+      "tool_dung_sai_10_van": {"dung": 6, "sai": 4, "tong": 10, "chuoi": "ĐSĐĐSĐSĐĐS"}   # đúng/sai của du_doan (sau bẻ), chuoi: mới -> cũ
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
@@ -49,8 +53,12 @@ UPSTREAM_URL = os.environ.get(
 )
 UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 8             # số ván gần nhất dùng để tính WR
+WR_WINDOW = 15             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
+
+# ─── BẺ FINAL · ĐÁNH GIÁ ĐÚNG/SAI ────────────────────────────────────────
+FLIP_FINAL = os.environ.get("SUNVIW_FLIP", "1").lower() not in ("0", "false", "no", "off")   # luôn đảo final trước khi in ra API
+EVAL_WINDOW = 10           # số phiên gần nhất để đánh giá đúng/sai
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
@@ -140,6 +148,16 @@ def last1_digit(s):
 
 def actual_of(total):
     return TAI if total >= 11 else XIU
+
+
+def flip_pred(p):
+    """Bẻ: đảo TÀI <-> XỈU (giá trị khác giữ nguyên)."""
+    return XIU if p == TAI else TAI if p == XIU else p
+
+
+def out_final(final):
+    """Final đã đưa ra API (sau bẻ nếu bật)."""
+    return flip_pred(final) if FLIP_FINAL else final
 
 
 def vote_result(preds):
@@ -350,8 +368,8 @@ def rebuild_graded(hist, saved_graded=None):
         if nxt["phien"] != cur["phien"] + 1:
             continue
         votes = compute_all(cur["phien"] + 1, cur["d1"], cur["d2"], cur["d3"])
-        # Kết hợp seed + fresh đã tính để WR chính xác hơn
-        combined = merge_graded(seed, fresh)
+        # Chỉ dùng các ván đã chấm TRƯỚC phiên nxt (seed có thể chứa ván mới hơn -> nhìn trước đáp án, làm lệch đánh giá)
+        combined = [g for g in merge_graded(seed, fresh) if g["session"] < nxt["phien"]]
         dec = wr_decision(votes, combined)
         fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
                       "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"]})
@@ -369,7 +387,7 @@ def build_result(hist):
     base = {
         "ok": True,
         "phien": latest["phien"] + 1,
-        "du_doan": dec["final"],
+        "du_doan": out_final(dec["final"]),
         "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
         "phien_truoc": latest["phien"],
         "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
@@ -389,14 +407,22 @@ def build_result(hist):
              "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
             for i in range(len(votes))
         ],
-        "tool_dung_sai_15_van": _recent_accuracy(graded),
+        "final_goc": dec["final"],
+        "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
+        "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     return {"base": base, "detail": detail}
 
 
-def _recent_accuracy(graded):
-    win = graded[-WR_WINDOW:]
-    return {"dung": sum(1 for g in win if g["ok"]), "tong": len(win)}
+def _recent_accuracy(graded, size, with_chuoi=False):
+    """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ) ở `size` ván gần nhất."""
+    win = graded[-size:]
+    oks = [out_final(g["final"]) == g["actual"] for g in win]
+    out = {"dung": sum(oks), "tong": len(win)}
+    if with_chuoi:
+        out = {"dung": out["dung"], "sai": len(win) - out["dung"], "tong": len(win),
+               "chuoi": "".join("Đ" if ok else "S" for ok in reversed(oks))}     # mới -> cũ
+    return out
 
 
 # ─── TRẠNG THÁI NỀN + QUÉT UPSTREAM ──────────────────────────────────────
@@ -527,7 +553,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -537,8 +563,11 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API lich su (…/api/tx/history)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
+    ap.add_argument("--no-flip", action="store_true", help="tắt bẻ final (mặc định luôn bẻ)")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
+    if a.no_flip:
+        FLIP_FINAL = False
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")

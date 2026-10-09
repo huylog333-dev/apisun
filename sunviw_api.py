@@ -6,6 +6,7 @@ Chạy:
     pip install flask
     python sunviw_api.py                      # mặc định http://0.0.0.0:5000
     python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx/history
+    python sunviw_api.py --flip               # BẬT bẻ final (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
 
 Endpoint:
     GET /api/predict             -> JSON dự đoán (đọc từ cache, trả về ngay)
@@ -16,20 +17,23 @@ JSON /api/predict:
     {
       "ok": true,
       "phien": 12346,            # phiên được dự đoán (n)
-      "du_doan": "TÀI",          # TÀI | XỈU  (đã BẺ: = đảo ngược final của 21 logic; tắt bằng SUNVIW_FLIP=0 hoặc --no-flip)
+      "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của 21 logic; nếu BẬT bẻ final thì = đảo ngược final)
+      "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
       "do_tin_cay": 58.4,        # % = trung bình WR của 21 logic trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
       "tong": 12,                # tổng xúc xắc của phien_truoc
       "ket_qua_truoc": "TÀI",
       "so_van_wr": 15,           # số ván thực tế đã dùng để tính WR / độ tin cậy
+      "tool_dung_sai_10_van": {"dung": 6, "sai": 4, "tong": 10, "chuoi": "ĐSĐĐSĐSĐĐS"},
+                                 # đúng/sai của du_doan ở 10 phiên gần nhất (theo be_final hiện tại), chuoi: mới -> cũ
       "stale": false,            # true nếu lần quét upstream gần nhất bị lỗi (đang trả kết quả cũ)
       "cap_nhat": "2026-10-09 12:30:01"
     }
 
 /api/predict?detail=1 -> chi_tiet có thêm:
-      "final_goc": "XỈU"                                     # final trước khi bẻ
-      "tool_dung_sai_10_van": {"dung": 6, "sai": 4, "tong": 10, "chuoi": "ĐSĐĐSĐSĐĐS"}   # đúng/sai của du_doan (sau bẻ), chuoi: mới -> cũ
+      "final_goc": "XỈU"                                     # final trước khi bẻ (luôn là final gốc của 21 logic)
+      "tool_dung_sai_15_van": {"dung": 9, "tong": 15}        # đúng/sai ở WR_WINDOW ván gần nhất
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
@@ -56,9 +60,33 @@ POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS c
 WR_WINDOW = 15             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
-# ─── BẺ FINAL · ĐÁNH GIÁ ĐÚNG/SAI ────────────────────────────────────────
-FLIP_FINAL = os.environ.get("SUNVIW_FLIP", "1").lower() not in ("0", "false", "no", "off")   # luôn đảo final trước khi in ra API
-EVAL_WINDOW = 10           # số phiên gần nhất để đánh giá đúng/sai
+# ═══════════════════════════════════════════════════════════════════════════
+#  ⚙  CONFIG BẺ FINAL  (bật / tắt)  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   FLIP_FINAL_DEFAULT = False  ->  TẮT (mặc định): du_doan = final của 21 logic, KHÔNG bẻ
+#   FLIP_FINAL_DEFAULT = True   ->  BẬT : du_doan = đảo ngược final (TÀI <-> XỈU)
+#
+#  Muốn đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > FLIP_FINAL_DEFAULT):
+#     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
+#     dòng lệnh       :  python sunviw_api.py --flip      (bật)
+#                        python sunviw_api.py --no-flip   (tắt)
+FLIP_FINAL_DEFAULT = False
+
+
+def _env_bool(name, default):
+    """Đọc biến môi trường dạng bật/tắt; không đặt hoặc giá trị lạ -> dùng `default`."""
+    v = os.environ.get(name, "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
+
+# ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
+EVAL_WINDOW = 15           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
@@ -388,12 +416,14 @@ def build_result(hist):
         "ok": True,
         "phien": latest["phien"] + 1,
         "du_doan": out_final(dec["final"]),
+        "be_final": FLIP_FINAL,
         "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
         "phien_truoc": latest["phien"],
         "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
         "tong": latest["total"],
         "ket_qua_truoc": latest["actual"],
         "so_van_wr": dec["n"],
+        "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     tai = sum(1 for v in votes if v == TAI)
     detail = {
@@ -409,13 +439,12 @@ def build_result(hist):
         ],
         "final_goc": dec["final"],
         "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
-        "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     return {"base": base, "detail": detail}
 
 
 def _recent_accuracy(graded, size, with_chuoi=False):
-    """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ) ở `size` ván gần nhất."""
+    """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ nếu đang bật) ở `size` ván gần nhất."""
     win = graded[-size:]
     oks = [out_final(g["final"]) == g["actual"] for g in win]
     out = {"dung": sum(oks), "tong": len(win)}
@@ -538,7 +567,7 @@ def health():
     with _state_lock:
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
-             poll_sec=POLL_SEC, wr_window=WR_WINDOW)
+             poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL)
     return _json(s)
 
 
@@ -563,14 +592,19 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API lich su (…/api/tx/history)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
-    ap.add_argument("--no-flip", action="store_true", help="tắt bẻ final (mặc định luôn bẻ)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
+    g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của 21 logic)")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
-    if a.no_flip:
+    if a.flip:
+        FLIP_FINAL = True
+    elif a.no_flip:
         FLIP_FINAL = False
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
+    print(f"be final    ->  {'BAT' if FLIP_FINAL else 'TAT'}")
     app.run(host=a.host, port=a.port, threaded=True)
 
 

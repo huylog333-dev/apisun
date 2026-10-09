@@ -52,10 +52,9 @@ POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS c
 WR_WINDOW = 15             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
-SESSION_HISTORY_MAX = 15                              # số phiên lưu lại (rolling buffer)
-SESSION_HISTORY_PATH = os.environ.get(
-    "SUNVIW_HISTORY_PATH", "/tmp/sunviw_sessions.json"  # persist trên Railway (in-container)
-)
+# ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
+PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
+PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WINDOW đủ dùng)
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
@@ -307,24 +306,64 @@ def parse_history(data):
     return [m[k] for k in sorted(m)]            # cũ -> mới
 
 
-def rebuild_graded(hist):
-    """Chấm lại toàn bộ lịch sử (giống rebuildGraded): dự đoán phiên k+1 từ xúc xắc phiên k, chấm bằng kết quả thật."""
-    graded = []
+def persist_load():
+    """Load danh sách graded đã lưu từ file JSON. Trả về [] nếu không có / lỗi."""
+    try:
+        with open(PERSIST_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
+def persist_save(graded):
+    """Ghi tối đa PERSIST_KEEP entry cuối vào file JSON (atomic write)."""
+    try:
+        chunk = graded[-PERSIST_KEEP:]
+        tmp = PERSIST_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(chunk, f, ensure_ascii=False)
+        os.replace(tmp, PERSIST_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def merge_graded(saved, fresh):
+    """Ghép saved (từ file) + fresh (rebuild từ hist hiện tại), dedup + sort theo session.
+    fresh luôn được ưu tiên (overwrite saved nếu trùng session)."""
+    by_sess = {g["session"]: g for g in saved}
+    for g in fresh:
+        by_sess[g["session"]] = g
+    return [by_sess[k] for k in sorted(by_sess)]
+
+
+def rebuild_graded(hist, saved_graded=None):
+    """Chấm lại toàn bộ lịch sử (giống rebuildGraded): dự đoán phiên k+1 từ xúc xắc phiên k, chấm bằng kết quả thật.
+    Nếu có saved_graded, merge vào để WR_WINDOW có đủ 15 ván dù upstream trả ít ván."""
+    fresh = []
+    # Dùng saved làm seed cho wr_decision trong quá trình rebuild
+    seed = list(saved_graded) if saved_graded else []
     for i in range(len(hist) - 1):
         cur, nxt = hist[i], hist[i + 1]
         if nxt["phien"] != cur["phien"] + 1:
-            continue                              # thiếu phiên -> không chấm được
+            continue
         votes = compute_all(cur["phien"] + 1, cur["d1"], cur["d2"], cur["d3"])
-        dec = wr_decision(votes, graded)
-        graded.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
-                       "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"]})
-    return graded
+        # Kết hợp seed + fresh đã tính để WR chính xác hơn
+        combined = merge_graded(seed, fresh)
+        dec = wr_decision(votes, combined)
+        fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
+                      "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"]})
+    return merge_graded(seed, fresh)
 
 
 def build_result(hist):
     """Từ lịch sử (cũ -> mới) -> dict kết quả dự đoán cho phiên kế tiếp."""
     latest = hist[-1]
-    graded = rebuild_graded(hist)
+    saved = persist_load()
+    graded = rebuild_graded(hist, saved_graded=saved)
+    persist_save(graded)
     votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
     dec = wr_decision(votes, graded)
     base = {
@@ -366,60 +405,6 @@ _state_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _poller_started = False
 
-# ─── SESSION HISTORY (rolling buffer 15 phiên, persist /tmp) ─────────────
-_session_history: list = []          # list of dict, newest last
-_history_lock = threading.Lock()
-
-
-def _load_session_history():
-    """Đọc file JSON từ disk khi khởi động (Railway giữ /tmp trong cùng container)."""
-    global _session_history
-    try:
-        if os.path.exists(SESSION_HISTORY_PATH):
-            with open(SESSION_HISTORY_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                _session_history = data[-SESSION_HISTORY_MAX:]
-    except Exception:   # noqa: BLE001
-        _session_history = []
-
-
-def _save_session_history():
-    """Ghi xuống disk (gọi sau mỗi lần push)."""
-    try:
-        with open(SESSION_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(_session_history, f, ensure_ascii=False)
-    except Exception:   # noqa: BLE001
-        pass
-
-
-def _push_session(result_dict: dict, timestamp: str):
-    """Thêm phiên mới vào buffer; tự trim còn SESSION_HISTORY_MAX; persist."""
-    with _history_lock:
-        base = result_dict.get("base", {})
-        entry = {
-            "phien":          base.get("phien"),
-            "phien_truoc":    base.get("phien_truoc"),
-            "du_doan":        base.get("du_doan"),
-            "do_tin_cay":     base.get("do_tin_cay"),
-            "ket_qua_truoc":  base.get("ket_qua_truoc"),
-            "xuc_xac":        base.get("xuc_xac"),
-            "tong":           base.get("tong"),
-            "so_van_wr":      base.get("so_van_wr"),
-            "cap_nhat":       timestamp,
-        }
-        # tránh duplicate cùng phiên
-        if _session_history and _session_history[-1].get("phien") == entry["phien"]:
-            _session_history[-1] = entry          # cập nhật nếu phiên chưa đổi
-        else:
-            _session_history.append(entry)
-            if len(_session_history) > SESSION_HISTORY_MAX:
-                _session_history.pop(0)
-        _save_session_history()
-
-
-_load_session_history()   # load ngay khi module import
-
 
 def _fetch_json(url):
     req = urllib.request.Request(url, headers={
@@ -450,10 +435,8 @@ def refresh():
                 _state["checked"] = _now()
             return
         res = build_result(hist)
-        now = _now()
         with _state_lock:
-            _state.update(result=res, latest=latest, error=None, updated=now, checked=now)
-        _push_session(res, now)   # ghi vào rolling buffer 15 phiên
+            _state.update(result=res, latest=latest, error=None, updated=_now(), checked=_now())
 
 
 def _poll_loop():
@@ -523,37 +506,6 @@ def api_predict():
     return _json(out)
 
 
-@app.route("/api/sessions")
-def api_sessions():
-    """Trả về tối đa 15 phiên gần nhất đã dự đoán (mới nhất cuối list).
-    Frontend dùng để seed localStorage hoặc hiển thị lịch sử.
-
-    Response:
-        {
-          "ok": true,
-          "count": 15,
-          "sessions": [
-            {
-              "phien": 12346,
-              "phien_truoc": 12345,
-              "du_doan": "TÀI",
-              "do_tin_cay": 58.4,
-              "ket_qua_truoc": "TÀI",
-              "xuc_xac": [3, 5, 4],
-              "tong": 12,
-              "so_van_wr": 15,
-              "cap_nhat": "2026-10-09 12:30:01"
-            },
-            ...
-          ]
-        }
-    """
-    ensure_poller()
-    with _history_lock:
-        snap = list(_session_history)   # shallow copy để tránh race
-    return _json({"ok": True, "count": len(snap), "sessions": snap})
-
-
 @app.route("/health")
 def health():
     ensure_poller()
@@ -566,11 +518,7 @@ def health():
 
 @app.route("/")
 def index():
-    return _json({"api": "SUNVIW 21 logics", "endpoints": [
-        "/api/predict", "/api/predict?detail=1",
-        "/api/sessions",
-        "/health",
-    ]})
+    return _json({"api": "SUNVIW 21 logics", "endpoints": ["/api/predict", "/api/predict?detail=1", "/health"]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.

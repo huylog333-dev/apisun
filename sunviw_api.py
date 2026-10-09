@@ -47,10 +47,15 @@ UPSTREAM_URL = os.environ.get(
     "SUNVIW_UPSTREAM",
     "https://reviewed-ssl-tradition-specialized.trycloudflare.com/api/tx/history",
 )
-UPSTREAM_TIMEOUT = 5      # giây
+UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
-WR_MIN_GAMES = 3           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
+WR_WINDOW = 15             # số ván gần nhất dùng để tính WR
+WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
+
+SESSION_HISTORY_MAX = 15                              # số phiên lưu lại (rolling buffer)
+SESSION_HISTORY_PATH = os.environ.get(
+    "SUNVIW_HISTORY_PATH", "/tmp/sunviw_sessions.json"  # persist trên Railway (in-container)
+)
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
@@ -361,6 +366,60 @@ _state_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _poller_started = False
 
+# ─── SESSION HISTORY (rolling buffer 15 phiên, persist /tmp) ─────────────
+_session_history: list = []          # list of dict, newest last
+_history_lock = threading.Lock()
+
+
+def _load_session_history():
+    """Đọc file JSON từ disk khi khởi động (Railway giữ /tmp trong cùng container)."""
+    global _session_history
+    try:
+        if os.path.exists(SESSION_HISTORY_PATH):
+            with open(SESSION_HISTORY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                _session_history = data[-SESSION_HISTORY_MAX:]
+    except Exception:   # noqa: BLE001
+        _session_history = []
+
+
+def _save_session_history():
+    """Ghi xuống disk (gọi sau mỗi lần push)."""
+    try:
+        with open(SESSION_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(_session_history, f, ensure_ascii=False)
+    except Exception:   # noqa: BLE001
+        pass
+
+
+def _push_session(result_dict: dict, timestamp: str):
+    """Thêm phiên mới vào buffer; tự trim còn SESSION_HISTORY_MAX; persist."""
+    with _history_lock:
+        base = result_dict.get("base", {})
+        entry = {
+            "phien":          base.get("phien"),
+            "phien_truoc":    base.get("phien_truoc"),
+            "du_doan":        base.get("du_doan"),
+            "do_tin_cay":     base.get("do_tin_cay"),
+            "ket_qua_truoc":  base.get("ket_qua_truoc"),
+            "xuc_xac":        base.get("xuc_xac"),
+            "tong":           base.get("tong"),
+            "so_van_wr":      base.get("so_van_wr"),
+            "cap_nhat":       timestamp,
+        }
+        # tránh duplicate cùng phiên
+        if _session_history and _session_history[-1].get("phien") == entry["phien"]:
+            _session_history[-1] = entry          # cập nhật nếu phiên chưa đổi
+        else:
+            _session_history.append(entry)
+            if len(_session_history) > SESSION_HISTORY_MAX:
+                _session_history.pop(0)
+        _save_session_history()
+
+
+_load_session_history()   # load ngay khi module import
+
 
 def _fetch_json(url):
     req = urllib.request.Request(url, headers={
@@ -391,8 +450,10 @@ def refresh():
                 _state["checked"] = _now()
             return
         res = build_result(hist)
+        now = _now()
         with _state_lock:
-            _state.update(result=res, latest=latest, error=None, updated=_now(), checked=_now())
+            _state.update(result=res, latest=latest, error=None, updated=now, checked=now)
+        _push_session(res, now)   # ghi vào rolling buffer 15 phiên
 
 
 def _poll_loop():
@@ -462,6 +523,37 @@ def api_predict():
     return _json(out)
 
 
+@app.route("/api/sessions")
+def api_sessions():
+    """Trả về tối đa 15 phiên gần nhất đã dự đoán (mới nhất cuối list).
+    Frontend dùng để seed localStorage hoặc hiển thị lịch sử.
+
+    Response:
+        {
+          "ok": true,
+          "count": 15,
+          "sessions": [
+            {
+              "phien": 12346,
+              "phien_truoc": 12345,
+              "du_doan": "TÀI",
+              "do_tin_cay": 58.4,
+              "ket_qua_truoc": "TÀI",
+              "xuc_xac": [3, 5, 4],
+              "tong": 12,
+              "so_van_wr": 15,
+              "cap_nhat": "2026-10-09 12:30:01"
+            },
+            ...
+          ]
+        }
+    """
+    ensure_poller()
+    with _history_lock:
+        snap = list(_session_history)   # shallow copy để tránh race
+    return _json({"ok": True, "count": len(snap), "sessions": snap})
+
+
 @app.route("/health")
 def health():
     ensure_poller()
@@ -474,7 +566,11 @@ def health():
 
 @app.route("/")
 def index():
-    return _json({"api": "SUNVIW 21 logics", "endpoints": ["/api/predict", "/api/predict?detail=1", "/health"]})
+    return _json({"api": "SUNVIW 21 logics", "endpoints": [
+        "/api/predict", "/api/predict?detail=1",
+        "/api/sessions",
+        "/health",
+    ]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.

@@ -68,7 +68,7 @@ UPSTREAM_URL = os.environ.get(
 )
 UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 24             # số ván gần nhất dùng để tính WR
+WR_WINDOW = 14             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
 # ═══════════════════════════════════════════════════════════════════════════

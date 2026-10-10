@@ -100,7 +100,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số của các ván đang xét.
 #   Chỉ phần TÍNH WR đổi sang có trọng số; cách chia nhóm giữ nguyên như cũ: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO,
 #   nhóm THẤP đông hơn thì theo nhóm THẤP, còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
-WR_WINDOW = 12              # số ván gần nhất dùng để tính WR
+WR_WINDOW = 9              # số ván gần nhất dùng để tính WR
 WR_WEIGHT_NEWEST = 1.00    # trọng số ván mới nhất (x1.00)
 WR_WEIGHT_STEP = 0.30      # mỗi ván cũ hơn được cộng thêm 0.25 lần
 # Bảng trọng số đầy đủ (cũ nhất -> mới nhất), tự tính từ 3 biến trên - chỉ để hiển thị ở /health và khi khởi động

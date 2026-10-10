@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SUNVIW 21 LOGICS - API JSON  (bản Python của SUNVIW_21logics.html)
+SUNVIW 24 LOGICS (mặc định chạy 13 logic) - API JSON  (bản Python của SUNVIW_21logics.html + thêm L3N, L4N, L5N)
 
 Chạy:
     pip install flask
@@ -17,9 +17,9 @@ JSON /api/predict:
     {
       "ok": true,
       "phien": 12346,            # phiên được dự đoán (n)
-      "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của 21 logic; nếu BẬT bẻ final thì = đảo ngược final)
+      "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
-      "do_tin_cay": 58.4,        # % = trung bình WR của 21 logic trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
+      "do_tin_cay": 58.4,        # % = trung bình WR của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
       "tong": 12,                # tổng xúc xắc của phien_truoc
@@ -32,7 +32,7 @@ JSON /api/predict:
     }
 
 /api/predict?detail=1 -> chi_tiet có thêm:
-      "final_goc": "XỈU"                                     # final trước khi bẻ (luôn là final gốc của 21 logic)
+      "final_goc": "XỈU"                                     # final trước khi bẻ (luôn là final gốc của các logic đang dùng)
       "tool_dung_sai_15_van": {"dung": 9, "tong": 15}        # đúng/sai ở WR_WINDOW ván gần nhất
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
@@ -42,11 +42,21 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
         L1 = L3                (do Z đọc ngoài chuỗi md5 -> NaN -> luôn TÀI)
         L2 = LA = LB           (do Z đọc ngoài chuỗi md5 -> NaN -> luôn XỈU)
         SUN1 = TX1 · SUN2 = TX2 · SUN3 = TX3   (SUN dùng đúng bộ công thức của TX)
-    DEDUP_MODE = "all"       (mặc định): XÓA TOÀN BỘ logic nằm trong nhóm trùng -> còn 10 logic
-    DEDUP_MODE = "keep_one"  : mỗi nhóm trùng giữ lại 1 đại diện -> còn 15 logic
-    DEDUP_MODE = "off"       : giữ nguyên 21 logic như file cũ
+    DEDUP_MODE = "all"       (mặc định): XÓA TOÀN BỘ logic nằm trong nhóm trùng -> còn 13 logic (10 logic cũ + L3N, L4N, L5N)
+    DEDUP_MODE = "keep_one"  : mỗi nhóm trùng giữ lại 1 đại diện -> còn 18 logic
+    DEDUP_MODE = "off"       : giữ nguyên toàn bộ 24 logic (21 logic cũ + L3N, L4N, L5N)
     Đổi bằng biến môi trường SUNVIW_DEDUP=all|keep_one|off hoặc sửa DEDUP_MODE_DEFAULT.
     Lưu ý: L7 và ANTI-L7 luôn NGƯỢC nhau 100% (không phải trùng) nên được giữ; hai logic này triệt tiêu nhau khi bỏ phiếu.
+
+➕ L3N (logic mới thêm):  K = |(X + 1) ^ (Y + 1)| ÷ (Z × 5)  ·  chẵn→TÀI / lẻ→XỈU
+    X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20  (cùng kiểu LA/LB). Y, Z đọc ở ký tự hex 6 và 30 (như SUN/TX/S2)
+    -> nằm TRONG chuỗi md5 32 ký tự nên KHÔNG bị NaN. Dấu ^ dùng _pow của file (cắt số mũ tối đa 8).
+    Đặt tên L3N (không phải "L3") vì tên L3 đã dùng cho logic L3 cũ trong nhóm trùng, sẽ bị lọc mất.
+
+➕ L4N (logic mới thêm):  K = |(X + 10) mod (Y ÷ 6)| ^ (Z ÷ 4)  ·  chẵn→XỈU / lẻ→TÀI
+➕ L5N (logic mới thêm):  K = |(X + 3) × (Y ÷ 4)| − (Z ÷ 5)     ·  chẵn→XỈU / lẻ→TÀI
+    Cùng quy ước với L3N: X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20 (hex ký tự 6 và 30, không NaN).
+    mod dùng _mod của file (chia cho 0 -> 0) · dấu ^ dùng _pow của file (cắt số mũ tối đa 8) · làm tròn kiểu Math.round của JS.
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
@@ -68,7 +78,7 @@ UPSTREAM_URL = os.environ.get(
 )
 UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 12             # số ván gần nhất dùng để tính WR
+WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -81,7 +91,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
 #     dòng lệnh       :  python sunviw_api.py --flip      (bật)
 #                        python sunviw_api.py --no-flip   (tắt)
-FLIP_FINAL_DEFAULT = False
+FLIP_FINAL_DEFAULT = True
 
 
 def _env_bool(name, default):
@@ -106,11 +116,11 @@ PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WI
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
 ALL_LOGIC_NAMES = ['L1', 'L2', 'L3', 'TTA2', 'TTA4', 'TTA5', 'L7', 'LLOW1', 'LLOW2', 'ANTI-L7',
-                   'SUN1', 'SUN2', 'SUN3', 'S2A', 'S2B', 'S2C', 'TX1', 'TX2', 'TX3', 'LA', 'LB']
+                   'SUN1', 'SUN2', 'SUN3', 'S2A', 'S2B', 'S2C', 'TX1', 'TX2', 'TX3', 'LA', 'LB', 'L3N', 'L4N', 'L5N']
 
 # ─── LỌC LOGIC TRÙNG (từ backtest: khớp 100% trên mọi ván) ───────────────
 DUP_GROUPS = [['L1', 'L3'], ['L2', 'LA', 'LB'], ['SUN1', 'TX1'], ['SUN2', 'TX2'], ['SUN3', 'TX3']]
-DEDUP_MODE_DEFAULT = "all"     # "all" = xóa hết logic trong nhóm trùng · "keep_one" = giữ 1 đại diện/nhóm · "off" = giữ 21
+DEDUP_MODE_DEFAULT = "all"     # "all" = xóa hết logic trong nhóm trùng · "keep_one" = giữ 1 đại diện/nhóm · "off" = giữ hết 24
 DEDUP_MODE = os.environ.get("SUNVIW_DEDUP", DEDUP_MODE_DEFAULT).strip().lower()
 if DEDUP_MODE not in ("all", "keep_one", "off"):
     DEDUP_MODE = DEDUP_MODE_DEFAULT
@@ -297,14 +307,48 @@ def calc_lb(md5, session):
     return TAI if _js_round(abs(K)) % 2 == 0 else XIU
 
 
+def calc_l3n(md5, session):
+    """L3N: K = |(X + 1) ^ (Y + 1)| ÷ (Z × 5) · chẵn→TÀI / lẻ→XỈU.
+    X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20 (cùng kiểu LA/LB).
+    Y, Z đọc ở ký tự hex 6 và 30 -> nằm trong chuỗi md5 32 ký tự nên không bị NaN như LA/LB."""
+    Xs = int(session) % 20
+    Y = _hex_at(md5, 6) % 20
+    Z = _hex_at(md5, 30) % 20
+    num = _pow(Xs + 1, Y + 1)
+    den = Z * 5
+    K = 0 if den == 0 else num / den
+    return TAI if _js_round(abs(K)) % 2 == 0 else XIU
+
+
+def calc_l4n(md5, session):
+    """L4N: K = |(X + 10) mod (Y ÷ 6)| ^ (Z ÷ 4) · chẵn→XỈU / lẻ→TÀI.
+    X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20 (cùng quy ước L3N)."""
+    Xs = int(session) % 20
+    Y = _hex_at(md5, 6) % 20
+    Z = _hex_at(md5, 30) % 20
+    m = _mod(Xs + 10, Y / 6)
+    K = _pow(abs(m), Z / 4)
+    return XIU if _js_round(abs(K)) % 2 == 0 else TAI
+
+
+def calc_l5n(md5, session):
+    """L5N: K = |(X + 3) × (Y ÷ 4)| − (Z ÷ 5) · chẵn→XỈU / lẻ→TÀI.
+    X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20 (cùng quy ước L3N). K có thể âm -> chỉ xét chẵn/lẻ."""
+    Xs = int(session) % 20
+    Y = _hex_at(md5, 6) % 20
+    Z = _hex_at(md5, 30) % 20
+    K = abs((Xs + 3) * (Y / 4)) - (Z / 5)
+    return XIU if _js_round(K) % 2 == 0 else TAI
+
+
 def compute_all(session, d1, d2, d3):
     """Vote của các logic ĐANG DÙNG (đã lọc trùng) cho phiên `session`. Thứ tự = LOGIC_NAMES."""
-    full = compute_all_21(session, d1, d2, d3)
+    full = compute_all_full(session, d1, d2, d3)
     return [full[i] for i in KEEP_IDX]
 
 
-def compute_all_21(session, d1, d2, d3):
-    """Đủ 21 vote cho phiên `session` từ xúc xắc (d1,d2,d3) của phiên liền trước. Thứ tự = ALL_LOGIC_NAMES."""
+def compute_all_full(session, d1, d2, d3):
+    """Đủ 24 vote (21 logic cũ + L3N, L4N, L5N) cho phiên `session` từ xúc xắc (d1,d2,d3) của phiên liền trước. Thứ tự = ALL_LOGIC_NAMES."""
     md5 = md5_of(session, d1, d2, d3)
     X = sum_digits(session)
     l123 = _run_formulas(FORMULAS, md5, X, 2)          # L1 L2 L3 (vị trí hex ×2 như HTML)
@@ -321,12 +365,15 @@ def compute_all_21(session, d1, d2, d3):
     tx = _run_formulas(TX_FORMULAS, md5, X, 1)
     la = calc_la(md5, session)
     lb = calc_lb(md5, session)
-    return l123 + [tta2, tta4, tta5, l7, llow1, llow2, anti_l7] + sun + s2 + tx + [la, lb]
+    l3n = calc_l3n(md5, session)
+    l4n = calc_l4n(md5, session)
+    l5n = calc_l5n(md5, session)
+    return l123 + [tta2, tta4, tta5, l7, llow1, llow2, anti_l7] + sun + s2 + tx + [la, lb, l3n, l4n, l5n]
 
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
 def wr_decision(votes, graded):
-    """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của 21 logic, 0-100)."""
+    """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100)."""
     all_vote = vote_result(votes)
     win = graded[-WR_WINDOW:]
     n = len(win)
@@ -632,14 +679,14 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
-    ap = argparse.ArgumentParser(description="SUNVIW 21 logics - API JSON")
+    ap = argparse.ArgumentParser(description="SUNVIW 24 logics (mặc định 13) - API JSON")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API lich su (…/api/tx/history)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
-    g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của 21 logic)")
+    g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của các logic đang dùng)")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
     if a.flip:

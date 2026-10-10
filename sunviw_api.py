@@ -91,7 +91,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
 #     dòng lệnh       :  python sunviw_api.py --flip      (bật)
 #                        python sunviw_api.py --no-flip   (tắt)
-FLIP_FINAL_DEFAULT = True
+FLIP_FINAL_DEFAULT = False
 
 
 def _env_bool(name, default):
@@ -107,7 +107,7 @@ def _env_bool(name, default):
 FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
 
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
-EVAL_WINDOW = 50           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
+EVAL_WINDOW = 100           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")

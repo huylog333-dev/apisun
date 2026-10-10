@@ -91,7 +91,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
 #     dòng lệnh       :  python sunviw_api.py --flip      (bật)
 #                        python sunviw_api.py --no-flip   (tắt)
-FLIP_FINAL_DEFAULT = False
+FLIP_FINAL_DEFAULT = True
 
 
 def _env_bool(name, default):

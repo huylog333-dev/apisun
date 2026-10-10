@@ -78,7 +78,7 @@ UPSTREAM_URL = os.environ.get(
 )
 UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
+WR_WINDOW = 26             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -107,7 +107,7 @@ def _env_bool(name, default):
 FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
 
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
-EVAL_WINDOW = 15           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
+EVAL_WINDOW = 50           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")

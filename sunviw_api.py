@@ -102,7 +102,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #   nhóm THẤP đông hơn thì theo nhóm THẤP, còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 9              # số ván gần nhất dùng để tính WR
 WR_WEIGHT_NEWEST = 1.00    # trọng số ván mới nhất (x1.00)
-WR_WEIGHT_STEP = 0.30      # mỗi ván cũ hơn được cộng thêm 0.25 lần
+WR_WEIGHT_STEP = 0.15      # mỗi ván cũ hơn được cộng thêm 0.25 lần
 # Bảng trọng số đầy đủ (cũ nhất -> mới nhất), tự tính từ 3 biến trên - chỉ để hiển thị ở /health và khi khởi động
 WR_WEIGHTS_FULL = [round(WR_WEIGHT_NEWEST + WR_WEIGHT_STEP * (WR_WINDOW - 1 - k), 4) for k in range(WR_WINDOW)]
 WR_WEIGHT_OLDEST = WR_WEIGHTS_FULL[0] if WR_WEIGHTS_FULL else WR_WEIGHT_NEWEST

@@ -36,6 +36,17 @@ JSON /api/predict:
       "tool_dung_sai_15_van": {"dung": 9, "tong": 15}        # đúng/sai ở WR_WINDOW ván gần nhất
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
+
+⚙ LỌC LOGIC TRÙNG (kết quả backtest 300.000 ván: 4 dải số phiên x xúc xắc ngẫu nhiên):
+    Có 5 nhóm logic dự đoán GIỐNG NHAU 100% (khớp 300.000/300.000 ván):
+        L1 = L3                (do Z đọc ngoài chuỗi md5 -> NaN -> luôn TÀI)
+        L2 = LA = LB           (do Z đọc ngoài chuỗi md5 -> NaN -> luôn XỈU)
+        SUN1 = TX1 · SUN2 = TX2 · SUN3 = TX3   (SUN dùng đúng bộ công thức của TX)
+    DEDUP_MODE = "all"       (mặc định): XÓA TOÀN BỘ logic nằm trong nhóm trùng -> còn 10 logic
+    DEDUP_MODE = "keep_one"  : mỗi nhóm trùng giữ lại 1 đại diện -> còn 15 logic
+    DEDUP_MODE = "off"       : giữ nguyên 21 logic như file cũ
+    Đổi bằng biến môi trường SUNVIW_DEDUP=all|keep_one|off hoặc sửa DEDUP_MODE_DEFAULT.
+    Lưu ý: L7 và ANTI-L7 luôn NGƯỢC nhau 100% (không phải trùng) nên được giữ; hai logic này triệt tiêu nhau khi bỏ phiếu.
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
@@ -94,8 +105,31 @@ PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WI
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
-LOGIC_NAMES = ['L1', 'L2', 'L3', 'TTA2', 'TTA4', 'TTA5', 'L7', 'LLOW1', 'LLOW2', 'ANTI-L7',
-               'SUN1', 'SUN2', 'SUN3', 'S2A', 'S2B', 'S2C', 'TX1', 'TX2', 'TX3', 'LA', 'LB']
+ALL_LOGIC_NAMES = ['L1', 'L2', 'L3', 'TTA2', 'TTA4', 'TTA5', 'L7', 'LLOW1', 'LLOW2', 'ANTI-L7',
+                   'SUN1', 'SUN2', 'SUN3', 'S2A', 'S2B', 'S2C', 'TX1', 'TX2', 'TX3', 'LA', 'LB']
+
+# ─── LỌC LOGIC TRÙNG (từ backtest: khớp 100% trên mọi ván) ───────────────
+DUP_GROUPS = [['L1', 'L3'], ['L2', 'LA', 'LB'], ['SUN1', 'TX1'], ['SUN2', 'TX2'], ['SUN3', 'TX3']]
+DEDUP_MODE_DEFAULT = "all"     # "all" = xóa hết logic trong nhóm trùng · "keep_one" = giữ 1 đại diện/nhóm · "off" = giữ 21
+DEDUP_MODE = os.environ.get("SUNVIW_DEDUP", DEDUP_MODE_DEFAULT).strip().lower()
+if DEDUP_MODE not in ("all", "keep_one", "off"):
+    DEDUP_MODE = DEDUP_MODE_DEFAULT
+
+
+def _keep_indices(mode):
+    """Chỉ số (trong ALL_LOGIC_NAMES) của các logic được giữ lại theo `mode`."""
+    in_dup = {n for g in DUP_GROUPS for n in g}
+    reps = {g[0] for g in DUP_GROUPS}
+    out = []
+    for i, n in enumerate(ALL_LOGIC_NAMES):
+        if mode == "off" or n not in in_dup or (mode == "keep_one" and n in reps):
+            out.append(i)
+    return out
+
+
+KEEP_IDX = _keep_indices(DEDUP_MODE)
+LOGIC_NAMES = [ALL_LOGIC_NAMES[i] for i in KEEP_IDX]          # danh sách logic ĐANG DÙNG
+LOGIC_SIG = ",".join(LOGIC_NAMES)                              # dấu vân tay bộ logic (để bỏ dữ liệu persist cũ lệch bộ)
 
 
 # ─── HELPERS (mô phỏng đúng ngữ nghĩa JavaScript) ────────────────────────
@@ -264,7 +298,13 @@ def calc_lb(md5, session):
 
 
 def compute_all(session, d1, d2, d3):
-    """21 vote cho phiên `session` từ xúc xắc (d1,d2,d3) của phiên liền trước. Thứ tự = LOGIC_NAMES."""
+    """Vote của các logic ĐANG DÙNG (đã lọc trùng) cho phiên `session`. Thứ tự = LOGIC_NAMES."""
+    full = compute_all_21(session, d1, d2, d3)
+    return [full[i] for i in KEEP_IDX]
+
+
+def compute_all_21(session, d1, d2, d3):
+    """Đủ 21 vote cho phiên `session` từ xúc xắc (d1,d2,d3) của phiên liền trước. Thứ tự = ALL_LOGIC_NAMES."""
     md5 = md5_of(session, d1, d2, d3)
     X = sum_digits(session)
     l123 = _run_formulas(FORMULAS, md5, X, 2)          # L1 L2 L3 (vị trí hex ×2 như HTML)
@@ -358,7 +398,8 @@ def persist_load():
         with open(PERSIST_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return data
+            # bỏ entry lưu từ bộ logic khác (vd. file cũ 21 logic) -> tránh lệch chỉ số vote
+            return [g for g in data if isinstance(g, dict) and g.get("sig") == LOGIC_SIG]
     except Exception:  # noqa: BLE001
         pass
     return []
@@ -400,7 +441,8 @@ def rebuild_graded(hist, saved_graded=None):
         combined = [g for g in merge_graded(seed, fresh) if g["session"] < nxt["phien"]]
         dec = wr_decision(votes, combined)
         fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
-                      "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"]})
+                      "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"],
+                      "sig": LOGIC_SIG})
     return merge_graded(seed, fresh)
 
 
@@ -427,8 +469,11 @@ def build_result(hist):
     }
     tai = sum(1 for v in votes if v == TAI)
     detail = {
-        "vote_21": {"TÀI": tai, "XỈU": len(votes) - tai},
-        "nhom_theo": {"ALL": "da so 21", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
+        "vote_21": {"TÀI": tai, "XỈU": len(votes) - tai},        # tên khóa giữ nguyên cho tương thích; giờ đếm trên các logic đang dùng
+        "so_logic": len(votes),
+        "che_do_loc_trung": DEDUP_MODE,
+        "logic_bi_loai": [n for n in ALL_LOGIC_NAMES if n not in LOGIC_NAMES],
+        "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
         "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]},
         "hoa_dung_da_so_21": dec["tie"],
         "logic": [
@@ -573,7 +618,7 @@ def health():
 
 @app.route("/")
 def index():
-    return _json({"api": "SUNVIW 21 logics", "endpoints": ["/api/predict", "/api/predict?detail=1", "/health"]})
+    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predict", "/api/predict?detail=1", "/health"]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.

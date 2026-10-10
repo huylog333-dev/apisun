@@ -19,21 +19,23 @@ JSON /api/predict:
       "phien": 12346,            # phiên được dự đoán (n)
       "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
-      "do_tin_cay": 58.4,        # % = trung bình WR của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
+      "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
+                                 #     trọng số: ván cũ nhất cao nhất, ván càng mới giảm 0.25 (xem "CONFIG WR CÓ TRỌNG SỐ")
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
       "tong": 12,                # tổng xúc xắc của phien_truoc
       "ket_qua_truoc": "TÀI",
-      "so_van_wr": 15,           # số ván thực tế đã dùng để tính WR / độ tin cậy
-      "tool_dung_sai_10_van": {"dung": 6, "sai": 4, "tong": 10, "chuoi": "ĐSĐĐSĐSĐĐS"},
-                                 # đúng/sai của du_doan ở 10 phiên gần nhất (theo be_final hiện tại), chuoi: mới -> cũ
+      "so_van_wr": 9,            # số ván thực tế đã dùng để tính WR / độ tin cậy
+      "tool_dung_sai_10_van": {"dung": 6, "sai": 4, "tong": 10, "chuoi": "✅❌✅✅❌✅❌✅✅❌"},
+                                 # đúng/sai của du_doan ở 10 phiên gần nhất (theo be_final hiện tại), chuoi: mới -> cũ, ✅ = đúng · ❌ = sai (đổi icon ở ICON_DUNG / ICON_SAI)
       "stale": false,            # true nếu lần quét upstream gần nhất bị lỗi (đang trả kết quả cũ)
       "cap_nhat": "2026-10-09 12:30:01"
     }
 
 /api/predict?detail=1 -> chi_tiet có thêm:
       "final_goc": "XỈU"                                     # final trước khi bẻ (luôn là final gốc của các logic đang dùng)
-      "tool_dung_sai_15_van": {"dung": 9, "tong": 15}        # đúng/sai ở WR_WINDOW ván gần nhất
+      "tool_dung_sai_15_van": {"dung": 5, "tong": 9}         # đúng/sai ở WR_WINDOW ván gần nhất (tên khóa giữ nguyên cho tương thích)
+      "trong_so_wr": {...}                                   # số ván xét + bảng trọng số (cũ nhất -> mới nhất) đang áp dụng
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
 
@@ -70,6 +72,7 @@ import threading
 import time
 import unicodedata
 import urllib.request
+from fractions import Fraction
 
 # ─── CẤU HÌNH ────────────────────────────────────────────────────────────
 UPSTREAM_URL = os.environ.get(
@@ -78,8 +81,34 @@ UPSTREAM_URL = os.environ.get(
 )
 UPSTREAM_TIMEOUT = 15      # giây
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
-WR_WINDOW = 17             # số ván gần nhất dùng để tính WR
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ⚙  CONFIG WR CÓ TRỌNG SỐ  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Ván CŨ NHẤT trong cửa sổ có trọng số CAO NHẤT, ván càng mới trọng số càng giảm WR_WEIGHT_STEP.
+#   Ván MỚI NHẤT luôn có trọng số = WR_WEIGHT_NEWEST (1.00).
+#
+#   WR_WINDOW       = số ván gần nhất được xét để tính WR
+#   WR_WEIGHT_NEWEST= trọng số của ván mới nhất (gấp mấy lần)
+#   WR_WEIGHT_STEP  = mỗi ván cũ hơn được CỘNG thêm bấy nhiêu lần  (đặt 0 -> tắt trọng số, mọi ván bằng nhau)
+#
+#   Hiện tại: xét 9 ván gần nhất, trọng số (cũ nhất -> mới nhất):
+#       3.00 · 2.75 · 2.50 · 2.25 · 2.00 · 1.75 · 1.50 · 1.25 · 1.00
+#   (ví dụ nếu xét 7 ván thì là: 2.50 · 2.25 · 2.00 · 1.75 · 1.50 · 1.25 · 1.00)
+#   Nếu chưa đủ WR_WINDOW ván đã chấm thì chỉ lấy số ván đang có, ván mới nhất vẫn = 1.00.
+#   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số của các ván đang xét.
+#   Chỉ phần TÍNH WR đổi sang có trọng số; cách chia nhóm giữ nguyên như cũ: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO,
+#   nhóm THẤP đông hơn thì theo nhóm THẤP, còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
+WR_WINDOW = 9              # số ván gần nhất dùng để tính WR
+WR_WEIGHT_NEWEST = 1.00    # trọng số ván mới nhất (x1.00)
+WR_WEIGHT_STEP = 0.25      # mỗi ván cũ hơn được cộng thêm 0.25 lần
+# Bảng trọng số đầy đủ (cũ nhất -> mới nhất), tự tính từ 3 biến trên - chỉ để hiển thị ở /health và khi khởi động
+WR_WEIGHTS_FULL = [round(WR_WEIGHT_NEWEST + WR_WEIGHT_STEP * (WR_WINDOW - 1 - k), 4) for k in range(WR_WINDOW)]
+WR_WEIGHT_OLDEST = WR_WEIGHTS_FULL[0] if WR_WEIGHTS_FULL else WR_WEIGHT_NEWEST
+# dạng Fraction để cộng/so sánh chính xác (dùng trong wr_weights)
+_W_NEWEST = Fraction(str(WR_WEIGHT_NEWEST))
+_W_STEP = Fraction(str(WR_WEIGHT_STEP))
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG BẺ FINAL  (bật / tắt)  —  CHỈNH Ở ĐÂY
@@ -108,6 +137,8 @@ FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
 
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
 EVAL_WINDOW = 100           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
+ICON_DUNG = "✅"            # icon hiện cho ván ĐOÁN ĐÚNG trong chuỗi "chuoi" của /api/predict
+ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
@@ -372,18 +403,32 @@ def compute_all_full(session, d1, d2, d3):
 
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
+def wr_weights(n):
+    """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối, giống file HTML
+    tính bằng đơn vị 0.25 toàn số nguyên -> so với 50% không dính sai số số thực).
+    Ván mới nhất = WR_WEIGHT_NEWEST, mỗi ván cũ hơn cộng thêm WR_WEIGHT_STEP.
+    Vd n=7, NEWEST=1.00, STEP=0.25 -> [2.50, 2.25, 2.00, 1.75, 1.50, 1.25, 1.00]."""
+    return [_W_NEWEST + _W_STEP * (n - 1 - k) for k in range(n)]
+
+
 def wr_decision(votes, graded):
-    """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100)."""
+    """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100).
+    CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván cũ nhất trong cửa sổ nặng nhất, ván mới nhất = 1.00, mỗi ván cũ hơn
+    +WR_WEIGHT_STEP (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
     all_vote = vote_result(votes)
-    win = graded[-WR_WINDOW:]
+    win = graded[-WR_WINDOW:]                         # cũ -> mới
     n = len(win)
     if n < WR_MIN_GAMES:
         return {"mode": "ALL", "n": n, "final": all_vote, "wins": [], "low": [], "high": [],
-                "gT": 0, "gX": 0, "tie": False, "avg": None}
-    wins = [sum(1 for g in win if g["votes"][i] == g["actual"]) for i in range(len(votes))]
+                "gT": 0, "gX": 0, "tie": False, "avg": None, "wsum": 0.0, "weights": []}
+    weights = wr_weights(n)
+    wsum = sum(weights)                               # tổng trọng số (mẫu số của WR)
+    # wins[i] = tổng trọng số các ván logic i đoán đúng (Fraction -> so với 50% chính xác, không sai số float)
+    wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0))
+            for i in range(len(votes))]
     low, high = [], []
     for i, w in enumerate(wins):
-        (low if w * 2 < n else high).append(i)       # WR <50% -> thấp · WR ≥50% -> cao
+        (low if w * 2 < wsum else high).append(i)    # WR <50% -> thấp · WR ≥50% -> cao (WR có trọng số)
     use_low = len(low) > len(high)
     idx = low if use_low else high
     gv = [votes[i] for i in idx]
@@ -392,9 +437,10 @@ def wr_decision(votes, graded):
     final, tie = vote_result(gv), False
     if final == 'SKIP':
         final, tie = all_vote, True
-    avg = sum(wins) / (len(wins) * n) * 100
-    return {"mode": "LOW" if use_low else "HIGH", "n": n, "final": final, "wins": wins,
-            "low": low, "high": high, "gT": gT, "gX": gX, "tie": tie, "avg": avg}
+    avg = float(sum(wins) / (len(wins) * wsum) * 100)  # TB WR có trọng số của các logic đang dùng
+    return {"mode": "LOW" if use_low else "HIGH", "n": n, "final": final, "wins": [float(w) for w in wins],
+            "low": low, "high": high, "gT": gT, "gX": gX, "tie": tie, "avg": avg,
+            "wsum": float(wsum), "weights": [float(w) for w in weights]}
 
 
 # ─── LỊCH SỬ UPSTREAM ────────────────────────────────────────────────────
@@ -523,9 +569,15 @@ def build_result(hist):
         "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
         "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]},
         "hoa_dung_da_so_21": dec["tie"],
+        "trong_so_wr": {                                          # cơ chế WR có trọng số đang áp dụng
+            "so_van": dec["n"],
+            "trong_so": dec["weights"],                           # cũ nhất -> mới nhất
+            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số ván mới nhất (x1.00)
+            "buoc_giam_moi_van_moi": WR_WEIGHT_STEP,
+        },
         "logic": [
             {"ten": LOGIC_NAMES[i], "du_doan": votes[i],
-             "wr": (round(dec["wins"][i] / dec["n"] * 100, 1) if dec["wins"] else None),
+             "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
              "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
             for i in range(len(votes))
         ],
@@ -542,7 +594,7 @@ def _recent_accuracy(graded, size, with_chuoi=False):
     out = {"dung": sum(oks), "tong": len(win)}
     if with_chuoi:
         out = {"dung": out["dung"], "sai": len(win) - out["dung"], "tong": len(win),
-               "chuoi": "".join("Đ" if ok else "S" for ok in reversed(oks))}     # mới -> cũ
+               "chuoi": "".join(ICON_DUNG if ok else ICON_SAI for ok in reversed(oks))}     # mới -> cũ
     return out
 
 
@@ -659,7 +711,8 @@ def health():
     with _state_lock:
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
-             poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL)
+             poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
+             wr_weights=WR_WEIGHTS_FULL, wr_weight_step=WR_WEIGHT_STEP)       # trọng số cũ nhất -> mới nhất
     return _json(s)
 
 
@@ -697,6 +750,8 @@ def main():
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
     print(f"be final    ->  {'BAT' if FLIP_FINAL else 'TAT'}")
+    print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so (cu -> moi): "
+          + " · ".join(f"{w:.2f}" for w in WR_WEIGHTS_FULL))
     app.run(host=a.host, port=a.port, threaded=True)
 
 

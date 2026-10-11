@@ -141,7 +141,7 @@ def _env_bool(name, default):
 FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
 
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
-EVAL_WINDOW = 100           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
+EVAL_WINDOW = 30           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
 ICON_DUNG = "✅"            # icon hiện cho ván ĐOÁN ĐÚNG trong chuỗi "chuoi" của /api/predict
 ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 

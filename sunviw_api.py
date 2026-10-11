@@ -106,8 +106,8 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #   Chỉ phần TÍNH WR đổi sang có trọng số; cách chia nhóm giữ nguyên như cũ: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO,
 #   nhóm THẤP đông hơn thì theo nhóm THẤP, còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 11             # số ván gần nhất dùng để tính WR
-WR_WEIGHT_NEWEST = 1.25    # trọng số ván mới nhất (x1.00)
-WR_WEIGHT_STEP = 0.35      # mỗi ván cũ hơn được cộng thêm 0.25 lần
+WR_WEIGHT_NEWEST = 1.15    # trọng số ván mới nhất (x1.00)
+WR_WEIGHT_STEP = 0.30      # mỗi ván cũ hơn được cộng thêm 0.25 lần
 # Bảng trọng số đầy đủ (cũ nhất -> mới nhất), tự tính từ 3 biến trên - chỉ để hiển thị ở /health và khi khởi động
 WR_WEIGHTS_FULL = [round(WR_WEIGHT_NEWEST + WR_WEIGHT_STEP * (WR_WINDOW - 1 - k), 4) for k in range(WR_WINDOW)]
 WR_WEIGHT_OLDEST = WR_WEIGHTS_FULL[0] if WR_WEIGHTS_FULL else WR_WEIGHT_NEWEST
@@ -125,7 +125,7 @@ _W_STEP = Fraction(str(WR_WEIGHT_STEP))
 #     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
 #     dòng lệnh       :  python sunviw_api.py --flip      (bật)
 #                        python sunviw_api.py --no-flip   (tắt)
-FLIP_FINAL_DEFAULT = False
+FLIP_FINAL_DEFAULT = True
 
 
 def _env_bool(name, default):

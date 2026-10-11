@@ -5,7 +5,7 @@ SUNVIW 24 LOGICS (mặc định chạy 13 logic) - API JSON  (bản Python của
 Chạy:
     pip install flask
     python sunviw_api.py                      # mặc định http://0.0.0.0:5000
-    python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx/history
+    python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx
     python sunviw_api.py --flip               # BẬT bẻ final (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
 
 Endpoint:
@@ -75,11 +75,16 @@ import urllib.request
 from fractions import Fraction
 
 # ─── CẤU HÌNH ────────────────────────────────────────────────────────────
+# Upstream MỚI: /api/tx chỉ trả 1 PHIÊN MỚI NHẤT dạng 1 object:
+#   {"ket_qua":"Tài","phien":3284075,"thoi_gian":"11-10-2026 13:50:38 UTC+7","tong":15,"xuc_xac_1":6,"xuc_xac_2":3,"xuc_xac_3":6}
+# -> tool quét 1 phiên gần nhất mỗi lần, tự tích lũy vào lịch sử (HIST_PATH) để phần WR vẫn có ván để chấm.
 UPSTREAM_URL = os.environ.get(
     "SUNVIW_UPSTREAM",
-    "https://reviewed-ssl-tradition-specialized.trycloudflare.com/api/tx/history",
+    "https://interstate-competent-shortly-cigarette.trycloudflare.com/api/tx",
 )
 UPSTREAM_TIMEOUT = 15      # giây
+HIST_PATH = os.environ.get("SUNVIW_HIST", "/tmp/sunviw_hist.json")   # lịch sử các phiên đã quét (tool tự tích lũy)
+HIST_KEEP = 300            # giữ tối đa N phiên gần nhất trong lịch sử (>= WR_WINDOW + EVAL_WINDOW là đủ)
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
@@ -464,6 +469,8 @@ def parse_history(data):
         arr = data
     elif isinstance(data, dict) and isinstance(data.get("history"), list):
         arr = data["history"]
+    elif isinstance(data, dict) and "phien" in data:          # API /api/tx: 1 object = 1 phiên mới nhất
+        arr = [data]
     else:
         arr = []
     m = {}
@@ -483,6 +490,38 @@ def parse_history(data):
                     "actual": norm_kq(r.get("ket_qua")) or actual_of(total),
                     "time": r.get("thoi_gian") or ""}
     return [m[k] for k in sorted(m)]            # cũ -> mới
+
+
+_hist_store = {}            # phien -> record (các phiên đã quét được, tool tự tích lũy vì upstream chỉ trả 1 phiên)
+_hist_loaded = False
+
+
+def hist_update(records):
+    """Gộp các phiên vừa quét vào lịch sử (nạp từ HIST_PATH lần đầu, lưu lại sau mỗi lần), trả về list cũ -> mới.
+    Chỉ gọi trong refresh() (đã có _refresh_lock)."""
+    global _hist_loaded
+    if not _hist_loaded:
+        _hist_loaded = True
+        try:
+            with open(HIST_PATH, "r", encoding="utf-8") as f:
+                for r in json.load(f):
+                    if isinstance(r, dict) and all(k in r for k in ("phien", "d1", "d2", "d3", "total", "actual")):
+                        _hist_store[r["phien"]] = r
+        except Exception:  # noqa: BLE001
+            pass
+    for r in records:
+        _hist_store[r["phien"]] = r
+    for k in sorted(_hist_store)[:-HIST_KEEP]:
+        del _hist_store[k]
+    out = [_hist_store[k] for k in sorted(_hist_store)]
+    try:
+        tmp = HIST_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+        os.replace(tmp, HIST_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def persist_load():
@@ -622,9 +661,10 @@ def _now():
 def refresh():
     """Lấy upstream; chỉ tính lại khi có phiên mới. Ném exception nếu lỗi (poller sẽ ghi lại)."""
     with _refresh_lock:
-        hist = parse_history(_fetch_json(UPSTREAM_URL))
-        if not hist:
+        recs = parse_history(_fetch_json(UPSTREAM_URL))
+        if not recs:
             raise ValueError("upstream khong co phien hop le (can phien + xuc_xac_1..3)")
+        hist = hist_update(recs)                      # upstream chỉ trả 1 phiên mới nhất -> gộp vào lịch sử tích lũy
         latest = hist[-1]["phien"]
         with _state_lock:
             same = _state["result"] is not None and _state["latest"] == latest
@@ -735,7 +775,7 @@ def main():
     ap = argparse.ArgumentParser(description="SUNVIW 24 logics (mặc định 13) - API JSON")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
-    ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API lich su (…/api/tx/history)")
+    ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API phien moi nhat (…/api/tx)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")

@@ -86,7 +86,7 @@ UPSTREAM_URL = os.environ.get(
     "SUNVIW_UPSTREAM",
     "https://interstate-competent-shortly-cigarette.trycloudflare.com/api/tx",
 )
-UPSTREAM_TIMEOUT = 15      # giây
+UPSTREAM_TIMEOUT = 9      # giây
 HIST_PATH = os.environ.get("SUNVIW_HIST", "/tmp/sunviw_hist.json")   # lịch sử các phiên đã quét (tool tự tích lũy)
 HIST_KEEP = 300            # giữ tối đa N phiên gần nhất trong lịch sử (>= WR_WINDOW + EVAL_WINDOW là đủ)
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)

@@ -7,6 +7,7 @@ Chạy:
     python sunviw_api.py                      # mặc định http://0.0.0.0:5000
     python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx
     python sunviw_api.py --flip               # BẬT bẻ final (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
+    python sunviw_api.py --no-auto-flip       # TẮT cơ chế tự đổi bẻ/theo khi sai (hoặc SUNVIW_FLIP_AUTO=0, hoặc sửa FLIP_AUTO_DEFAULT)
 
 Endpoint:
     GET /api/predict             -> JSON dự đoán (đọc từ cache, trả về ngay)
@@ -18,7 +19,9 @@ JSON /api/predict:
       "ok": true,
       "phien": 12346,            # phiên được dự đoán (n)
       "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
-      "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
+      "be_final": false,         # cơ chế ĐANG ÁP DỤNG cho ván này (true = bẻ final, false = theo final) - có thể khác mặc định khi vừa sai
+      "be_mac_dinh": false,      # cơ chế mặc định (FLIP_FINAL_DEFAULT / --flip)
+      "doi_co_che": false,       # true = ván này đang chạy cơ chế ĐỔI (ván trước sai ở cơ chế mặc định)
       "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
                                  #     trọng số: ván mới nhất cao nhất (1.00), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
@@ -36,6 +39,15 @@ JSON /api/predict:
       "final_goc": "XỈU"                                     # final trước khi bẻ (luôn là final gốc của các logic đang dùng)
       "tool_dung_sai_15_van": {"dung": 5, "tong": 9}         # đúng/sai ở WR_WINDOW ván gần nhất (tên khóa giữ nguyên cho tương thích)
       "trong_so_wr": {...}                                   # số ván xét + bảng trọng số (cũ nhất -> mới nhất) đang áp dụng
+
+🔁 TỰ ĐỔI CƠ CHẾ KHI SAI (FLIP_AUTO_DEFAULT = True):
+    Cơ chế mặc định = bẻ final (FLIP_FINAL=True) hoặc theo final (FLIP_FINAL=False).
+    - Đang chạy cơ chế MẶC ĐỊNH mà SAI 1 ván  -> ván kế tiếp tự ĐỔI sang cơ chế ngược lại
+        (mặc định bẻ -> ván sau THEO final · mặc định theo -> ván sau BẺ final)
+    - Ván ĐỔI chạy xong (đúng hay sai đều vậy) -> ván kế tiếp VỀ LẠI cơ chế mặc định
+    - Ván trước bị đứt phiên (thiếu dữ liệu) -> chạy cơ chế mặc định
+    Đúng/sai tính trên du_doan thực tế đã đưa ra của từng ván (chuoi ✅/❌ cũng theo cơ chế từng ván).
+    Cơ chế từng ván được lưu trong file persist nên không bị lệch sau khi restart.
 
 Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/L3/LA/LB - xem ghi chú ở _hex_at).
 
@@ -143,6 +155,14 @@ def _env_bool(name, default):
 
 FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
 
+# ─── TỰ ĐỔI CƠ CHẾ KHI SAI 1 VÁN ─────────────────────────────────────────
+#   FLIP_AUTO_DEFAULT = True  : đang ở cơ chế mặc định (bẻ hoặc theo final) mà sai 1 ván -> ván sau đổi sang cơ chế ngược lại,
+#                               chạy xong 1 ván đổi thì về lại mặc định.
+#   FLIP_AUTO_DEFAULT = False : tắt, luôn chạy đúng cơ chế mặc định (như bản cũ)
+#   Đổi không cần sửa file:  SUNVIW_FLIP_AUTO=1|0  hoặc cờ  --no-auto-flip
+FLIP_AUTO_DEFAULT = True
+FLIP_AUTO = _env_bool("SUNVIW_FLIP_AUTO", FLIP_AUTO_DEFAULT)
+
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
 EVAL_WINDOW = 100           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
 ICON_DUNG = "✅"            # icon hiện cho ván ĐOÁN ĐÚNG trong chuỗi "chuoi" của /api/predict
@@ -150,7 +170,7 @@ ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
-PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WINDOW đủ dùng)
+PERSIST_KEEP = max(EVAL_WINDOW, WR_WINDOW) + 20   # giữ tối đa N graded entry trong file (>= EVAL_WINDOW để cơ chế bẻ từng ván không bị tính lại)
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
@@ -266,9 +286,47 @@ def flip_pred(p):
     return XIU if p == TAI else TAI if p == XIU else p
 
 
-def out_final(final):
-    """Final đã đưa ra API (sau bẻ nếu bật)."""
-    return flip_pred(final) if FLIP_FINAL else final
+def out_final(final, be=None):
+    """Final đã đưa ra API: `be` = True -> bẻ (đảo) · False -> theo final · None -> dùng cơ chế mặc định FLIP_FINAL."""
+    be = FLIP_FINAL if be is None else be
+    return flip_pred(final) if be else final
+
+
+def flip_cfg():
+    """Dấu vân tay cấu hình bẻ (mặc định + tự đổi): đổi cấu hình thì `be` đã lưu của các ván cũ bị bỏ và tính lại."""
+    return f"{int(FLIP_FINAL)}{int(FLIP_AUTO)}"
+
+
+def next_flip(prev, session):
+    """Cơ chế áp dụng cho ván `session`: True = BẺ final (đảo) · False = THEO final.
+    `prev` = graded entry của ván liền trước (cần có be / pred / actual), None nếu chưa có.
+      - tắt FLIP_AUTO, chưa có ván trước, hoặc ván trước không liền phiên -> mặc định
+      - ván trước là ván ĐỔI (be khác mặc định)                        -> xong 1 ván đổi, VỀ mặc định
+      - ván trước chạy mặc định mà SAI                                 -> ĐỔI sang cơ chế ngược lại
+      - còn lại (ván trước chạy mặc định và ĐÚNG)                      -> giữ mặc định"""
+    d = FLIP_FINAL
+    if not FLIP_AUTO or prev is None or prev["session"] != session - 1:
+        return d
+    if prev["be"] != d:
+        return d
+    return (not d) if prev["pred"] != prev["actual"] else d
+
+
+def assign_flip(graded, kept=None):
+    """Gán cơ chế từng ván: g["be"] (True = bẻ), g["pred"] (du_doan thực tế đã đưa ra), g["cfg"].
+    `kept` = {session: entry đã lưu} -> ván đã có `be` (cùng cấu hình) thì GIỮ NGUYÊN, không tính lại
+    (tránh lệch pha khi lịch sử trượt hoặc sau restart). Ván mới -> tính từ ván liền trước theo next_flip()."""
+    cfg = flip_cfg()
+    prev = None
+    for g in graded:
+        k = kept.get(g["session"]) if kept else None
+        if k is not None:
+            g["be"], g["cfg"] = k["be"], cfg
+        elif "be" not in g or g.get("cfg") != cfg:
+            g["be"], g["cfg"] = next_flip(prev, g["session"]), cfg
+        g["pred"] = out_final(g["final"], g["be"])
+        prev = g
+    return graded
 
 
 def vote_result(preds):
@@ -577,7 +635,10 @@ def rebuild_graded(hist, saved_graded=None):
         fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
                       "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"],
                       "sig": LOGIC_SIG})
-    return merge_graded(seed, fresh)
+    merged = merge_graded(seed, fresh)
+    cfg = flip_cfg()
+    kept = {g["session"]: g for g in seed if "be" in g and g.get("cfg") == cfg}   # cơ chế đã lưu của các ván cũ (cùng cấu hình)
+    return assign_flip(merged, kept)
 
 
 def build_result(hist):
@@ -588,11 +649,14 @@ def build_result(hist):
     persist_save(graded)
     votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
     dec = wr_decision(votes, graded)
+    be_next = next_flip(graded[-1] if graded else None, latest["phien"] + 1)   # cơ chế của ván sắp dự đoán
     base = {
         "ok": True,
         "phien": latest["phien"] + 1,
-        "du_doan": out_final(dec["final"]),
-        "be_final": FLIP_FINAL,
+        "du_doan": out_final(dec["final"], be_next),
+        "be_final": be_next,
+        "be_mac_dinh": FLIP_FINAL,
+        "doi_co_che": be_next != FLIP_FINAL,
         "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
         "phien_truoc": latest["phien"],
         "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
@@ -630,9 +694,9 @@ def build_result(hist):
 
 
 def _recent_accuracy(graded, size, with_chuoi=False):
-    """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ nếu đang bật) ở `size` ván gần nhất."""
+    """Đúng/sai của du_doan ĐÃ ĐƯA RA API (theo cơ chế bẻ/theo của TỪNG ván) ở `size` ván gần nhất."""
     win = graded[-size:]
-    oks = [out_final(g["final"]) == g["actual"] for g in win]
+    oks = [g["pred"] == g["actual"] for g in win]
     out = {"dung": sum(oks), "tong": len(win)}
     if with_chuoi:
         out = {"dung": out["dung"], "sai": len(win) - out["dung"], "tong": len(win),
@@ -754,7 +818,7 @@ def health():
     with _state_lock:
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
-             poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
+             poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL, tu_doi_co_che=FLIP_AUTO,
              wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR)       # trọng số cũ nhất -> mới nhất
     return _json(s)
 
@@ -770,7 +834,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, FLIP_AUTO
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -783,16 +847,19 @@ def main():
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
     g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của các logic đang dùng)")
+    ap.add_argument("--no-auto-flip", action="store_true", help="TẮT tự đổi bẻ/theo final khi sai 1 ván")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
     if a.flip:
         FLIP_FINAL = True
     elif a.no_flip:
         FLIP_FINAL = False
+    if a.no_auto_flip:
+        FLIP_AUTO = False
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
-    print(f"be final    ->  {'BAT' if FLIP_FINAL else 'TAT'}")
+    print(f"be final    ->  mac dinh {'BE' if FLIP_FINAL else 'THEO'} · tu doi co che khi sai: {'BAT' if FLIP_AUTO else 'TAT'}")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in WR_WEIGHTS_FULL))
     app.run(host=a.host, port=a.port, threaded=True)

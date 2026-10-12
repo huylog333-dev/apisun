@@ -9,9 +9,12 @@ Chạy:
     python sunviw_api.py --flip               # BẬT bẻ final (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
 
 Endpoint:
-    GET /api/predict             -> JSON dự đoán (đọc từ cache, trả về ngay)
-    GET /api/predict?detail=1    -> thêm chi_tiet: vote từng logic + WR từng logic
-    GET /health                  -> trạng thái nền (lần quét gần nhất, lỗi nếu có)
+    GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
+    GET /api/predictsun?detail=1 -> thêm chi_tiet: vote từng logic + WR từng logic
+    GET /api/predictlc79         -> [LC79] JSON dự đoán, config RIÊNG (xem "CONFIG LC79"); cũng có ?detail=1
+    ...?hist=N                   -> (cả 2 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
+    GET /api/html                -> panel HTML theo dõi cả 2 game, đổi qua lại, chọn số ván lịch sử
+    GET /health                  -> trạng thái nền của cả 2 game
 
 JSON /api/predict:
     {
@@ -151,6 +154,31 @@ ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
 PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WINDOW đủ dùng)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ⚙  CONFIG LC79 (GAME 2)  —  RIÊNG HOÀN TOÀN, KHÔNG ẢNH HƯỞNG CONFIG SUN Ở TRÊN  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Upstream trả ~100 phiên gần nhất (phiên MỚI NHẤT ở đầu list, càng xuống càng cũ).
+#   WR của LC xét ĐÚNG LC_WR_WINDOW ván gần nhất lấy thẳng từ API (vd 15 -> đúng 15 ván mới nhất của API).
+#   Đúng/sai: dự đoán phiên +1 (kèm xúc xắc phiên gần nhất) -> LƯU dự đoán -> quét API mỗi LC_POLL_SEC giây
+#   đến khi API trả kết quả phiên đó -> so đúng/sai -> lặp lại với phiên +1 kế tiếp.
+LC_UPSTREAM_URL = os.environ.get(
+    "LC79_UPSTREAM",
+    "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
+)
+LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
+LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
+LC_WR_DECAY = 0.75         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
+LC_WR_FLOOR = 0.95         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
+LC_FLIP_FINAL_DEFAULT = True                       # bẻ final của LC (riêng, không liên quan FLIP_FINAL của Sun); env LC79_FLIP=1|0
+LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
+LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ
+LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
+
+# ─── PANEL /api/html ─────────────────────────────────────────────────────
+PANEL_DEFAULT_SHOW = 30    # số ván lịch sử panel hiện mặc định (đổi trực tiếp trên panel, trình duyệt nhớ lại)
+HIST_MAX = 300             # trần số ván lịch sử cho ?hist=N và ô nhập trên panel
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
@@ -411,24 +439,28 @@ def compute_all_full(session, d1, d2, d3):
 
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
-def wr_weights(n):
+def wr_weights(n, decay=None, floor=None):
     """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối khi so với 50%).
     trọng số(tuổi a) = WR_FLOOR + (1 - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= 1.00).
     Vd n=11, DECAY=0.75, FLOOR=0.35 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00]."""
-    return [_W_FLOOR + (1 - _W_FLOOR) * _W_DECAY ** (n - 1 - k) for k in range(n)]
+    decay = _W_DECAY if decay is None else decay      # None -> config Sun; LC truyền config riêng
+    floor = _W_FLOOR if floor is None else floor
+    return [floor + (1 - floor) * decay ** (n - 1 - k) for k in range(n)]
 
 
-def wr_decision(votes, graded):
+def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=None):
     """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100).
     CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván mới nhất = 1.00, ván cũ giảm theo hàm mũ nhưng không thấp hơn
     WR_FLOOR (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
     all_vote = vote_result(votes)
-    win = graded[-WR_WINDOW:]                         # cũ -> mới
+    window = WR_WINDOW if window is None else window        # None -> config Sun; LC truyền config riêng
+    min_games = WR_MIN_GAMES if min_games is None else min_games
+    win = graded[-window:]                            # cũ -> mới
     n = len(win)
-    if n < WR_MIN_GAMES:
+    if n < min_games:
         return {"mode": "ALL", "n": n, "final": all_vote, "wins": [], "low": [], "high": [],
                 "gT": 0, "gX": 0, "tie": False, "avg": None, "wsum": 0.0, "weights": []}
-    weights = wr_weights(n)
+    weights = wr_weights(n, decay, floor)
     wsum = sum(weights)                               # tổng trọng số (mẫu số của WR)
     # wins[i] = tổng trọng số các ván logic i đoán đúng (Fraction -> so với 50% chính xác, không sai số float)
     wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0))
@@ -626,7 +658,9 @@ def build_result(hist):
         "final_goc": dec["final"],
         "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
     }
-    return {"base": base, "detail": detail}
+    hist_rows = [{"phien": g["session"], "du_doan": out_final(g["final"]), "ket_qua": g["actual"], "tong": g.get("total"),
+                  "dung": out_final(g["final"]) == g["actual"]} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
+    return {"base": base, "detail": detail, "hist": hist_rows}
 
 
 def _recent_accuracy(graded, size, with_chuoi=False):
@@ -700,6 +734,261 @@ def ensure_poller():
         return
     _poller_started = True
     threading.Thread(target=_poll_loop, daemon=True, name="sunviw-poller").start()
+    threading.Thread(target=_lc_poll_loop, daemon=True, name="lc79-poller").start()
+
+
+# ─── LC79 (GAME 2): QUÉT API HISTORY · LƯU DỰ ĐOÁN · CHẤM ĐÚNG/SAI ───────
+# Dùng CHUNG bộ logic (compute_all) với Sun, nhưng config / WR / lịch sử đúng-sai hoàn toàn RIÊNG (xem CONFIG LC79).
+_LC_DECAY, _LC_FLOOR = Fraction(str(LC_WR_DECAY)), Fraction(str(LC_WR_FLOOR))
+_lc_preds = {}              # phien -> dự đoán đã LƯU (dung=None: đang chờ API trả kết quả phiên đó)
+_lc_loaded = False
+_lc_state = {"target": None, "base": None, "detail": None, "error": None, "updated": None, "checked": None, "polls": 0}
+_lc_lock = threading.Lock()            # bảo vệ _lc_state + _lc_preds (giữ ngắn)
+_lc_refresh_lock = threading.Lock()    # mỗi lúc chỉ 1 lượt quét
+
+
+def lc_out(final):
+    """Final LC đã đưa ra API (sau bẻ nếu LC_FLIP_FINAL bật)."""
+    return flip_pred(final) if LC_FLIP_FINAL else final
+
+
+def parse_lc(data):
+    """API LC79: {"list":[{"id":phiên,"resultTruyenThong":"TAI|XIU","dices":[a,b,c],"point":n}, ...]}
+    Phiên MỚI NHẤT ở ĐẦU list, càng xuống càng cũ. Trả list cũ -> mới (sắp theo id nên không phụ thuộc thứ tự upstream)."""
+    arr = data.get("list") if isinstance(data, dict) else data
+    m = {}
+    for r in arr if isinstance(arr, list) else []:
+        if not isinstance(r, dict):
+            continue
+        phien, dices = _parse_int(r.get("id")), r.get("dices")
+        if phien is None or not isinstance(dices, list) or len(dices) != 3:
+            continue
+        d = [_parse_int(x) for x in dices]
+        if None in d or any(x < 1 or x > 6 for x in d):
+            continue
+        total = sum(d)
+        m[phien] = {"phien": phien, "d1": d[0], "d2": d[1], "d3": d[2], "total": total,
+                    "actual": norm_kq(r.get("resultTruyenThong")) or actual_of(total)}
+    return [m[k] for k in sorted(m)]
+
+
+def lc_graded(hist, n):
+    """ĐÚNG n ván gần nhất (cũ -> mới) lấy thẳng từ API: vote của từng logic cho phiên k (dùng xúc xắc phiên k-1)
+    so với kết quả thật phiên k. Đây là dữ liệu để tính WR của LC."""
+    out = []
+    for i in range(len(hist) - 1, 0, -1):
+        p, c = hist[i - 1], hist[i]
+        if c["phien"] != p["phien"] + 1:
+            continue
+        out.append({"session": c["phien"], "actual": c["actual"],
+                    "votes": compute_all(c["phien"], p["d1"], p["d2"], p["d3"])})
+        if len(out) >= n:
+            break
+    return out[::-1]
+
+
+def _lc_load():
+    """Nạp dự đoán đã lưu (lần quét đầu tiên). Gọi trong _lc_lock."""
+    global _lc_loaded
+    if _lc_loaded:
+        return
+    _lc_loaded = True
+    try:
+        with open(LC_PRED_PATH, "r", encoding="utf-8") as f:
+            for r in json.load(f):
+                if isinstance(r, dict) and "phien" in r and r.get("sig") == LOGIC_SIG:
+                    _lc_preds[r["phien"]] = r
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _lc_save():
+    """Ghi dự đoán ra file (atomic). Gọi trong _lc_lock."""
+    try:
+        rows = [_lc_preds[k] for k in sorted(_lc_preds)][-LC_PRED_KEEP:]
+        tmp = LC_PRED_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        os.replace(tmp, LC_PRED_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def lc_refresh():
+    """Quét API LC79: (1) chấm dự đoán đang chờ nếu API đã trả kết quả phiên đó,
+    (2) có phiên mới -> dự đoán phiên +1 (kèm xúc xắc phiên gần nhất) và LƯU lại. Ném exception nếu lỗi."""
+    with _lc_refresh_lock:
+        hist = parse_lc(_fetch_json(LC_UPSTREAM_URL))
+        if not hist:
+            raise ValueError("upstream LC79 khong co phien hop le (can list[].id + dices)")
+        by_p = {r["phien"]: r for r in hist}
+        latest = hist[-1]
+        target = latest["phien"] + 1
+        changed = False
+        with _lc_lock:
+            _lc_load()
+            for ph in list(_lc_preds):
+                p = _lc_preds[ph]
+                if p.get("dung") is not None or ph > latest["phien"]:
+                    continue
+                r = by_p.get(ph)
+                if r is None:                        # phiên đã trôi khỏi API mà chưa kịp chấm -> bỏ
+                    del _lc_preds[ph]
+                else:
+                    p.update(ket_qua=r["actual"], tong=r["total"], xuc_xac=[r["d1"], r["d2"], r["d3"]],
+                             dung=(p["du_doan"] == r["actual"]), cham=_now())
+                changed = True
+            need = _lc_state["target"] != target or _lc_state["base"] is None
+        if need:
+            votes = compute_all(target, latest["d1"], latest["d2"], latest["d3"])
+            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES)
+            tai = sum(1 for v in votes if v == TAI)
+            base = {"ok": True, "game": "lc79", "phien": target, "du_doan": lc_out(dec["final"]), "be_final": LC_FLIP_FINAL,
+                    "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
+                    "phien_truoc": latest["phien"], "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
+                    "tong": latest["total"], "ket_qua_truoc": latest["actual"],
+                    "so_van_wr": dec["n"], "wr_window": LC_WR_WINDOW}
+            detail = {
+                "vote": {"TÀI": tai, "XỈU": len(votes) - tai}, "so_logic": len(votes),
+                "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
+                "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]}, "hoa_dung_da_so": dec["tie"],
+                "final_goc": dec["final"],
+                "trong_so_wr": {"so_van": dec["n"], "trong_so": dec["weights"],
+                                "he_so_giam": LC_WR_DECAY, "san_trong_so": LC_WR_FLOOR},
+                "logic": [{"ten": LOGIC_NAMES[i], "du_doan": votes[i],
+                           "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
+                           "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
+                          for i in range(len(votes))],
+            }
+            with _lc_lock:
+                if target not in _lc_preds:          # LƯU dự đoán đúng 1 lần cho phiên này (không tính lại dù config đổi)
+                    _lc_preds[target] = {"phien": target, "du_doan": base["du_doan"], "final_goc": dec["final"],
+                                         "be_final": LC_FLIP_FINAL, "so_van_wr": dec["n"], "dung": None,
+                                         "sig": LOGIC_SIG, "luc": _now()}
+                    changed = True
+                base["du_doan"] = _lc_preds[target]["du_doan"]       # luôn theo dự đoán ĐÃ LƯU
+                base["be_final"] = _lc_preds[target]["be_final"]
+                _lc_state.update(target=target, base=base, detail=detail, updated=_now())
+        with _lc_lock:
+            for k in sorted(_lc_preds)[:-LC_PRED_KEEP]:
+                del _lc_preds[k]
+                changed = True
+            if changed:
+                _lc_save()
+            _lc_state.update(error=None, checked=_now())
+
+
+def _lc_poll_loop():
+    while True:
+        try:
+            lc_refresh()
+        except Exception as e:  # noqa: BLE001 - giữ poller sống dù upstream lỗi
+            with _lc_lock:
+                _lc_state["error"] = f"{type(e).__name__}: {e}"
+                _lc_state["checked"] = _now()
+        with _lc_lock:
+            _lc_state["polls"] += 1
+        time.sleep(LC_POLL_SEC)
+
+
+def lc_history():
+    """Các ván LC đã chấm đúng/sai, mới -> cũ."""
+    with _lc_lock:
+        rows = [p for _, p in sorted(_lc_preds.items(), reverse=True) if p.get("dung") is not None]
+    return [{"phien": p["phien"], "du_doan": p["du_doan"], "ket_qua": p["ket_qua"], "tong": p["tong"], "dung": p["dung"]}
+            for p in rows]
+
+
+def _acc_rows(rows, n=10):
+    w = rows[:n]
+    dung = sum(1 for r in w if r["dung"])
+    return {"dung": dung, "sai": len(w) - dung, "tong": len(w),
+            "chuoi": "".join(ICON_DUNG if r["dung"] else ICON_SAI for r in w)}      # mới -> cũ
+
+
+# ─── PANEL HTML (/api/html) ──────────────────────────────────────────────
+PANEL_HTML = r"""<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SUNVIW · Panel theo dõi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0f1424;--pn:#171d33;--ln:#252d4a;--tx:#e8ebf5;--mu:#8a93b2;--tai:#f5b942;--xiu:#5cc8ff;--ok:#3ddc97;--no:#ff6b81}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:14px 14px 40px;background:var(--bg);color:var(--tx);font:15px/1.45 "Be Vietnam Pro",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+h1{font-size:17px;margin:0;font-weight:800}
+#st{font-size:12px;color:var(--mu)}
+#st i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px}
+#st.bad i{background:var(--no)}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.tab{background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:12px;padding:10px 14px;font:inherit;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.tab.on{border-color:var(--mu);box-shadow:inset 0 -3px 0 var(--tx)}
+.tab small{color:var(--mu)}
+.tai{color:var(--tai)}.xiu{color:var(--xiu)}.okc{color:var(--ok)}.noc{color:var(--no)}.mu{color:var(--mu);font-size:13px}
+.hero{background:var(--pn);border:1px solid var(--ln);border-radius:16px;padding:18px;display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center}
+.big{font-size:clamp(52px,16vw,88px);font-weight:800;line-height:1;margin:4px 0}
+.prev{text-align:right}
+.dice{display:inline-flex;gap:6px;margin:8px 0}
+.dice i{width:30px;height:30px;border-radius:7px;display:block}
+.stats{display:flex;flex-wrap:wrap;gap:6px 20px;margin:14px 2px;align-items:baseline}
+.stats b{font-size:22px}
+.cfg{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 2px 12px}
+.cfg input{width:76px;background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:inherit}
+.cfg button{background:none;border:1px solid var(--ln);color:var(--mu);border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer}
+.cfg button:hover{color:var(--tx)}
+.strip{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px}
+.chip{width:20px;height:20px;border-radius:5px;font-size:12px;line-height:20px;text-align:center;color:#0f1424;font-weight:800}
+.chip.ok{background:var(--ok)}.chip.no{background:var(--no)}
+table{width:100%;border-collapse:collapse}
+th{font-weight:600;color:var(--mu);font-size:12px;text-align:left;padding:6px 8px}
+td{padding:7px 8px;border-top:1px solid var(--ln)}
+.r{text-align:right}
+@media(max-width:480px){.hero{grid-template-columns:1fr}.prev{text-align:left}}
+</style></head><body>
+<header><h1>SUNVIW · Tài Xỉu</h1><div id="st"></div></header>
+<nav class="tabs" id="tabs"></nav>
+<main id="main"></main>
+<div class="cfg">
+  <label for="n" class="mu">Số ván lịch sử hiển thị</label>
+  <input id="n" type="number" min="1" max="__MAX__">
+  <button data-n="10">10</button><button data-n="20">20</button><button data-n="50">50</button><button data-n="100">100</button>
+</div>
+<div id="hist"></div>
+<script>
+const G={sun:{n:'Sun',u:'/api/predictsun'},lc:{n:'LC79',u:'/api/predictlc79'}};
+let cur=localStorage.getItem('g') in G?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__;
+const D={},$=s=>document.querySelector(s),cl=v=>v==='TÀI'?'tai':v==='XỈU'?'xiu':'';
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const P={1:[[50,50]],2:[[26,26],[74,74]],3:[[26,26],[50,50],[74,74]],4:[[26,26],[74,26],[26,74],[74,74]],5:[[26,26],[74,26],[50,50],[26,74],[74,74]],6:[[26,26],[74,26],[26,50],[74,50],[26,74],[74,74]]};
+const dice=a=>`<span class="dice">${a.map(n=>`<i style="background:${P[n].map(([x,y])=>`radial-gradient(circle at ${x}% ${y}%,#1a1f36 0 3.2px,transparent 3.8px)`).join(',')},#f2efe6"></i>`).join('')}</span>`;
+const acc=d=>{const h=d.lich_su||[],k=h.filter(x=>x.dung).length;return{k,t:h.length,p:h.length?Math.round(k*100/h.length):null}};
+function render(){
+  $('#tabs').innerHTML=Object.entries(G).map(([k,g])=>{const d=D[k]||{},a=acc(d);
+    return `<button class="tab${k===cur?' on':''}" data-g="${k}"><span>${g.n} <b class="${cl(d.du_doan)}">${d.ok?d.du_doan:'…'}</b></span><small>${a.p===null?'–':a.p+'%'}</small></button>`}).join('');
+  const d=D[cur]||{},a=acc(d);
+  if(!d.ok){$('#main').innerHTML=`<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;$('#hist').innerHTML='';return}
+  $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''} · xét ${d.so_van_wr} ván</div></div><div class="prev"><div class="mu">Phiên ${d.phien_truoc}</div>${dice(d.xuc_xac)}<div><b>${d.tong}</b> <span class="${cl(d.ket_qua_truoc)}">${d.ket_qua_truoc}</span></div></div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
+  const h=d.lich_su||[];
+  $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua} <span class="mu">(${x.tong})</span></td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ API trả kết quả phiên đó.</p>`;
+  $('#st').className=Object.values(D).some(x=>x&&(!x.ok||x.stale))?'bad':'';
+  $('#st').innerHTML=`<i></i>${esc(d.cap_nhat||'')}`;
+}
+$('#tabs').onclick=e=>{const b=e.target.closest('[data-g]');if(b){cur=b.dataset.g;localStorage.setItem('g',cur);render()}};
+$('#n').value=N;
+function setN(v){N=Math.max(1,Math.min(+v||1,__MAX__));$('#n').value=N;localStorage.setItem('n',N);load()}
+$('#n').onchange=e=>setN(e.target.value);
+document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>setN(b.dataset.n));
+async function load(){
+  await Promise.all(Object.entries(G).map(async([k,g])=>{
+    try{const r=await fetch(`${g.u}?hist=${N}`,{cache:'no-store'});D[k]=await r.json()}
+    catch(e){D[k]={ok:false,loi:'Mất kết nối: '+e}}}));
+  render();
+}
+load();setInterval(load,3000);
+</script></body></html>
+"""
 
 
 # ─── FLASK ────────────────────────────────────────────────────────────────
@@ -723,7 +1012,53 @@ def _cors(resp):
     return resp
 
 
-@app.route("/api/predict")
+def _hist_n():
+    """?hist=N -> trả thêm lich_su (N ván đúng/sai gần nhất, mới -> cũ). 0 / không truyền = không trả."""
+    try:
+        return max(0, min(int(request.args.get("hist", 0)), HIST_MAX))
+    except ValueError:
+        return 0
+
+
+@app.route("/api/predictlc79")
+@app.route("/api/prdictlc79")                     # giữ cả tên gõ tắt cho khỏi lệch
+def api_predict_lc79():
+    ensure_poller()
+    with _lc_lock:
+        have = _lc_state["base"] is not None
+    if not have:                                  # request đầu tiên, poller chưa kịp quét xong
+        try:
+            lc_refresh()
+        except Exception as e:  # noqa: BLE001
+            with _lc_lock:
+                _lc_state["error"] = f"{type(e).__name__}: {e}"
+    with _lc_lock:
+        base, detail, err, upd = _lc_state["base"], _lc_state["detail"], _lc_state["error"], _lc_state["updated"]
+    if base is None:
+        return _json({"ok": False, "game": "lc79", "loi": err or "chua co du lieu"}, 503)
+    rows = lc_history()
+    out = dict(base)
+    out["tool_dung_sai_10_van"] = _acc_rows(rows, 10)
+    out["stale"] = bool(err)
+    if err:
+        out["loi"] = err
+    out["cap_nhat"] = upd
+    n = _hist_n()
+    if n:
+        out["lich_su"] = rows[:n]
+    if request.args.get("detail") in ("1", "true", "yes"):
+        out["chi_tiet"] = detail
+    return _json(out)
+
+
+@app.route("/api/html")
+def api_html():
+    page = PANEL_HTML.replace("__SHOW__", str(PANEL_DEFAULT_SHOW)).replace("__MAX__", str(HIST_MAX))
+    return Response(page, content_type="text/html; charset=utf-8")
+
+
+@app.route("/api/predictsun")
+@app.route("/api/predict")                        # tên cũ, giữ để tool đang chạy không bị hỏng
 def api_predict():
     ensure_poller()
     with _state_lock:
@@ -739,10 +1074,14 @@ def api_predict():
     if res is None:
         return _json({"ok": False, "loi": err or "chua co du lieu"}, 503)
     out = dict(res["base"])
+    out["game"] = "sun"
     out["stale"] = bool(err)
     if err:
         out["loi"] = err
     out["cap_nhat"] = upd
+    n = _hist_n()
+    if n:
+        out["lich_su"] = res["hist"][:n]
     if request.args.get("detail") in ("1", "true", "yes"):
         out["chi_tiet"] = res["detail"]
     return _json(out)
@@ -756,12 +1095,18 @@ def health():
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
              wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR)       # trọng số cũ nhất -> mới nhất
+    with _lc_lock:
+        lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "polls")}
+        lc["latest"] = (_lc_state["base"] or {}).get("phien_truoc")
+    lc.update(ok=lc["error"] is None and lc["latest"] is not None, poll_sec=LC_POLL_SEC, wr_window=LC_WR_WINDOW,
+              be_final=LC_FLIP_FINAL, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR)
+    s["lc79"] = lc
     return _json(s)
 
 
 @app.route("/")
 def index():
-    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predict", "/api/predict?detail=1", "/health"]})
+    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/html", "/health"]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.
@@ -770,7 +1115,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -780,11 +1125,14 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API phien moi nhat (…/api/tx)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
+    ap.add_argument("--lc-upstream", default=LC_UPSTREAM_URL, help="URL API history LC79")
+    ap.add_argument("--lc-poll", type=float, default=LC_POLL_SEC, help="chu ky quet API LC79 (giay)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
     g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của các logic đang dùng)")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
+    LC_UPSTREAM_URL, LC_POLL_SEC = a.lc_upstream, a.lc_poll
     if a.flip:
         FLIP_FINAL = True
     elif a.no_flip:
@@ -792,6 +1140,8 @@ def main():
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
+    print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html")
+    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · be final {'BAT' if LC_FLIP_FINAL else 'TAT'}")
     print(f"be final    ->  {'BAT' if FLIP_FINAL else 'TAT'}")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in WR_WEIGHTS_FULL))

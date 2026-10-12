@@ -20,7 +20,7 @@ JSON /api/predict:
       "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
       "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
-                                 #     trọng số: ván cũ nhất cao nhất, ván càng mới giảm 0.25 (xem "CONFIG WR CÓ TRỌNG SỐ")
+                                 #     trọng số: ván mới nhất cao nhất (1.00), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
       "tong": 12,                # tổng xúc xắc của phien_truoc
@@ -89,31 +89,34 @@ POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS c
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ⚙  CONFIG WR CÓ TRỌNG SỐ  —  CHỈNH Ở ĐÂY
+#  ⚙  CONFIG WR CÓ TRỌNG SỐ (KIỂU "PHẢN ỨNG NHANH + SÀN NHỚ CẦU CŨ")  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
-#   Ván CŨ NHẤT trong cửa sổ có trọng số CAO NHẤT, ván càng mới trọng số càng giảm WR_WEIGHT_STEP.
-#   Ván MỚI NHẤT luôn có trọng số = WR_WEIGHT_NEWEST (1.00).
+#   Ván MỚI NHẤT có trọng số = 1.00 (cao nhất). Ván càng cũ trọng số càng giảm theo hàm mũ NHƯNG không bao giờ
+#   thấp hơn WR_FLOOR  ->  cầu mới đổi thì phản ứng nhanh (các ván mới chiếm phần lớn quyền), còn cầu cũ vẫn giữ
+#   một phần quyền (không bị quên hẳn).
 #
-#   WR_WINDOW       = số ván gần nhất được xét để tính WR
-#   WR_WEIGHT_NEWEST= trọng số của ván mới nhất (gấp mấy lần)
-#   WR_WEIGHT_STEP  = mỗi ván cũ hơn được CỘNG thêm bấy nhiêu lần  (đặt 0 -> tắt trọng số, mọi ván bằng nhau)
+#       trọng số(ván tuổi a) = WR_FLOOR + (1 - WR_FLOOR) * WR_DECAY ** a        (a = 0 là ván mới nhất)
 #
-#   Hiện tại: xét 9 ván gần nhất, trọng số (cũ nhất -> mới nhất):
-#       3.00 · 2.75 · 2.50 · 2.25 · 2.00 · 1.75 · 1.50 · 1.25 · 1.00
-#   (ví dụ nếu xét 7 ván thì là: 2.50 · 2.25 · 2.00 · 1.75 · 1.50 · 1.25 · 1.00)
-#   Nếu chưa đủ WR_WINDOW ván đã chấm thì chỉ lấy số ván đang có, ván mới nhất vẫn = 1.00.
-#   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số của các ván đang xét.
-#   Chỉ phần TÍNH WR đổi sang có trọng số; cách chia nhóm giữ nguyên như cũ: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO,
-#   nhóm THẤP đông hơn thì theo nhóm THẤP, còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
+#   WR_WINDOW = số ván gần nhất được xét để tính WR
+#   WR_DECAY  = tốc độ quên (0.75 = mỗi ván cũ hơn, phần "thưởng mới" giảm còn 75%). Nhỏ hơn -> phản ứng nhanh hơn.
+#   WR_FLOOR  = sàn trọng số của ván cũ (0.35 = ván cũ nhất vẫn nặng bằng 35% ván mới nhất). Lớn hơn -> nhớ cầu cũ nhiều hơn.
+#               (đặt WR_FLOOR = 1 -> mọi ván bằng nhau · đặt WR_FLOOR = 0 -> quên cầu cũ rất nhanh)
+#
+#   Với WINDOW=11 / DECAY=0.75 / FLOOR=0.35, trọng số (cũ nhất -> mới nhất):
+#       0.39 · 0.40 · 0.42 · 0.44 · 0.47 · 0.50 · 0.56 · 0.62 · 0.72 · 0.84 · 1.00
+#   -> 3 ván mới nhất nắm ~40% quyền quyết định, 8 ván còn lại nắm ~60% (cũ nhất vẫn còn ~39% sức của ván mới nhất).
+#   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số các ván đang xét.
+#   Cách chia nhóm giữ nguyên: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO, nhóm THẤP đông hơn thì theo nhóm THẤP,
+#   còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 11             # số ván gần nhất dùng để tính WR
-WR_WEIGHT_NEWEST = 1.15    # trọng số ván mới nhất (x1.00)
-WR_WEIGHT_STEP = 0.30      # mỗi ván cũ hơn được cộng thêm 0.25 lần
-# Bảng trọng số đầy đủ (cũ nhất -> mới nhất), tự tính từ 3 biến trên - chỉ để hiển thị ở /health và khi khởi động
-WR_WEIGHTS_FULL = [round(WR_WEIGHT_NEWEST + WR_WEIGHT_STEP * (WR_WINDOW - 1 - k), 4) for k in range(WR_WINDOW)]
-WR_WEIGHT_OLDEST = WR_WEIGHTS_FULL[0] if WR_WEIGHTS_FULL else WR_WEIGHT_NEWEST
-# dạng Fraction để cộng/so sánh chính xác (dùng trong wr_weights)
-_W_NEWEST = Fraction(str(WR_WEIGHT_NEWEST))
-_W_STEP = Fraction(str(WR_WEIGHT_STEP))
+WR_DECAY = 0.75            # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
+WR_FLOOR = 0.35            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
+WR_WEIGHT_NEWEST = 1.0     # trọng số ván mới nhất (giữ cố định 1.00, chỉ để hiển thị)
+# dạng Fraction để tính/so sánh chính xác (dùng trong wr_weights)
+_W_DECAY = Fraction(str(WR_DECAY))
+_W_FLOOR = Fraction(str(WR_FLOOR))
+# Bảng trọng số đầy đủ (cũ nhất -> mới nhất) - chỉ để hiển thị ở /health và khi khởi động
+WR_WEIGHTS_FULL = [round(float(_W_FLOOR + (1 - _W_FLOOR) * _W_DECAY ** (WR_WINDOW - 1 - k)), 4) for k in range(WR_WINDOW)]
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG BẺ FINAL  (bật / tắt)  —  CHỈNH Ở ĐÂY
@@ -409,17 +412,16 @@ def compute_all_full(session, d1, d2, d3):
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
 def wr_weights(n):
-    """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối, giống file HTML
-    tính bằng đơn vị 0.25 toàn số nguyên -> so với 50% không dính sai số số thực).
-    Ván mới nhất = WR_WEIGHT_NEWEST, mỗi ván cũ hơn cộng thêm WR_WEIGHT_STEP.
-    Vd n=7, NEWEST=1.00, STEP=0.25 -> [2.50, 2.25, 2.00, 1.75, 1.50, 1.25, 1.00]."""
-    return [_W_NEWEST + _W_STEP * (n - 1 - k) for k in range(n)]
+    """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối khi so với 50%).
+    trọng số(tuổi a) = WR_FLOOR + (1 - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= 1.00).
+    Vd n=11, DECAY=0.75, FLOOR=0.35 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00]."""
+    return [_W_FLOOR + (1 - _W_FLOOR) * _W_DECAY ** (n - 1 - k) for k in range(n)]
 
 
 def wr_decision(votes, graded):
     """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100).
-    CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván cũ nhất trong cửa sổ nặng nhất, ván mới nhất = 1.00, mỗi ván cũ hơn
-    +WR_WEIGHT_STEP (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
+    CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván mới nhất = 1.00, ván cũ giảm theo hàm mũ nhưng không thấp hơn
+    WR_FLOOR (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
     all_vote = vote_result(votes)
     win = graded[-WR_WINDOW:]                         # cũ -> mới
     n = len(win)
@@ -612,7 +614,8 @@ def build_result(hist):
             "so_van": dec["n"],
             "trong_so": dec["weights"],                           # cũ nhất -> mới nhất
             "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số ván mới nhất (x1.00)
-            "buoc_giam_moi_van_moi": WR_WEIGHT_STEP,
+            "he_so_giam": WR_DECAY,                               # WR_DECAY: tốc độ quên ván cũ
+            "san_trong_so": WR_FLOOR,                             # WR_FLOOR: sàn trọng số ván cũ
         },
         "logic": [
             {"ten": LOGIC_NAMES[i], "du_doan": votes[i],
@@ -752,7 +755,7 @@ def health():
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
-             wr_weights=WR_WEIGHTS_FULL, wr_weight_step=WR_WEIGHT_STEP)       # trọng số cũ nhất -> mới nhất
+             wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR)       # trọng số cũ nhất -> mới nhất
     return _json(s)
 
 

@@ -8,6 +8,8 @@ Chạy:
     python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx
     python sunviw_api.py --flip               # BẬT bẻ final của SUN (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
     python sunviw_api.py --lc-flip            # BẬT bẻ final của LC79 (RIÊNG, không liên quan Sun; --lc-no-flip = tắt; hoặc LC79_FLIP=1|0, hoặc sửa LC_FLIP_FINAL_DEFAULT)
+    python sunviw_api.py --wr-flip            # BẬT FLIP TRỌNG SỐ WR của SUN: ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất (--no-wr-flip = tắt; hoặc SUNVIW_WR_FLIP=1|0, hoặc sửa WR_FLIP_WEIGHT_DEFAULT)
+    python sunviw_api.py --lc-wr-flip         # BẬT FLIP TRỌNG SỐ WR của LC79 (RIÊNG, độc lập Sun; --lc-no-wr-flip = tắt; hoặc LC79_WR_FLIP=1|0, hoặc sửa LC_WR_FLIP_WEIGHT_DEFAULT)
 
 Endpoint:
     GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
@@ -112,6 +114,17 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #       0.39 · 0.40 · 0.42 · 0.44 · 0.47 · 0.50 · 0.56 · 0.62 · 0.72 · 0.84 · 1.00
 #   -> 3 ván mới nhất nắm ~40% quyền quyết định, 8 ván còn lại nắm ~60% (cũ nhất vẫn còn ~39% sức của ván mới nhất).
 #   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số các ván đang xét.
+#
+#   🔄 FLIP TRỌNG SỐ (WR_FLIP_WEIGHT_DEFAULT) — công tắc RIÊNG cho SUN (LC79 có công tắc riêng: LC_WR_FLIP_WEIGHT_DEFAULT):
+#       False (mặc định) -> như trên: ván MỚI nhất nặng nhất, giảm dần về ván cũ nhất.
+#       True             -> ĐẢO NGƯỢC bảng trọng số: ván CŨ nhất (trong WR_WINDOW) nặng nhất = WR_WEIGHT_NEWEST,
+#                           giảm dần theo cùng công thức tới ván MỚI nhất (nhẹ nhất = tiến về WR_FLOOR).
+#       Chỉ đảo thứ tự gán trọng số — DECAY / FLOOR / WEIGHT_NEWEST vẫn chỉnh như cũ (WEIGHT_NEWEST lúc này = trọng số CAO NHẤT).
+#       Vd WINDOW=11 / DECAY=0.75 / FLOOR=0.35 / NEWEST=1.00, bật flip -> (cũ nhất -> mới nhất):
+#           1.00 · 0.84 · 0.72 · 0.62 · 0.56 · 0.50 · 0.47 · 0.44 · 0.42 · 0.40 · 0.39
+#       Muốn đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > WR_FLIP_WEIGHT_DEFAULT):
+#           biến môi trường :  SUNVIW_WR_FLIP=1 (bật) | SUNVIW_WR_FLIP=0 (tắt)
+#           dòng lệnh       :  python sunviw_api.py --wr-flip  |  --no-wr-flip
 #   Cách chia nhóm giữ nguyên: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO, nhóm THẤP đông hơn thì theo nhóm THẤP,
 #   còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
@@ -122,8 +135,7 @@ WR_WEIGHT_NEWEST = 1.42    # trọng số ván mới nhất (ĐÃ ÁP DỤNG và
 _W_DECAY = Fraction(str(WR_DECAY))
 _W_FLOOR = Fraction(str(WR_FLOOR))
 _W_NEWEST = Fraction(str(WR_WEIGHT_NEWEST))
-# Bảng trọng số đầy đủ (cũ nhất -> mới nhất) - chỉ để hiển thị ở /health và khi khởi động
-WR_WEIGHTS_FULL = [round(float(_W_FLOOR + (_W_NEWEST - _W_FLOOR) * _W_DECAY ** (WR_WINDOW - 1 - k)), 4) for k in range(WR_WINDOW)]
+WR_FLIP_WEIGHT_DEFAULT = False   # FLIP trọng số WR của SUN: True = ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất · False = ván mới nhất nặng nhất (mặc định)
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG BẺ FINAL CỦA SUN  (bật / tắt)  —  CHỈNH Ở ĐÂY   (LC79 có công tắc bẻ final riêng: LC_FLIP_FINAL_DEFAULT ở khối CONFIG LC79)
@@ -149,6 +161,7 @@ def _env_bool(name, default):
 
 
 FLIP_FINAL = _env_bool("SUNVIW_FLIP", FLIP_FINAL_DEFAULT)
+WR_FLIP_WEIGHT = _env_bool("SUNVIW_WR_FLIP", WR_FLIP_WEIGHT_DEFAULT)      # flip trọng số WR của SUN (xem CONFIG WR CÓ TRỌNG SỐ)
 
 # ─── ĐÁNH GIÁ ĐÚNG/SAI ───────────────────────────────────────────────────
 EVAL_WINDOW = 100           # số phiên gần nhất để đánh giá đúng/sai (hiện thẳng trong /api/predict)
@@ -171,11 +184,16 @@ LC_UPSTREAM_URL = os.environ.get(
     "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
 )
 LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
-LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
+LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
 LC_WR_DECAY = 0.75         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
 LC_WR_FLOOR = 0.95         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
-LC_WR_WEIGHT_NEWEST = 1.  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
+LC_WR_WEIGHT_NEWEST = 1.2  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
+LC_WR_FLIP_WEIGHT_DEFAULT = True                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
+                                                   #   True  = ván CŨ nhất (trong LC_WR_WINDOW) nặng nhất = LC_WR_WEIGHT_NEWEST, giảm dần tới ván MỚI nhất
+                                                   #   False = ván mới nhất nặng nhất, giảm dần về ván cũ nhất (mặc định)
+                                                   # ưu tiên: cờ dòng lệnh --lc-wr-flip/--lc-no-wr-flip > env LC79_WR_FLIP=1|0 > giá trị này
+LC_WR_FLIP_WEIGHT = _env_bool("LC79_WR_FLIP", LC_WR_FLIP_WEIGHT_DEFAULT)
 LC_FLIP_FINAL_DEFAULT = False                      # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
                                                    # ưu tiên: cờ dòng lệnh --lc-flip/--lc-no-flip > env LC79_FLIP=1|0 > giá trị này
 LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
@@ -445,29 +463,40 @@ def compute_all_full(session, d1, d2, d3):
 
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
-def wr_weights(n, decay=None, floor=None, newest=None):
+def wr_weights(n, decay=None, floor=None, newest=None, flip=None):
     """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối khi so với 50%).
-    trọng số(tuổi a) = WR_FLOOR + (WR_WEIGHT_NEWEST - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= WR_WEIGHT_NEWEST).
-    Vd n=11, DECAY=0.75, FLOOR=0.35, NEWEST=1.00 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00]."""
+    Mặc định: trọng số(tuổi a) = WR_FLOOR + (WR_WEIGHT_NEWEST - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= WR_WEIGHT_NEWEST).
+    Vd n=11, DECAY=0.75, FLOOR=0.35, NEWEST=1.00 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00].
+    flip=True (WR_FLIP_WEIGHT) -> ĐẢO NGƯỢC bảng: ván CŨ nhất nặng nhất, giảm dần tới ván MỚI nhất
+    -> [1.00, 0.84, 0.72, 0.62, 0.56, 0.50, 0.47, 0.44, 0.42, 0.40, 0.39]."""
     decay = _W_DECAY if decay is None else decay      # None -> config Sun; LC truyền config riêng
     floor = _W_FLOOR if floor is None else floor
     newest = _W_NEWEST if newest is None else newest
-    return [floor + (newest - floor) * decay ** (n - 1 - k) for k in range(n)]
+    flip = WR_FLIP_WEIGHT if flip is None else flip   # None -> công tắc flip của Sun; LC truyền công tắc riêng
+    w = [floor + (newest - floor) * decay ** (n - 1 - k) for k in range(n)]
+    return w[::-1] if flip else w
 
 
-def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=None, newest=None):
+def wr_weights_full():
+    """Bảng trọng số đầy đủ của SUN (cũ nhất -> mới nhất, đã tính flip nếu đang bật) - chỉ để hiển thị ở /health và khi khởi động."""
+    return [round(float(w), 4) for w in wr_weights(WR_WINDOW)]
+
+
+def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=None, newest=None, flip=None):
     """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100).
     CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván mới nhất = WR_WEIGHT_NEWEST, ván cũ giảm theo hàm mũ nhưng không thấp hơn
-    WR_FLOOR (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
+    WR_FLOOR (xem CONFIG WR CÓ TRỌNG SỐ). Nếu flip bật thì đảo ngược: ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất.
+    Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
     all_vote = vote_result(votes)
+    flip = WR_FLIP_WEIGHT if flip is None else flip        # None -> công tắc flip của Sun; LC truyền công tắc riêng
     window = WR_WINDOW if window is None else window        # None -> config Sun; LC truyền config riêng
     min_games = WR_MIN_GAMES if min_games is None else min_games
     win = graded[-window:]                            # cũ -> mới
     n = len(win)
     if n < min_games:
         return {"mode": "ALL", "n": n, "final": all_vote, "wins": [], "low": [], "high": [],
-                "gT": 0, "gX": 0, "tie": False, "avg": None, "wsum": 0.0, "weights": []}
-    weights = wr_weights(n, decay, floor, newest)
+                "gT": 0, "gX": 0, "tie": False, "avg": None, "wsum": 0.0, "weights": [], "flip": flip}
+    weights = wr_weights(n, decay, floor, newest, flip)
     wsum = sum(weights)                               # tổng trọng số (mẫu số của WR)
     # wins[i] = tổng trọng số các ván logic i đoán đúng (Fraction -> so với 50% chính xác, không sai số float)
     wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0))
@@ -486,7 +515,7 @@ def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=No
     avg = float(sum(wins) / (len(wins) * wsum) * 100)  # TB WR có trọng số của các logic đang dùng
     return {"mode": "LOW" if use_low else "HIGH", "n": n, "final": final, "wins": [float(w) for w in wins],
             "low": low, "high": high, "gT": gT, "gX": gX, "tie": tie, "avg": avg,
-            "wsum": float(wsum), "weights": [float(w) for w in weights]}
+            "wsum": float(wsum), "weights": [float(w) for w in weights], "flip": flip}
 
 
 # ─── LỊCH SỬ UPSTREAM ────────────────────────────────────────────────────
@@ -651,8 +680,9 @@ def build_result(hist):
         "hoa_dung_da_so_21": dec["tie"],
         "trong_so_wr": {                                          # cơ chế WR có trọng số đang áp dụng
             "so_van": dec["n"],
-            "trong_so": dec["weights"],                           # cũ nhất -> mới nhất
-            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số ván mới nhất (WR_WEIGHT_NEWEST)
+            "trong_so": dec["weights"],                           # cũ nhất -> mới nhất (đã tính flip nếu bật)
+            "flip_trong_so": dec["flip"],                         # True = ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất
+            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số CAO NHẤT (WR_WEIGHT_NEWEST; gán cho ván mới nhất, hoặc ván cũ nhất nếu flip)
             "he_so_giam": WR_DECAY,                               # WR_DECAY: tốc độ quên ván cũ
             "san_trong_so": WR_FLOOR,                             # WR_FLOOR: sàn trọng số ván cũ
         },
@@ -849,7 +879,7 @@ def lc_refresh():
             need = _lc_state["target"] != target or _lc_state["base"] is None
         if need:
             votes = compute_all(target, latest["d1"], latest["d2"], latest["d3"])
-            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES, _LC_NEWEST)
+            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES, _LC_NEWEST, LC_WR_FLIP_WEIGHT)
             tai = sum(1 for v in votes if v == TAI)
             base = {"ok": True, "game": "lc79", "phien": target, "du_doan": lc_out(dec["final"]), "be_final": LC_FLIP_FINAL,
                     "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
@@ -862,6 +892,7 @@ def lc_refresh():
                 "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]}, "hoa_dung_da_so": dec["tie"],
                 "final_goc": dec["final"],
                 "trong_so_wr": {"so_van": dec["n"], "trong_so": dec["weights"],
+                                "flip_trong_so": dec["flip"],
                                 "van_moi_nhat": LC_WR_WEIGHT_NEWEST,
                                 "he_so_giam": LC_WR_DECAY, "san_trong_so": LC_WR_FLOOR},
                 "logic": [{"ten": LOGIC_NAMES[i], "du_doan": votes[i],
@@ -1103,12 +1134,12 @@ def health():
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
-             wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST)       # trọng số cũ nhất -> mới nhất
+             wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST)       # trọng số cũ nhất -> mới nhất
     with _lc_lock:
         lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "polls")}
         lc["latest"] = (_lc_state["base"] or {}).get("phien_truoc")
     lc.update(ok=lc["error"] is None and lc["latest"] is not None, poll_sec=LC_POLL_SEC, wr_window=LC_WR_WINDOW,
-              be_final=LC_FLIP_FINAL, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR, wr_newest=LC_WR_WEIGHT_NEWEST)
+              be_final=LC_FLIP_FINAL, wr_flip=LC_WR_FLIP_WEIGHT, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR, wr_newest=LC_WR_WEIGHT_NEWEST)
     s["lc79"] = lc
     return _json(s)
 
@@ -1124,7 +1155,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC, LC_FLIP_FINAL
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -1142,6 +1173,12 @@ def main():
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
     g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của các logic đang dùng)")
+    wg = ap.add_mutually_exclusive_group()
+    wg.add_argument("--wr-flip", action="store_true", help="BẬT flip trọng số WR của SUN (ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất)")
+    wg.add_argument("--no-wr-flip", action="store_true", help="TẮT flip trọng số WR của SUN (ván mới nhất nặng nhất)")
+    lwg = ap.add_mutually_exclusive_group()
+    lwg.add_argument("--lc-wr-flip", action="store_true", help="BẬT flip trọng số WR của LC79 (riêng, không ảnh hưởng Sun)")
+    lwg.add_argument("--lc-no-wr-flip", action="store_true", help="TẮT flip trọng số WR của LC79")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
     LC_UPSTREAM_URL, LC_POLL_SEC = a.lc_upstream, a.lc_poll
@@ -1153,14 +1190,22 @@ def main():
         LC_FLIP_FINAL = True
     elif a.lc_no_flip:
         LC_FLIP_FINAL = False
+    if a.wr_flip:
+        WR_FLIP_WEIGHT = True
+    elif a.no_wr_flip:
+        WR_FLIP_WEIGHT = False
+    if a.lc_wr_flip:
+        LC_WR_FLIP_WEIGHT = True
+    elif a.lc_no_wr_flip:
+        LC_WR_FLIP_WEIGHT = False
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
     print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html")
-    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'}")
+    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'} · flip trong so {'BAT (cu nhat nang nhat)' if LC_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}")
     print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}")
-    print(f"WR          ->  xet {WR_WINDOW} van gan nhat, van moi nhat x{WR_WEIGHT_NEWEST}, trong so (cu -> moi): "
-          + " · ".join(f"{w:.2f}" for w in WR_WEIGHTS_FULL))
+    print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
+          + " · ".join(f"{w:.2f}" for w in wr_weights_full()))
     app.run(host=a.host, port=a.port, threaded=True)
 
 

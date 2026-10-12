@@ -6,7 +6,8 @@ Chạy:
     pip install flask
     python sunviw_api.py                      # mặc định http://0.0.0.0:5000
     python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx
-    python sunviw_api.py --flip               # BẬT bẻ final (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
+    python sunviw_api.py --flip               # BẬT bẻ final của SUN (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
+    python sunviw_api.py --lc-flip            # BẬT bẻ final của LC79 (RIÊNG, không liên quan Sun; --lc-no-flip = tắt; hoặc LC79_FLIP=1|0, hoặc sửa LC_FLIP_FINAL_DEFAULT)
 
 Endpoint:
     GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
@@ -23,7 +24,7 @@ JSON /api/predict:
       "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
       "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
-                                 #     trọng số: ván mới nhất cao nhất (1.00), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
+                                 #     trọng số: ván mới nhất = WR_WEIGHT_NEWEST (cao nhất), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
       "xuc_xac": [3, 5, 4],      # xúc xắc của phien_truoc (dùng để tính dự đoán)
       "tong": 12,                # tổng xúc xắc của phien_truoc
@@ -94,18 +95,20 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG WR CÓ TRỌNG SỐ (KIỂU "PHẢN ỨNG NHANH + SÀN NHỚ CẦU CŨ")  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
-#   Ván MỚI NHẤT có trọng số = 1.00 (cao nhất). Ván càng cũ trọng số càng giảm theo hàm mũ NHƯNG không bao giờ
+#   Ván MỚI NHẤT có trọng số = WR_WEIGHT_NEWEST (cao nhất). Ván càng cũ trọng số càng giảm theo hàm mũ NHƯNG không bao giờ
 #   thấp hơn WR_FLOOR  ->  cầu mới đổi thì phản ứng nhanh (các ván mới chiếm phần lớn quyền), còn cầu cũ vẫn giữ
 #   một phần quyền (không bị quên hẳn).
 #
-#       trọng số(ván tuổi a) = WR_FLOOR + (1 - WR_FLOOR) * WR_DECAY ** a        (a = 0 là ván mới nhất)
+#       trọng số(ván tuổi a) = WR_FLOOR + (WR_WEIGHT_NEWEST - WR_FLOOR) * WR_DECAY ** a        (a = 0 là ván mới nhất -> đúng = WR_WEIGHT_NEWEST)
 #
 #   WR_WINDOW = số ván gần nhất được xét để tính WR
 #   WR_DECAY  = tốc độ quên (0.75 = mỗi ván cũ hơn, phần "thưởng mới" giảm còn 75%). Nhỏ hơn -> phản ứng nhanh hơn.
-#   WR_FLOOR  = sàn trọng số của ván cũ (0.35 = ván cũ nhất vẫn nặng bằng 35% ván mới nhất). Lớn hơn -> nhớ cầu cũ nhiều hơn.
+#   WR_WEIGHT_NEWEST = trọng số của ván MỚI NHẤT (1.00 = bản gốc). Lớn hơn WR_FLOOR càng nhiều -> ván mới nhất càng nặng so với ván cũ.
+#               Phải > WR_FLOOR (nếu <= thì ván mới không còn nặng hơn ván cũ). Đặt = WR_FLOOR -> mọi ván bằng nhau.
+#   WR_FLOOR  = sàn trọng số của ván cũ (0.35 = ván cũ nhất vẫn nặng bằng 35% ván mới nhất khi NEWEST=1.00). Lớn hơn -> nhớ cầu cũ nhiều hơn.
 #               (đặt WR_FLOOR = 1 -> mọi ván bằng nhau · đặt WR_FLOOR = 0 -> quên cầu cũ rất nhanh)
 #
-#   Với WINDOW=11 / DECAY=0.75 / FLOOR=0.35, trọng số (cũ nhất -> mới nhất):
+#   Với WINDOW=11 / DECAY=0.75 / FLOOR=0.35 / NEWEST=1.00, trọng số (cũ nhất -> mới nhất):
 #       0.39 · 0.40 · 0.42 · 0.44 · 0.47 · 0.50 · 0.56 · 0.62 · 0.72 · 0.84 · 1.00
 #   -> 3 ván mới nhất nắm ~40% quyền quyết định, 8 ván còn lại nắm ~60% (cũ nhất vẫn còn ~39% sức của ván mới nhất).
 #   WR của 1 logic = tổng trọng số các ván logic đó đoán đúng / tổng trọng số các ván đang xét.
@@ -114,15 +117,16 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
 WR_DECAY = 0.75            # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
 WR_FLOOR = 0.95            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
-WR_WEIGHT_NEWEST = 1.42     # trọng số ván mới nhất (giữ cố định 1.00, chỉ để hiển thị)
+WR_WEIGHT_NEWEST = 1.42    # trọng số ván mới nhất (ĐÃ ÁP DỤNG vào tính WR; 1.00 = hành vi bản gốc)
 # dạng Fraction để tính/so sánh chính xác (dùng trong wr_weights)
 _W_DECAY = Fraction(str(WR_DECAY))
 _W_FLOOR = Fraction(str(WR_FLOOR))
+_W_NEWEST = Fraction(str(WR_WEIGHT_NEWEST))
 # Bảng trọng số đầy đủ (cũ nhất -> mới nhất) - chỉ để hiển thị ở /health và khi khởi động
-WR_WEIGHTS_FULL = [round(float(_W_FLOOR + (1 - _W_FLOOR) * _W_DECAY ** (WR_WINDOW - 1 - k)), 4) for k in range(WR_WINDOW)]
+WR_WEIGHTS_FULL = [round(float(_W_FLOOR + (_W_NEWEST - _W_FLOOR) * _W_DECAY ** (WR_WINDOW - 1 - k)), 4) for k in range(WR_WINDOW)]
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ⚙  CONFIG BẺ FINAL  (bật / tắt)  —  CHỈNH Ở ĐÂY
+#  ⚙  CONFIG BẺ FINAL CỦA SUN  (bật / tắt)  —  CHỈNH Ở ĐÂY   (LC79 có công tắc bẻ final riêng: LC_FLIP_FINAL_DEFAULT ở khối CONFIG LC79)
 # ═══════════════════════════════════════════════════════════════════════════
 #   FLIP_FINAL_DEFAULT = False  ->  TẮT (mặc định): du_doan = final của 21 logic, KHÔNG bẻ
 #   FLIP_FINAL_DEFAULT = True   ->  BẬT : du_doan = đảo ngược final (TÀI <-> XỈU)
@@ -167,11 +171,13 @@ LC_UPSTREAM_URL = os.environ.get(
     "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
 )
 LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
-LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
+LC_WR_WINDOW = 10          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
 LC_WR_DECAY = 0.75         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
-LC_WR_FLOOR = 0.95         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+LC_WR_FLOOR = 0.55         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+LC_WR_WEIGHT_NEWEST = 1.12  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
-LC_FLIP_FINAL_DEFAULT = True                       # bẻ final của LC (riêng, không liên quan FLIP_FINAL của Sun); env LC79_FLIP=1|0
+LC_FLIP_FINAL_DEFAULT = True                       # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
+                                                   # ưu tiên: cờ dòng lệnh --lc-flip/--lc-no-flip > env LC79_FLIP=1|0 > giá trị này
 LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
 LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ
 LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
@@ -439,18 +445,19 @@ def compute_all_full(session, d1, d2, d3):
 
 
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
-def wr_weights(n, decay=None, floor=None):
+def wr_weights(n, decay=None, floor=None, newest=None):
     """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối khi so với 50%).
-    trọng số(tuổi a) = WR_FLOOR + (1 - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= 1.00).
-    Vd n=11, DECAY=0.75, FLOOR=0.35 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00]."""
+    trọng số(tuổi a) = WR_FLOOR + (WR_WEIGHT_NEWEST - WR_FLOOR) * WR_DECAY ** a, a = 0 là ván mới nhất (= WR_WEIGHT_NEWEST).
+    Vd n=11, DECAY=0.75, FLOOR=0.35, NEWEST=1.00 -> [0.39, 0.40, 0.42, 0.44, 0.47, 0.50, 0.56, 0.62, 0.72, 0.84, 1.00]."""
     decay = _W_DECAY if decay is None else decay      # None -> config Sun; LC truyền config riêng
     floor = _W_FLOOR if floor is None else floor
-    return [floor + (1 - floor) * decay ** (n - 1 - k) for k in range(n)]
+    newest = _W_NEWEST if newest is None else newest
+    return [floor + (newest - floor) * decay ** (n - 1 - k) for k in range(n)]
 
 
-def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=None):
+def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=None, newest=None):
     """Giống wrDecision() trong HTML + thêm avg (độ tin cậy = TB WR của các logic đang dùng, 0-100).
-    CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván mới nhất = 1.00, ván cũ giảm theo hàm mũ nhưng không thấp hơn
+    CHỈ KHÁC bản gốc ở chỗ WR có TRỌNG SỐ: ván mới nhất = WR_WEIGHT_NEWEST, ván cũ giảm theo hàm mũ nhưng không thấp hơn
     WR_FLOOR (xem CONFIG WR CÓ TRỌNG SỐ). Cách chia nhóm / chọn nhóm / hoà phiếu giữ NGUYÊN như bản gốc."""
     all_vote = vote_result(votes)
     window = WR_WINDOW if window is None else window        # None -> config Sun; LC truyền config riêng
@@ -460,7 +467,7 @@ def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=No
     if n < min_games:
         return {"mode": "ALL", "n": n, "final": all_vote, "wins": [], "low": [], "high": [],
                 "gT": 0, "gX": 0, "tie": False, "avg": None, "wsum": 0.0, "weights": []}
-    weights = wr_weights(n, decay, floor)
+    weights = wr_weights(n, decay, floor, newest)
     wsum = sum(weights)                               # tổng trọng số (mẫu số của WR)
     # wins[i] = tổng trọng số các ván logic i đoán đúng (Fraction -> so với 50% chính xác, không sai số float)
     wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0))
@@ -645,7 +652,7 @@ def build_result(hist):
         "trong_so_wr": {                                          # cơ chế WR có trọng số đang áp dụng
             "so_van": dec["n"],
             "trong_so": dec["weights"],                           # cũ nhất -> mới nhất
-            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số ván mới nhất (x1.00)
+            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số ván mới nhất (WR_WEIGHT_NEWEST)
             "he_so_giam": WR_DECAY,                               # WR_DECAY: tốc độ quên ván cũ
             "san_trong_so": WR_FLOOR,                             # WR_FLOOR: sàn trọng số ván cũ
         },
@@ -740,6 +747,7 @@ def ensure_poller():
 # ─── LC79 (GAME 2): QUÉT API HISTORY · LƯU DỰ ĐOÁN · CHẤM ĐÚNG/SAI ───────
 # Dùng CHUNG bộ logic (compute_all) với Sun, nhưng config / WR / lịch sử đúng-sai hoàn toàn RIÊNG (xem CONFIG LC79).
 _LC_DECAY, _LC_FLOOR = Fraction(str(LC_WR_DECAY)), Fraction(str(LC_WR_FLOOR))
+_LC_NEWEST = Fraction(str(LC_WR_WEIGHT_NEWEST))
 _lc_preds = {}              # phien -> dự đoán đã LƯU (dung=None: đang chờ API trả kết quả phiên đó)
 _lc_loaded = False
 _lc_state = {"target": None, "base": None, "detail": None, "error": None, "updated": None, "checked": None, "polls": 0}
@@ -841,7 +849,7 @@ def lc_refresh():
             need = _lc_state["target"] != target or _lc_state["base"] is None
         if need:
             votes = compute_all(target, latest["d1"], latest["d2"], latest["d3"])
-            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES)
+            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES, _LC_NEWEST)
             tai = sum(1 for v in votes if v == TAI)
             base = {"ok": True, "game": "lc79", "phien": target, "du_doan": lc_out(dec["final"]), "be_final": LC_FLIP_FINAL,
                     "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
@@ -854,6 +862,7 @@ def lc_refresh():
                 "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]}, "hoa_dung_da_so": dec["tie"],
                 "final_goc": dec["final"],
                 "trong_so_wr": {"so_van": dec["n"], "trong_so": dec["weights"],
+                                "van_moi_nhat": LC_WR_WEIGHT_NEWEST,
                                 "he_so_giam": LC_WR_DECAY, "san_trong_so": LC_WR_FLOOR},
                 "logic": [{"ten": LOGIC_NAMES[i], "du_doan": votes[i],
                            "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
@@ -1094,12 +1103,12 @@ def health():
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
-             wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR)       # trọng số cũ nhất -> mới nhất
+             wr_weights=WR_WEIGHTS_FULL, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST)       # trọng số cũ nhất -> mới nhất
     with _lc_lock:
         lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "polls")}
         lc["latest"] = (_lc_state["base"] or {}).get("phien_truoc")
     lc.update(ok=lc["error"] is None and lc["latest"] is not None, poll_sec=LC_POLL_SEC, wr_window=LC_WR_WINDOW,
-              be_final=LC_FLIP_FINAL, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR)
+              be_final=LC_FLIP_FINAL, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR, wr_newest=LC_WR_WEIGHT_NEWEST)
     s["lc79"] = lc
     return _json(s)
 
@@ -1115,7 +1124,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC, LC_FLIP_FINAL
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -1127,6 +1136,9 @@ def main():
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
     ap.add_argument("--lc-upstream", default=LC_UPSTREAM_URL, help="URL API history LC79")
     ap.add_argument("--lc-poll", type=float, default=LC_POLL_SEC, help="chu ky quet API LC79 (giay)")
+    lg = ap.add_mutually_exclusive_group()
+    lg.add_argument("--lc-flip", action="store_true", help="BẬT bẻ final của LC79 (riêng, không ảnh hưởng Sun)")
+    lg.add_argument("--lc-no-flip", action="store_true", help="TẮT bẻ final của LC79 (theo final gốc)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--flip", action="store_true", help="BẬT bẻ final (đảo TÀI<->XỈU)")
     g.add_argument("--no-flip", action="store_true", help="TẮT bẻ final (giữ nguyên final của các logic đang dùng)")
@@ -1137,13 +1149,17 @@ def main():
         FLIP_FINAL = True
     elif a.no_flip:
         FLIP_FINAL = False
+    if a.lc_flip:
+        LC_FLIP_FINAL = True
+    elif a.lc_no_flip:
+        LC_FLIP_FINAL = False
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
     print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html")
-    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · be final {'BAT' if LC_FLIP_FINAL else 'TAT'}")
-    print(f"be final    ->  {'BAT' if FLIP_FINAL else 'TAT'}")
-    print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so (cu -> moi): "
+    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'}")
+    print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}")
+    print(f"WR          ->  xet {WR_WINDOW} van gan nhat, van moi nhat x{WR_WEIGHT_NEWEST}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in WR_WEIGHTS_FULL))
     app.run(host=a.host, port=a.port, threaded=True)
 

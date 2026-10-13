@@ -192,12 +192,12 @@ LC_WS_CFG_PATH = os.environ.get("LC79_WS_CFG", "/tmp/lc79_ws_cfg.json")   # file
 LC_WS_ORIGIN = os.environ.get("LC79_WS_ORIGIN", "")   # nếu server socket đòi Origin cụ thể thì đặt ở đây (mặc định để trống)
 LC_WS_RETRY_BASE, LC_WS_RETRY_MAX = 2.0, 30.0         # nối lại: 2s, 4s, 8s ... tối đa 30s
 LC_WAIT_RESULT_SEC = 4.0                              # chờ kết quả phiên trước tối đa N giây trước khi vote phiên mới
-LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR
-LC_WR_DECAY = 1.05         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
-LC_WR_FLOOR = 0.75        # sàn trọng số ván cũ (như WR_FLOOR của Sun)
-LC_WR_WEIGHT_NEWEST = 1.2  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
+LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR
+LC_WR_DECAY = 0.95         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
+LC_WR_FLOOR = 0.65        # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+LC_WR_WEIGHT_NEWEST = 1.25  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
-LC_WR_FLIP_WEIGHT_DEFAULT = True                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
+LC_WR_FLIP_WEIGHT_DEFAULT = False                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
                                                    #   True  = ván CŨ nhất (trong LC_WR_WINDOW) nặng nhất = LC_WR_WEIGHT_NEWEST, giảm dần tới ván MỚI nhất
                                                    #   False = ván mới nhất nặng nhất, giảm dần về ván cũ nhất (mặc định)
                                                    # ưu tiên: cờ dòng lệnh --lc-wr-flip/--lc-no-wr-flip > env LC79_WR_FLIP=1|0 > giá trị này

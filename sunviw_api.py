@@ -184,17 +184,17 @@ LC_UPSTREAM_URL = os.environ.get(
     "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
 )
 LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
-LC_WR_WINDOW = 13          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
+LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
 LC_WR_DECAY = 1.25         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
 LC_WR_FLOOR = 0.55        # sàn trọng số ván cũ (như WR_FLOOR của Sun)
-LC_WR_WEIGHT_NEWEST = 1.0  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
+LC_WR_WEIGHT_NEWEST = 1.2  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
 LC_WR_FLIP_WEIGHT_DEFAULT = True                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
                                                    #   True  = ván CŨ nhất (trong LC_WR_WINDOW) nặng nhất = LC_WR_WEIGHT_NEWEST, giảm dần tới ván MỚI nhất
                                                    #   False = ván mới nhất nặng nhất, giảm dần về ván cũ nhất (mặc định)
                                                    # ưu tiên: cờ dòng lệnh --lc-wr-flip/--lc-no-wr-flip > env LC79_WR_FLIP=1|0 > giá trị này
 LC_WR_FLIP_WEIGHT = _env_bool("LC79_WR_FLIP", LC_WR_FLIP_WEIGHT_DEFAULT)
-LC_FLIP_FINAL_DEFAULT = True                      # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
+LC_FLIP_FINAL_DEFAULT = False                      # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
                                                    # ưu tiên: cờ dòng lệnh --lc-flip/--lc-no-flip > env LC79_FLIP=1|0 > giá trị này
 LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
 LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ

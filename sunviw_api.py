@@ -3,8 +3,8 @@
 SUNVIW 24 LOGICS (mặc định chạy 13 logic) - API JSON  (bản Python của SUNVIW_21logics.html + thêm L3N, L4N, L5N)
 
 Chạy:
-    pip install flask
-    python sunviw_api.py                      # mặc định http://0.0.0.0:5000
+    pip install flask websocket-client
+    python sunviw_api.py                      # mặc định http://0.0.0.0:5000  (LC79: mở /api/html -> tab LC79 -> dán token -> Bật)
     python sunviw_api.py --port 8080 --upstream https://xxx.trycloudflare.com/api/tx
     python sunviw_api.py --flip               # BẬT bẻ final của SUN (mặc định TẮT; hoặc SUNVIW_FLIP=1, hoặc sửa FLIP_FINAL_DEFAULT)
     python sunviw_api.py --lc-flip            # BẬT bẻ final của LC79 (RIÊNG, không liên quan Sun; --lc-no-flip = tắt; hoặc LC79_FLIP=1|0, hoặc sửa LC_FLIP_FINAL_DEFAULT)
@@ -14,7 +14,10 @@ Chạy:
 Endpoint:
     GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
     GET /api/predictsun?detail=1 -> thêm chi_tiet: vote từng logic + WR từng logic
-    GET /api/predictlc79         -> [LC79] JSON dự đoán, config RIÊNG (xem "CONFIG LC79"); cũng có ?detail=1
+    GET /api/predictlc79         -> [LC79] JSON dự đoán (nguồn = SOCKET), config RIÊNG (xem "CONFIG LC79"); cũng có ?detail=1
+    GET /api/lc79/ws             -> trạng thái socket LC79 (không bao giờ trả token)
+    POST /api/lc79/ws/start      -> gắn token + bật socket LC79: {"token":"...","url":"(tuỳ chọn)","auth":"(tuỳ chọn)"}; token rỗng = dùng token đã lưu
+    POST /api/lc79/ws/stop       -> tắt socket LC79
     ...?hist=N                   -> (cả 2 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
     GET /api/html                -> panel HTML theo dõi cả 2 game, đổi qua lại, chọn số ván lịch sử
     GET /health                  -> trạng thái nền của cả 2 game
@@ -68,6 +71,7 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
+import collections
 import hashlib
 import json
 import math
@@ -175,18 +179,22 @@ PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WI
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG LC79 (GAME 2)  —  RIÊNG HOÀN TOÀN, KHÔNG ẢNH HƯỞNG CONFIG SUN Ở TRÊN  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
-#   Upstream trả ~100 phiên gần nhất (phiên MỚI NHẤT ở đầu list, càng xuống càng cũ).
-#   WR của LC xét ĐÚNG LC_WR_WINDOW ván gần nhất lấy thẳng từ API (vd 15 -> đúng 15 ván mới nhất của API).
-#   Đúng/sai: dự đoán phiên +1 (kèm xúc xắc phiên gần nhất) -> LƯU dự đoán -> quét API mỗi LC_POLL_SEC giây
-#   đến khi API trả kết quả phiên đó -> so đúng/sai -> lặp lại với phiên +1 kế tiếp.
-LC_UPSTREAM_URL = os.environ.get(
-    "LC79_UPSTREAM",
-    "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
-)
-LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
-LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
-LC_WR_DECAY = 1.25         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
-LC_WR_FLOOR = 0.55        # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+#   NGUỒN DỮ LIỆU LC79 = SOCKET (Engine.IO v4 / Socket.IO, namespace /txmd5) — thay cho API REST history cũ.
+#   Token gắn ở panel /api/html (tab LC79) -> server tự kết nối, tự nối lại khi rớt, lần khởi động sau tự bật lại.
+#   Bắt 2 event:
+#       new-session    {id, md5}                                       -> vote NGAY phiên `id` bằng md5 của event (phiên KHÔNG +1) -> LƯU dự đoán
+#       session-result {md5Raw:"<id>:...", dices:[a,b,c], resultTruyenThong} -> chấm đúng/sai phiên đó -> cập nhật WR
+#   WR của LC xét LC_WR_WINDOW ván gần nhất ĐÃ CHẤM (dự đoán đã lưu + kết quả thật do socket trả).
+#   Phiên mới đến mà kết quả phiên trước chưa về -> chờ tối đa LC_WAIT_RESULT_SEC giây để WR được cập nhật trước khi vote.
+LC_WS_URL_DEFAULT = os.environ.get("LC79_WS_URL", "wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket")
+LC_WS_AUTH_DEFAULT = '40/txmd5,{"token":"{TOKEN}"}'   # mỗi dòng 1 khung · {TOKEN} = token · dòng 1 gửi ngay khi mở kết nối, các dòng sau gửi sau khi namespace connect
+LC_WS_CFG_PATH = os.environ.get("LC79_WS_CFG", "/tmp/lc79_ws_cfg.json")   # file lưu token + URL + khung auth + cờ tự bật (quyền 600)
+LC_WS_ORIGIN = os.environ.get("LC79_WS_ORIGIN", "")   # nếu server socket đòi Origin cụ thể thì đặt ở đây (mặc định để trống)
+LC_WS_RETRY_BASE, LC_WS_RETRY_MAX = 2.0, 30.0         # nối lại: 2s, 4s, 8s ... tối đa 30s
+LC_WAIT_RESULT_SEC = 4.0                              # chờ kết quả phiên trước tối đa N giây trước khi vote phiên mới
+LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR
+LC_WR_DECAY = 1.05         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
+LC_WR_FLOOR = 0.75        # sàn trọng số ván cũ (như WR_FLOOR của Sun)
 LC_WR_WEIGHT_NEWEST = 1.2  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
 LC_WR_FLIP_WEIGHT_DEFAULT = True                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
@@ -197,7 +205,7 @@ LC_WR_FLIP_WEIGHT = _env_bool("LC79_WR_FLIP", LC_WR_FLIP_WEIGHT_DEFAULT)
 LC_FLIP_FINAL_DEFAULT = False                      # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
                                                    # ưu tiên: cờ dòng lệnh --lc-flip/--lc-no-flip > env LC79_FLIP=1|0 > giá trị này
 LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
-LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ
+LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ (kèm vote từng logic để tính WR sau restart)
 LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
 
 # ─── PANEL /api/html ─────────────────────────────────────────────────────
@@ -438,9 +446,20 @@ def compute_all(session, d1, d2, d3):
     return [full[i] for i in KEEP_IDX]
 
 
+def compute_all_md5(session, md5):
+    """Giống compute_all nhưng nhận THẲNG md5 (LC79: md5 lấy từ event new-session của socket, không tự dựng từ xúc xắc).
+    Công thức y hệt compute_all — chỉ khác nguồn md5."""
+    full = compute_all_full_md5(session, md5)
+    return [full[i] for i in KEEP_IDX]
+
+
 def compute_all_full(session, d1, d2, d3):
     """Đủ 24 vote (21 logic cũ + L3N, L4N, L5N) cho phiên `session` từ xúc xắc (d1,d2,d3) của phiên liền trước. Thứ tự = ALL_LOGIC_NAMES."""
-    md5 = md5_of(session, d1, d2, d3)
+    return compute_all_full_md5(session, md5_of(session, d1, d2, d3))
+
+
+def compute_all_full_md5(session, md5):
+    """Đủ 24 vote cho phiên `session` với md5 cho sẵn. Thứ tự = ALL_LOGIC_NAMES. (Công thức giữ nguyên 100% như bản gốc.)"""
     X = sum_digits(session)
     l123 = _run_formulas(FORMULAS, md5, X, 2)          # L1 L2 L3 (vị trí hex ×2 như HTML)
     tta2 = TAI if _tta(session, 2, 13, 2, 3, 15) % 2 == 0 else XIU
@@ -771,18 +790,28 @@ def ensure_poller():
         return
     _poller_started = True
     threading.Thread(target=_poll_loop, daemon=True, name="sunviw-poller").start()
-    threading.Thread(target=_lc_poll_loop, daemon=True, name="lc79-poller").start()
+    lc_ws_autostart()                             # LC79: nạp token đã lưu, lần trước đang bật thì tự bật lại socket
 
 
-# ─── LC79 (GAME 2): QUÉT API HISTORY · LƯU DỰ ĐOÁN · CHẤM ĐÚNG/SAI ───────
-# Dùng CHUNG bộ logic (compute_all) với Sun, nhưng config / WR / lịch sử đúng-sai hoàn toàn RIÊNG (xem CONFIG LC79).
+# ─── LC79 (GAME 2): SOCKET (new-session · session-result) · LƯU DỰ ĐOÁN · CHẤM ĐÚNG/SAI ───
+# Dùng CHUNG công thức (compute_all_md5 = y hệt compute_all) với Sun, nhưng config / WR / lịch sử đúng-sai hoàn toàn RIÊNG (xem CONFIG LC79).
+# Nguồn dữ liệu = WebSocket Engine.IO v4 / Socket.IO (namespace /txmd5) — port từ phần "TỰ ĐỘNG" của SUNVIW_11logics_wr13_auto_v12.html:
+#   new-session    -> vote đúng phiên `id` bằng md5 của event (KHÔNG +1) rồi LƯU dự đoán
+#   session-result -> chấm đúng/sai phiên đó, cập nhật WR + lịch sử
 _LC_DECAY, _LC_FLOOR = Fraction(str(LC_WR_DECAY)), Fraction(str(LC_WR_FLOOR))
 _LC_NEWEST = Fraction(str(LC_WR_WEIGHT_NEWEST))
-_lc_preds = {}              # phien -> dự đoán đã LƯU (dung=None: đang chờ API trả kết quả phiên đó)
+_lc_preds = {}              # phien -> dự đoán đã LƯU (dung=None: đang chờ event session-result của phiên đó)
 _lc_loaded = False
-_lc_state = {"target": None, "base": None, "detail": None, "error": None, "updated": None, "checked": None, "polls": 0}
-_lc_lock = threading.Lock()            # bảo vệ _lc_state + _lc_preds (giữ ngắn)
-_lc_refresh_lock = threading.Lock()    # mỗi lúc chỉ 1 lượt quét
+_lc_results = {}            # phien -> {"xuc_xac","tong","ket_qua"}: kết quả thật socket đã trả (chỉ giữ ~40 phiên gần nhất)
+_lc_wait = {"p": None, "timer": None}   # phiên mới đang chờ kết quả phiên trước: p = (phien, md5)
+_lc_state = {"target": None, "base": None, "detail": None, "error": None, "updated": None, "checked": None, "events": 0}
+_lc_lock = threading.RLock()            # bảo vệ _lc_state + _lc_preds + _lc_results + _lc_wait + _ws (giữ ngắn)
+_WS_UA = "Mozilla/5.0 (compatible; SUNVIW-API/1.0)"
+_ws = {"wanted": False, "gen": 0, "sock": None, "status": "off", "text": "● Tắt", "retry": 0,
+       "last_frame": 0.0, "ready_at": 0.0, "got_session": False, "warned": False, "ping_timeout": 50.0,
+       "raw_budget": 0, "auth_queue": [], "auth_timer": None, "seen": set(),
+       "token": "", "url": LC_WS_URL_DEFAULT, "auth": LC_WS_AUTH_DEFAULT, "booted": False}
+_ws_log = collections.deque(maxlen=80)  # nhật ký socket (token luôn bị che thành {TOKEN})
 
 
 def lc_out(final):
@@ -790,43 +819,43 @@ def lc_out(final):
     return flip_pred(final) if LC_FLIP_FINAL else final
 
 
-def parse_lc(data):
-    """API LC79: {"list":[{"id":phiên,"resultTruyenThong":"TAI|XIU","dices":[a,b,c],"point":n}, ...]}
-    Phiên MỚI NHẤT ở ĐẦU list, càng xuống càng cũ. Trả list cũ -> mới (sắp theo id nên không phụ thuộc thứ tự upstream)."""
-    arr = data.get("list") if isinstance(data, dict) else data
-    m = {}
-    for r in arr if isinstance(arr, list) else []:
-        if not isinstance(r, dict):
-            continue
-        phien, dices = _parse_int(r.get("id")), r.get("dices")
-        if phien is None or not isinstance(dices, list) or len(dices) != 3:
-            continue
-        d = [_parse_int(x) for x in dices]
-        if None in d or any(x < 1 or x > 6 for x in d):
-            continue
-        total = sum(d)
-        m[phien] = {"phien": phien, "d1": d[0], "d2": d[1], "d3": d[2], "total": total,
-                    "actual": norm_kq(r.get("resultTruyenThong")) or actual_of(total)}
-    return [m[k] for k in sorted(m)]
+# ── tiện ích: log · trạng thái · lưu cấu hình token ─────────────────────
+def _ws_say(msg):
+    tok = _ws["token"]
+    if tok:
+        msg = str(msg).replace(tok, "{TOKEN}")
+    _ws_log.append(f"{time.strftime('%H:%M:%S')} {msg}")
 
 
-def lc_graded(hist, n):
-    """ĐÚNG n ván gần nhất (cũ -> mới) lấy thẳng từ API: vote của từng logic cho phiên k (dùng xúc xắc phiên k-1)
-    so với kết quả thật phiên k. Đây là dữ liệu để tính WR của LC."""
-    out = []
-    for i in range(len(hist) - 1, 0, -1):
-        p, c = hist[i - 1], hist[i]
-        if c["phien"] != p["phien"] + 1:
-            continue
-        out.append({"session": c["phien"], "actual": c["actual"],
-                    "votes": compute_all(c["phien"], p["d1"], p["d2"], p["d3"])})
-        if len(out) >= n:
-            break
-    return out[::-1]
+def _ws_set(kind, text):
+    """kind: off | wait | ready | err (gọi trong _lc_lock)."""
+    _ws["status"], _ws["text"] = kind, text
 
 
+def _ws_cfg_save(auto):
+    """Lưu token + URL + khung auth + cờ tự bật (quyền 600, ghi atomic). Gọi trong _lc_lock."""
+    try:
+        tmp = LC_WS_CFG_PATH + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"token": _ws["token"], "url": _ws["url"], "auth": _ws["auth"], "auto": bool(auto)}, f, ensure_ascii=False)
+        os.replace(tmp, LC_WS_CFG_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ws_cfg_load():
+    try:
+        with open(LC_WS_CFG_PATH, "r", encoding="utf-8") as f:
+            c = json.load(f)
+        return c if isinstance(c, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+# ── lưu / nạp dự đoán ───────────────────────────────────────────────────
 def _lc_load():
-    """Nạp dự đoán đã lưu (lần quét đầu tiên). Gọi trong _lc_lock."""
+    """Nạp dự đoán đã lưu (1 lần). Gọi trong _lc_lock."""
     global _lc_loaded
     if _lc_loaded:
         return
@@ -836,8 +865,12 @@ def _lc_load():
             for r in json.load(f):
                 if isinstance(r, dict) and "phien" in r and r.get("sig") == LOGIC_SIG:
                     _lc_preds[r["phien"]] = r
+                    if r.get("ket_qua"):
+                        _lc_results[r["phien"]] = {"xuc_xac": r.get("xuc_xac"), "tong": r.get("tong"), "ket_qua": r["ket_qua"]}
     except Exception:  # noqa: BLE001
         pass
+    for k in sorted(_lc_results)[:-40]:
+        del _lc_results[k]
 
 
 def _lc_save():
@@ -852,90 +885,493 @@ def _lc_save():
         pass
 
 
-def lc_refresh():
-    """Quét API LC79: (1) chấm dự đoán đang chờ nếu API đã trả kết quả phiên đó,
-    (2) có phiên mới -> dự đoán phiên +1 (kèm xúc xắc phiên gần nhất) và LƯU lại. Ném exception nếu lỗi."""
-    with _lc_refresh_lock:
-        hist = parse_lc(_fetch_json(LC_UPSTREAM_URL))
-        if not hist:
-            raise ValueError("upstream LC79 khong co phien hop le (can list[].id + dices)")
-        by_p = {r["phien"]: r for r in hist}
-        latest = hist[-1]
-        target = latest["phien"] + 1
-        changed = False
-        with _lc_lock:
-            _lc_load()
-            for ph in list(_lc_preds):
-                p = _lc_preds[ph]
-                if p.get("dung") is not None or ph > latest["phien"]:
-                    continue
-                r = by_p.get(ph)
-                if r is None:                        # phiên đã trôi khỏi API mà chưa kịp chấm -> bỏ
-                    del _lc_preds[ph]
-                else:
-                    p.update(ket_qua=r["actual"], tong=r["total"], xuc_xac=[r["d1"], r["d2"], r["d3"]],
-                             dung=(p["du_doan"] == r["actual"]), cham=_now())
-                changed = True
-            need = _lc_state["target"] != target or _lc_state["base"] is None
-        if need:
-            votes = compute_all(target, latest["d1"], latest["d2"], latest["d3"])
-            dec = wr_decision(votes, lc_graded(hist, LC_WR_WINDOW), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES, _LC_NEWEST, LC_WR_FLIP_WEIGHT)
-            tai = sum(1 for v in votes if v == TAI)
-            base = {"ok": True, "game": "lc79", "phien": target, "du_doan": lc_out(dec["final"]), "be_final": LC_FLIP_FINAL,
-                    "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
-                    "phien_truoc": latest["phien"], "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
-                    "tong": latest["total"], "ket_qua_truoc": latest["actual"],
-                    "so_van_wr": dec["n"], "wr_window": LC_WR_WINDOW}
-            detail = {
-                "vote": {"TÀI": tai, "XỈU": len(votes) - tai}, "so_logic": len(votes),
-                "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
-                "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]}, "hoa_dung_da_so": dec["tie"],
-                "final_goc": dec["final"],
-                "trong_so_wr": {"so_van": dec["n"], "trong_so": dec["weights"],
-                                "flip_trong_so": dec["flip"],
-                                "van_moi_nhat": LC_WR_WEIGHT_NEWEST,
-                                "he_so_giam": LC_WR_DECAY, "san_trong_so": LC_WR_FLOOR},
-                "logic": [{"ten": LOGIC_NAMES[i], "du_doan": votes[i],
-                           "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
-                           "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
-                          for i in range(len(votes))],
-            }
-            with _lc_lock:
-                if target not in _lc_preds:          # LƯU dự đoán đúng 1 lần cho phiên này (không tính lại dù config đổi)
-                    _lc_preds[target] = {"phien": target, "du_doan": base["du_doan"], "final_goc": dec["final"],
-                                         "be_final": LC_FLIP_FINAL, "so_van_wr": dec["n"], "dung": None,
-                                         "sig": LOGIC_SIG, "luc": _now()}
-                    changed = True
-                base["du_doan"] = _lc_preds[target]["du_doan"]       # luôn theo dự đoán ĐÃ LƯU
-                base["be_final"] = _lc_preds[target]["be_final"]
-                _lc_state.update(target=target, base=base, detail=detail, updated=_now())
-        with _lc_lock:
-            for k in sorted(_lc_preds)[:-LC_PRED_KEEP]:
-                del _lc_preds[k]
-                changed = True
-            if changed:
-                _lc_save()
-            _lc_state.update(error=None, checked=_now())
+def _lc_graded(before=None):
+    """Các ván ĐÃ CHẤM (cũ -> mới) để tính WR: vote từng logic lúc dự đoán (đã lưu) + kết quả thật do socket trả.
+    before = chỉ lấy các ván có phiên < before. Gọi trong _lc_lock."""
+    n = len(LOGIC_NAMES)
+    rows = [p for _, p in sorted(_lc_preds.items())
+            if p.get("ket_qua") and isinstance(p.get("votes"), list) and len(p["votes"]) == n
+            and (before is None or p["phien"] < before)]
+    return [{"session": p["phien"], "actual": p["ket_qua"], "votes": p["votes"]} for p in rows][-LC_WR_WINDOW:]
 
 
-def _lc_poll_loop():
-    while True:
+def _lc_prev_fields(target):
+    """Kết quả thật của phiên gần nhất TRƯỚC `target` (nếu socket đã trả) — để hiện ở phien_truoc / xuc_xac / tong / ket_qua_truoc."""
+    ks = [k for k in _lc_results if k < target]
+    if not ks:
+        return {"phien_truoc": None, "xuc_xac": None, "tong": None, "ket_qua_truoc": None}
+    k = max(ks)
+    r = _lc_results[k]
+    return {"phien_truoc": k, "xuc_xac": r.get("xuc_xac"), "tong": r.get("tong"), "ket_qua_truoc": r["ket_qua"]}
+
+
+# ── EVENT 1: new-session -> vote + LƯU dự đoán ──────────────────────────
+def _lc_vote(sid, md5):
+    """Vote phiên `sid` (đúng id của event, không +1) bằng md5 của event, rồi LƯU dự đoán. Gọi trong _lc_lock.
+    Phiên này đã có dự đoán LƯU sẵn (vd. server restart giữa ván, socket gửi lại phiên hiện tại) -> KHÔNG tính lại,
+    chỉ dựng lại trạng thái API từ dự đoán đã lưu (du_doan luôn theo bản đã lưu)."""
+    _lc_load()
+    saved = _lc_preds.get(sid)
+    if saved is not None and _lc_state["target"] == sid:
+        return
+    n_logic = len(LOGIC_NAMES)
+    votes = saved["votes"] if saved is not None and isinstance(saved.get("votes"), list) and len(saved["votes"]) == n_logic \
+        else compute_all_md5(sid, md5)
+    dec = wr_decision(votes, _lc_graded(before=sid), LC_WR_WINDOW, _LC_DECAY, _LC_FLOOR, LC_WR_MIN_GAMES, _LC_NEWEST, LC_WR_FLIP_WEIGHT)
+    tai = sum(1 for v in votes if v == TAI)
+    base = {"ok": True, "game": "lc79", "phien": sid, "md5": md5, "du_doan": lc_out(dec["final"]), "be_final": LC_FLIP_FINAL,
+            "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
+            "so_van_wr": dec["n"], "wr_window": LC_WR_WINDOW}
+    detail = {
+        "vote": {"TÀI": tai, "XỈU": len(votes) - tai}, "so_logic": len(votes),
+        "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
+        "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]}, "hoa_dung_da_so": dec["tie"],
+        "final_goc": dec["final"],
+        "trong_so_wr": {"so_van": dec["n"], "trong_so": dec["weights"],
+                        "flip_trong_so": dec["flip"],
+                        "van_moi_nhat": LC_WR_WEIGHT_NEWEST,
+                        "he_so_giam": LC_WR_DECAY, "san_trong_so": LC_WR_FLOOR},
+        "logic": [{"ten": LOGIC_NAMES[i], "du_doan": votes[i],
+                   "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
+                   "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
+                  for i in range(len(votes))],
+    }
+    if saved is None:                                    # LƯU dự đoán đúng 1 lần cho phiên này (không tính lại dù config đổi)
+        _lc_preds[sid] = {"phien": sid, "md5": md5, "du_doan": base["du_doan"], "final_goc": dec["final"],
+                          "be_final": LC_FLIP_FINAL, "so_van_wr": dec["n"], "votes": votes, "dung": None,
+                          "sig": LOGIC_SIG, "luc": _now()}
+        for k in sorted(_lc_preds)[:-LC_PRED_KEEP]:
+            del _lc_preds[k]
+        _lc_save()
+    base["du_doan"] = _lc_preds[sid]["du_doan"]          # luôn theo dự đoán ĐÃ LƯU
+    base["be_final"] = _lc_preds[sid]["be_final"]
+    _lc_state.update(target=sid, base=base, detail=detail, updated=_now(), error=None)
+    _ws_say(f"✔ vote phiên {sid} → {base['du_doan']}" if saved is None else f"✔ nạp lại dự đoán đã lưu phiên {sid} → {base['du_doan']}")
+    if _ws["wanted"]:                                   # đã tắt / bị từ chối thì giữ nguyên trạng thái
+        _ws_set("ready", f"● Đang chạy · phiên {sid} → {base['du_doan']}")
+
+
+def _lc_flush_pending():
+    """Vote phiên đang chờ (nếu có): gọi khi kết quả phiên trước về, hết LC_WAIT_RESULT_SEC, hoặc có phiên mới hơn đến."""
+    with _lc_lock:
+        t = _lc_wait["timer"]
+        _lc_wait["timer"] = None
+        if t is not None:
+            t.cancel()
+        p = _lc_wait["p"]
+        _lc_wait["p"] = None
+        if p is not None:
+            try:
+                _lc_vote(p[0], p[1])
+            except Exception as e:  # noqa: BLE001
+                _ws_say(f"✖ lỗi vote phiên {p[0]}: {type(e).__name__}: {e}")
+
+
+def _lc_on_new_session(d):
+    sid = _parse_int(d.get("id"))
+    md5 = str(d.get("md5") or "").strip().lower()
+    if sid is None or not re.fullmatch(r"[0-9a-f]{32}", md5):
+        _ws_say("? new-session thiếu id/md5")
+        return
+    with _lc_lock:
+        _lc_load()
+        _ws["got_session"] = True
+        _lc_state["events"] += 1
+        _lc_state["checked"] = _now()
+        if _lc_wait["p"] is not None:                    # phiên cũ đang chờ thì vote nốt
+            _lc_flush_pending()
+        if sid in _lc_preds:
+            if _lc_state["target"] == sid:
+                _ws_say(f"bỏ qua phiên trùng {sid}")
+            else:
+                _lc_vote(sid, md5)                       # đã có dự đoán lưu (restart giữa ván) -> nạp lại, không chờ, không tính lại
+            return
+        last = _lc_preds[max(_lc_preds)] if _lc_preds else None
+        if last is not None and last.get("dung") is None:
+            # kết quả phiên trước có thể đến chậm hơn vài giây -> chờ để WR được cập nhật trước khi vote
+            _lc_wait["p"] = (sid, md5)
+            t = threading.Timer(LC_WAIT_RESULT_SEC, _lc_flush_pending)
+            t.daemon = True
+            _lc_wait["timer"] = t
+            t.start()
+            _ws_say(f"phiên {sid}: chờ kết quả phiên {last['phien']} (tối đa {LC_WAIT_RESULT_SEC:g}s)")
+            return
+        _lc_vote(sid, md5)
+
+
+# ── EVENT 2: session-result -> chấm ĐÚNG/SAI ────────────────────────────
+def _lc_on_result(d):
+    m = re.match(r"^(\d+):", str(d.get("md5Raw") or ""))
+    sid = int(m.group(1)) if m else None
+    dices = None
+    raw = d.get("dices")
+    if isinstance(raw, list) and len(raw) == 3:
+        dd = [_parse_int(x) for x in raw]
+        if None not in dd and all(1 <= x <= 6 for x in dd):
+            dices = dd
+    res = norm_kq(d.get("resultTruyenThong"))
+    if not res and dices:
+        res = actual_of(sum(dices))
+    if sid is None or not res:
+        _ws_say("? session-result thiếu dữ liệu")
+        return
+    total = sum(dices) if dices else None
+    with _lc_lock:
+        _lc_load()
+        _lc_state["events"] += 1
+        _lc_state["checked"] = _now()
+        _lc_results[sid] = {"xuc_xac": dices, "tong": total, "ket_qua": res}
+        for k in sorted(_lc_results)[:-40]:
+            del _lc_results[k]
+        p = _lc_preds.get(sid)
+        dtxt = f" ({'-'.join(map(str, dices))})" if dices else ""
+        if p is None:
+            _ws_say(f"kết quả phiên {sid}: {res}{dtxt} (tool chưa có dự đoán phiên này)")
+        else:
+            p.update(ket_qua=res, tong=total, xuc_xac=dices, dung=(p["du_doan"] == res), cham=_now())
+            _lc_save()
+            _ws_say(f"✔ kết quả phiên {sid}: {res}{dtxt} → {'ĐÚNG' if p['dung'] else 'SAI'}")
+        if _lc_wait["p"] is not None:                    # đã có kết quả của ván mới nhất -> vote phiên đang chờ
+            last = _lc_preds[max(_lc_preds)] if _lc_preds else None
+            if last is None or last.get("dung") is not None:
+                _lc_flush_pending()
+
+
+def _lc_on_event(name, data):
+    try:
+        if name == "new-session" and isinstance(data, dict):
+            _lc_on_new_session(data)
+            return
+        if name == "session-result" and isinstance(data, dict):
+            _lc_on_result(data)
+            return
+    except Exception as e:  # noqa: BLE001 - 1 event lỗi không được làm sập luồng socket
+        _ws_say(f"✖ lỗi xử lý event {name}: {type(e).__name__}: {e}")
+        return
+    with _lc_lock:
+        if name not in _ws["seen"]:
+            _ws["seen"].add(name)
+            _ws_say(f"· event bỏ qua: {name}")
+
+
+# ── SOCKET: Engine.IO v4 ('0' open · '1' close · '2' ping · '3' pong · '4' message) ───
+def _ws_alive(gen):
+    with _lc_lock:
+        return _ws["wanted"] and _ws["gen"] == gen
+
+
+def _ws_send(app, frame):
+    try:
+        app.send(frame)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ws_send_auth(app):
+    with _lc_lock:
+        token = _ws["token"]
+        lines = [x.strip() for x in _ws["auth"].split("\n") if x.strip()]
+        first = lines[0] if lines else "40/txmd5,"
+        _ws["auth_queue"] = lines[1:]
+        old = _ws["auth_timer"]
+        _ws["auth_timer"] = None
+    if old is not None:
+        old.cancel()
+    _ws_send(app, first.replace("{TOKEN}", token))
+    _ws_say("→ " + first)
+    if lines[1:]:                                       # phòng khi không thấy ack connect của namespace
+        t = threading.Timer(2.5, _ws_flush_auth, args=(app,))
+        t.daemon = True
+        with _lc_lock:
+            _ws["auth_timer"] = t
+        t.start()
+
+
+def _ws_flush_auth(app):
+    with _lc_lock:
+        token = _ws["token"]
+        queue, _ws["auth_queue"] = _ws["auth_queue"], []
+    for line in queue:
+        _ws_send(app, line.replace("{TOKEN}", token))
+        _ws_say("→ " + line)
+
+
+def _ws_frame(app, f):
+    with _lc_lock:
+        if _ws["raw_budget"] > 0:
+            _ws["raw_budget"] -= 1
+            _ws_say("← " + f[:140])
+    if f == "2":                                        # server ping -> client pong
+        _ws_send(app, "3")
+        return
+    if f == "3":
+        return
+    t = f[:1]
+    if t == "0":
         try:
-            lc_refresh()
-        except Exception as e:  # noqa: BLE001 - giữ poller sống dù upstream lỗi
+            o = json.loads(f[1:])
+        except ValueError:
+            o = {}
+        if isinstance(o, dict) and o.get("pingInterval") and o.get("pingTimeout"):
             with _lc_lock:
-                _lc_state["error"] = f"{type(e).__name__}: {e}"
-                _lc_state["checked"] = _now()
+                _ws["ping_timeout"] = (o["pingInterval"] + o["pingTimeout"]) / 1000.0 + 5
+        _ws_send_auth(app)
+        return
+    if t == "1":
+        _ws_say("Server gửi lệnh đóng")
+        return
+    if t == "4":
+        _ws_sio(app, f[1:])
+
+
+# Socket.IO: '0' CONNECT · '1' DISCONNECT · '2' EVENT · '4' CONNECT_ERROR
+def _ws_sio(app, s):
+    t = s[:1]
+    rest, ns = s[1:], "/"
+    if rest[:1] == "/":
+        i = rest.find(",")
+        if i < 0:
+            ns, rest = rest, ""
+        else:
+            ns, rest = rest[:i], rest[i + 1:]
+    if t == "0":
         with _lc_lock:
-            _lc_state["polls"] += 1
-        time.sleep(LC_POLL_SEC)
+            tm = _ws["auth_timer"]
+            _ws["auth_timer"] = None
+        if tm is not None:
+            tm.cancel()
+        _ws_flush_auth(app)
+        with _lc_lock:
+            _ws["ready_at"] = time.time()
+            _ws["retry"] = 0
+            _lc_state["error"] = None
+            _ws_set("ready", "● Đã kết nối — chờ phiên mới…")
+        _ws_say("✔ Socket.IO connect " + ns)
+        return
+    if t == "4":
+        _ws_say("✖ Server từ chối: " + rest[:160])
+        with _lc_lock:
+            _ws["wanted"] = False
+            _ws["gen"] += 1
+            _ws["auth_queue"] = []
+            _ws["sock"] = None
+            _lc_state["error"] = "socket bi server tu choi (token het han / sai khung auth?)"
+            _ws_set("err", "● Server từ chối (token hết hạn / sai khung auth?)")
+            _ws_cfg_save(False)
+        try:
+            app.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    if t == "1":
+        _ws_say("Server ngắt namespace " + ns)
+        return
+    if t == "2":
+        m = re.match(r"^(\d+)?(\[[\s\S]*\])$", rest)
+        if not m:
+            _ws_say("? event lạ: " + rest[:100])
+            return
+        try:
+            arr = json.loads(m.group(2))
+        except ValueError:
+            _ws_say("? JSON lỗi")
+            return
+        if isinstance(arr, list) and arr:
+            _lc_on_event(arr[0], arr[1] if len(arr) > 1 else None)
+
+
+def _ws_watch(gen, app):
+    """Giám sát kết nối: lâu không nhận khung nào -> đóng để nối lại · 25s sau connect mà chưa có phiên nào -> cảnh báo."""
+    while True:
+        for _ in range(10):
+            time.sleep(0.5)
+            if not _ws_alive(gen) or app is not _ws["sock"]:
+                return
+        now = time.time()
+        with _lc_lock:
+            idle_too_long = now - _ws["last_frame"] > _ws["ping_timeout"]
+            warn = bool(_ws["ready_at"]) and not _ws["got_session"] and not _ws["warned"] and now - _ws["ready_at"] > 25
+            if warn:
+                _ws["warned"] = True
+                _ws_set("err", "● Đã kết nối nhưng chưa có phiên — kiểm tra auth")
+        if idle_too_long:
+            _ws_say("✖ Quá lâu không nhận khung nào — kết nối lại")
+            try:
+                app.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if warn:
+            _ws_say("⚠ 25s chưa nhận phiên nào — kiểm tra token / khung auth")
+
+
+def _ws_session(gen, websocket):
+    """Mở 1 kết nối, chạy tới khi đóng (chặn luồng). Vòng nối lại nằm ở _ws_run."""
+    with _lc_lock:
+        url = _ws["url"]
+        _ws.update(last_frame=time.time(), ready_at=0.0, got_session=False, warned=False,
+                   raw_budget=15, ping_timeout=50.0, auth_queue=[])
+        _ws_set("wait", "● Đang kết nối…")
+    _ws_say("→ kết nối " + url)
+
+    def on_open(app):
+        if app is _ws["sock"]:
+            _ws_say("✔ WebSocket đã mở")
+
+    def on_message(app, msg):
+        if app is not _ws["sock"] or not isinstance(msg, str):
+            return
+        _ws["last_frame"] = time.time()
+        try:
+            _ws_frame(app, msg)
+        except Exception as e:  # noqa: BLE001
+            _ws_say(f"✖ lỗi xử lý khung: {type(e).__name__}: {e}")
+
+    def on_error(app, err):
+        if app is _ws["sock"]:
+            _ws_say(f"✖ WebSocket lỗi: {err} (server từ chối Origin / mạng / URL sai)")
+
+    def on_close(app, code, reason):
+        if app is _ws["sock"]:
+            _ws_say(f"✖ WebSocket đóng (code {code}{': ' + str(reason) if reason else ''})")
+
+    app = websocket.WebSocketApp(url, header=[f"User-Agent: {_WS_UA}"], on_open=on_open,
+                                 on_message=on_message, on_error=on_error, on_close=on_close)
+    with _lc_lock:
+        if not (_ws["wanted"] and _ws["gen"] == gen):
+            return
+        _ws["sock"] = app
+    threading.Thread(target=_ws_watch, args=(gen, app), daemon=True, name="lc79-socket-watch").start()
+    try:
+        app.run_forever(origin=LC_WS_ORIGIN or None)
+    finally:
+        with _lc_lock:
+            same = app is _ws["sock"]
+            if same:
+                _ws["sock"] = None
+                _ws["auth_queue"] = []
+                if _ws["wanted"] and _ws["gen"] == gen:
+                    _lc_state["error"] = "socket mat ket noi"
+            tm = _ws["auth_timer"] if same else None
+            if same:
+                _ws["auth_timer"] = None
+        if tm is not None:
+            tm.cancel()
+
+
+def _ws_run(gen):
+    """Luồng quản lý socket: kết nối -> rớt thì chờ 2s, 4s, 8s ... (tối đa 30s) rồi nối lại, tới khi bị tắt / bị từ chối."""
+    try:
+        import websocket  # pip install websocket-client
+    except ImportError:
+        with _lc_lock:
+            _ws["wanted"] = False
+            _ws_set("err", "● Thiếu thư viện websocket-client")
+            _lc_state["error"] = "thieu thu vien websocket-client (pip install websocket-client)"
+        _ws_say("✖ Thiếu thư viện: pip install websocket-client")
+        return
+    while _ws_alive(gen):
+        try:
+            _ws_session(gen, websocket)
+        except Exception as e:  # noqa: BLE001
+            _ws_say(f"✖ lỗi socket: {type(e).__name__}: {e}")
+        if not _ws_alive(gen):
+            return
+        with _lc_lock:
+            d = min(LC_WS_RETRY_BASE * (2 ** min(_ws["retry"], 10)), LC_WS_RETRY_MAX)
+            _ws["retry"] += 1
+            _ws_set("wait", f"● Mất kết nối — thử lại sau {round(d)}s")
+        waited = 0.0
+        while waited < d and _ws_alive(gen):
+            time.sleep(0.25)
+            waited += 0.25
+
+
+def _ws_close_sock():
+    with _lc_lock:
+        app, _ws["sock"] = _ws["sock"], None
+        tm, _ws["auth_timer"] = _ws["auth_timer"], None
+        _ws["auth_queue"] = []
+    if tm is not None:
+        tm.cancel()
+    if app is not None:
+        try:
+            app.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def lc_ws_start(token=None, url=None, auth=None):
+    """Bật socket LC79. token rỗng -> dùng token đã lưu. Ném ValueError nếu chưa có token."""
+    with _lc_lock:
+        t = (token or "").strip() or _ws["token"]
+        if not t:
+            raise ValueError("chua co token — dan token vao o Token roi bam Bat")
+        _ws["token"] = t
+        if url and url.strip():
+            _ws["url"] = url.strip()
+        if auth and auth.strip():
+            _ws["auth"] = auth
+        _ws_cfg_save(True)
+        _ws["wanted"] = True
+        _ws["gen"] += 1
+        _ws["retry"] = 0
+        gen = _ws["gen"]
+    _ws_close_sock()
+    threading.Thread(target=_ws_run, args=(gen,), daemon=True, name="lc79-socket").start()
+
+
+def lc_ws_stop():
+    """Tắt socket LC79 (giữ token đã lưu, lần khởi động sau KHÔNG tự bật lại)."""
+    with _lc_lock:
+        _ws["wanted"] = False
+        _ws["gen"] += 1
+        tm, _lc_wait["timer"] = _lc_wait["timer"], None
+        _lc_wait["p"] = None
+        _lc_state["error"] = "socket da tat"
+        _ws_set("off", "● Tắt")
+        _ws_cfg_save(False)
+    if tm is not None:
+        tm.cancel()
+    _ws_close_sock()
+    _ws_say("■ Đã tắt tự động")
+
+
+def lc_ws_autostart():
+    """Khởi động server: nạp token đã lưu; lần trước đang bật tự động thì tự bật lại (chỉ chạy 1 lần)."""
+    with _lc_lock:
+        if _ws["booted"]:
+            return
+        _ws["booted"] = True
+        c = _ws_cfg_load()
+        _ws["token"] = str(c.get("token") or "")
+        if c.get("url"):
+            _ws["url"] = str(c["url"])
+        if c.get("auth"):
+            _ws["auth"] = str(c["auth"])
+        auto = bool(c.get("auto")) and bool(_ws["token"])
+        _lc_load()
+    if auto:
+        lc_ws_start()
+
+
+def lc_ws_status():
+    """Trạng thái socket cho panel / health. KHÔNG bao giờ trả token (url/khung auth cũng bị che nếu có chứa token)."""
+    with _lc_lock:
+        tok = _ws["token"]
+        mask = (lambda x: x.replace(tok, "{TOKEN}")) if tok else (lambda x: x)
+        return {"ok": True, "status": _ws["status"], "text": _ws["text"], "wanted": _ws["wanted"],
+                "has_token": bool(tok), "url": mask(_ws["url"]), "auth": mask(_ws["auth"]),
+                "events": _lc_state["events"], "log": list(_ws_log)}
 
 
 def lc_history():
     """Các ván LC đã chấm đúng/sai, mới -> cũ."""
     with _lc_lock:
+        _lc_load()
         rows = [p for _, p in sorted(_lc_preds.items(), reverse=True) if p.get("dung") is not None]
-    return [{"phien": p["phien"], "du_doan": p["du_doan"], "ket_qua": p["ket_qua"], "tong": p["tong"], "dung": p["dung"]}
+    return [{"phien": p["phien"], "du_doan": p["du_doan"], "ket_qua": p["ket_qua"], "tong": p.get("tong"), "dung": p["dung"]}
             for p in rows]
 
 
@@ -985,10 +1421,41 @@ table{width:100%;border-collapse:collapse}
 th{font-weight:600;color:var(--mu);font-size:12px;text-align:left;padding:6px 8px}
 td{padding:7px 8px;border-top:1px solid var(--ln)}
 .r{text-align:right}
+.ws{background:var(--pn);border:1px solid var(--ln);border-radius:12px;margin-bottom:12px}
+.ws>summary{cursor:pointer;padding:10px 14px;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600}
+.ws>summary::-webkit-details-marker{display:none}
+.ws-b{padding:0 14px 14px}
+.ws label{display:block;margin:10px 0 4px}
+.ws input,.ws textarea{width:100%;background:#0f1424;border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:9px 10px;font:13px/1.4 ui-monospace,Consolas,monospace}
+.ws textarea{height:56px;resize:vertical}
+.ws .row{display:flex;gap:8px;margin-top:10px}
+.ws .row button{flex:1;border-radius:8px;padding:9px 10px;font:inherit;font-weight:600;cursor:pointer;border:1px solid var(--ln);background:none;color:var(--tx)}
+.ws .row .go{background:var(--ok);border-color:var(--ok);color:#0f1424}
+.ws pre{margin:0;padding:8px;background:#0b0f1d;border:1px solid var(--ln);border-radius:6px;max-height:160px;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:var(--mu)}
+.st-off{color:var(--mu)}.st-wait{color:#ffb020}.st-ready{color:var(--ok)}.st-err{color:var(--no)}
+[hidden]{display:none!important}
 @media(max-width:480px){.hero{grid-template-columns:1fr}.prev{text-align:left}}
 </style></head><body>
 <header><h1>SUNVIW · Tài Xỉu</h1><div id="st"></div></header>
 <nav class="tabs" id="tabs"></nav>
+<details class="ws" id="ws" hidden>
+  <summary><span>🔑 Socket LC79 · gắn token</span><span id="wsSt" class="st-off">● Tắt</span></summary>
+  <div class="ws-b">
+    <label class="mu" for="wsTok">Token đăng nhập</label>
+    <input id="wsTok" type="password" autocomplete="off" spellcheck="false" placeholder="Dán token đăng nhập vào đây...">
+    <div class="row"><button class="go" id="wsGo">▶ Bật tự động</button><button id="wsOff">■ Tắt</button></div>
+    <div class="mu" id="wsHint" style="margin-top:8px"></div>
+    <details style="margin-top:10px">
+      <summary class="mu" style="cursor:pointer">⚙ Nâng cao (URL · khung auth · nhật ký)</summary>
+      <label class="mu" for="wsUrl">URL WebSocket</label>
+      <input id="wsUrl" type="text" spellcheck="false">
+      <label class="mu" for="wsAuth">Khung gửi khi kết nối — mỗi dòng 1 khung, {TOKEN} = token. Dòng 1 gửi ngay khi mở kết nối, các dòng sau gửi sau khi namespace connect:</label>
+      <textarea id="wsAuth" spellcheck="false"></textarea>
+      <label class="mu">Nhật ký socket</label>
+      <pre id="wsLog"></pre>
+    </details>
+  </div>
+</details>
 <main id="main"></main>
 <div class="cfg">
   <label for="n" class="mu">Số ván lịch sử hiển thị</label>
@@ -1003,15 +1470,17 @@ const D={},$=s=>document.querySelector(s),cl=v=>v==='TÀI'?'tai':v==='XỈU'?'xi
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const P={1:[[50,50]],2:[[26,26],[74,74]],3:[[26,26],[50,50],[74,74]],4:[[26,26],[74,26],[26,74],[74,74]],5:[[26,26],[74,26],[50,50],[26,74],[74,74]],6:[[26,26],[74,26],[26,50],[74,50],[26,74],[74,74]]};
 const dice=a=>`<span class="dice">${a.map(n=>`<i style="background:${P[n].map(([x,y])=>`radial-gradient(circle at ${x}% ${y}%,#1a1f36 0 3.2px,transparent 3.8px)`).join(',')},#f2efe6"></i>`).join('')}</span>`;
+const prevHtml=d=>d.phien_truoc==null?'<div class="mu">Chưa có kết quả phiên trước</div>':`<div class="mu">Phiên ${d.phien_truoc}</div>${d.xuc_xac?dice(d.xuc_xac):''}<div>${d.tong==null?'':`<b>${d.tong}</b> `}<span class="${cl(d.ket_qua_truoc)}">${d.ket_qua_truoc}</span></div>`;
 const acc=d=>{const h=d.lich_su||[],k=h.filter(x=>x.dung).length;return{k,t:h.length,p:h.length?Math.round(k*100/h.length):null}};
 function render(){
+  $('#ws').hidden=cur!=='lc';
   $('#tabs').innerHTML=Object.entries(G).map(([k,g])=>{const d=D[k]||{},a=acc(d);
     return `<button class="tab${k===cur?' on':''}" data-g="${k}"><span>${g.n} <b class="${cl(d.du_doan)}">${d.ok?d.du_doan:'…'}</b></span><small>${a.p===null?'–':a.p+'%'}</small></button>`}).join('');
   const d=D[cur]||{},a=acc(d);
   if(!d.ok){$('#main').innerHTML=`<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;$('#hist').innerHTML='';return}
-  $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''} · xét ${d.so_van_wr} ván</div></div><div class="prev"><div class="mu">Phiên ${d.phien_truoc}</div>${dice(d.xuc_xac)}<div><b>${d.tong}</b> <span class="${cl(d.ket_qua_truoc)}">${d.ket_qua_truoc}</span></div></div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
+  $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''} · xét ${d.so_van_wr} ván</div></div><div class="prev">${prevHtml(d)}</div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
   const h=d.lich_su||[];
-  $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua} <span class="mu">(${x.tong})</span></td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ API trả kết quả phiên đó.</p>`;
+  $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua}${x.tong==null?'':` <span class="mu">(${x.tong})</span>`}</td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ kết quả phiên đó (Sun: API · LC79: event session-result của socket).</p>`;
   $('#st').className=Object.values(D).some(x=>x&&(!x.ok||x.stale))?'bad':'';
   $('#st').innerHTML=`<i></i>${esc(d.cap_nhat||'')}`;
 }
@@ -1020,10 +1489,38 @@ $('#n').value=N;
 function setN(v){N=Math.max(1,Math.min(+v||1,__MAX__));$('#n').value=N;localStorage.setItem('n',N);load()}
 $('#n').onchange=e=>setN(e.target.value);
 document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>setN(b.dataset.n));
+let W=null,wsInit=false;
+const wsCls={off:'st-off',wait:'st-wait',ready:'st-ready',err:'st-err'};
+function wsRender(){
+  if(!W)return;
+  const box=$('#ws');
+  $('#wsSt').className=wsCls[W.status]||'st-off';$('#wsSt').textContent=W.text||'';
+  if(!wsInit){wsInit=true;$('#wsUrl').value=W.url||'';$('#wsAuth').value=W.auth||'';box.open=!W.has_token||W.status==='err'}
+  $('#wsTok').placeholder=W.has_token?'Đã lưu token trên server — để trống nếu muốn dùng lại':'Dán token đăng nhập vào đây...';
+  $('#wsHint').textContent=W.has_token?'Token đã lưu trên server (không hiển thị lại).':'Chưa có token — dán token rồi bấm Bật tự động.';
+  const lg=$('#wsLog'),end=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-4;
+  lg.textContent=(W.log||[]).join('\n');if(end)lg.scrollTop=lg.scrollHeight;
+}
+async function wsLoad(){
+  try{const r=await fetch('/api/lc79/ws',{cache:'no-store'});W=await r.json()}catch(e){}
+  wsRender();
+}
+$('#wsGo').onclick=async()=>{
+  const t=$('#wsTok').value.trim();
+  if(!t&&!(W&&W.has_token)){alert('Dán token đăng nhập vào ô Token trước!');return}
+  try{
+    const r=await fetch('/api/lc79/ws/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,url:$('#wsUrl').value,auth:$('#wsAuth').value})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.ok===false){alert(j.loi||'Không bật được socket');return}
+    $('#wsTok').value='';
+  }catch(e){alert('Mất kết nối: '+e);return}
+  wsLoad();load();
+};
+$('#wsOff').onclick=async()=>{try{await fetch('/api/lc79/ws/stop',{method:'POST'})}catch(e){}wsLoad()};
 async function load(){
-  await Promise.all(Object.entries(G).map(async([k,g])=>{
+  await Promise.all([wsLoad(),...Object.entries(G).map(async([k,g])=>{
     try{const r=await fetch(`${g.u}?hist=${N}`,{cache:'no-store'});D[k]=await r.json()}
-    catch(e){D[k]={ok:false,loi:'Mất kết nối: '+e}}}));
+    catch(e){D[k]={ok:false,loi:'Mất kết nối: '+e}}})]);
   render();
 }
 load();setInterval(load,3000);
@@ -1045,7 +1542,7 @@ def _json(obj, status=200):
 @app.after_request
 def _cors(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "*"
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Cache-Control"] = "no-store"
@@ -1065,19 +1562,16 @@ def _hist_n():
 def api_predict_lc79():
     ensure_poller()
     with _lc_lock:
-        have = _lc_state["base"] is not None
-    if not have:                                  # request đầu tiên, poller chưa kịp quét xong
-        try:
-            lc_refresh()
-        except Exception as e:  # noqa: BLE001
-            with _lc_lock:
-                _lc_state["error"] = f"{type(e).__name__}: {e}"
-    with _lc_lock:
+        _lc_load()
         base, detail, err, upd = _lc_state["base"], _lc_state["detail"], _lc_state["error"], _lc_state["updated"]
-    if base is None:
-        return _json({"ok": False, "game": "lc79", "loi": err or "chua co du lieu"}, 503)
+        prev = _lc_prev_fields(base["phien"]) if base is not None else None
+        ws_text = _ws["text"]
+    if base is None:                              # chưa có event new-session nào (chưa gắn token / socket chưa nhận phiên)
+        return _json({"ok": False, "game": "lc79",
+                      "loi": "chua co du lieu — socket: " + ws_text + " (gan token o panel /api/html, tab LC79)"}, 503)
     rows = lc_history()
     out = dict(base)
+    out.update(prev)                              # phien_truoc / xuc_xac / tong / ket_qua_truoc: kết quả thật socket đã trả (None nếu chưa có)
     out["tool_dung_sai_10_van"] = _acc_rows(rows, 10)
     out["stale"] = bool(err)
     if err:
@@ -1089,6 +1583,33 @@ def api_predict_lc79():
     if request.args.get("detail") in ("1", "true", "yes"):
         out["chi_tiet"] = detail
     return _json(out)
+
+
+@app.route("/api/lc79/ws")
+def api_lc_ws():
+    """Trạng thái socket LC79 (không bao giờ trả token)."""
+    ensure_poller()
+    return _json(lc_ws_status())
+
+
+@app.route("/api/lc79/ws/start", methods=["POST"])
+def api_lc_ws_start():
+    """Gắn token + bật socket. Body JSON: {"token": "...", "url": "... (tuỳ chọn)", "auth": "... (tuỳ chọn)"}. token rỗng = dùng token đã lưu."""
+    ensure_poller()
+    b = request.get_json(silent=True) or {}
+    str_or_none = lambda v: None if v is None else str(v)  # noqa: E731
+    try:
+        lc_ws_start(str_or_none(b.get("token")), str_or_none(b.get("url")), str_or_none(b.get("auth")))
+    except ValueError as e:
+        return _json({"ok": False, "loi": str(e)}, 400)
+    return _json(lc_ws_status())
+
+
+@app.route("/api/lc79/ws/stop", methods=["POST"])
+def api_lc_ws_stop():
+    ensure_poller()
+    lc_ws_stop()
+    return _json(lc_ws_status())
 
 
 @app.route("/api/html")
@@ -1136,9 +1657,11 @@ def health():
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
              wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST)       # trọng số cũ nhất -> mới nhất
     with _lc_lock:
-        lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "polls")}
-        lc["latest"] = (_lc_state["base"] or {}).get("phien_truoc")
-    lc.update(ok=lc["error"] is None and lc["latest"] is not None, poll_sec=LC_POLL_SEC, wr_window=LC_WR_WINDOW,
+        lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "events")}
+        lc["latest"] = _lc_state["target"]
+        lc["socket"] = {"status": _ws["status"], "text": _ws["text"], "wanted": _ws["wanted"],
+                        "has_token": bool(_ws["token"]), "url": _ws["url"]}      # KHÔNG trả token
+    lc.update(ok=lc["error"] is None and lc["latest"] is not None, wr_window=LC_WR_WINDOW,
               be_final=LC_FLIP_FINAL, wr_flip=LC_WR_FLIP_WEIGHT, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR, wr_newest=LC_WR_WEIGHT_NEWEST)
     s["lc79"] = lc
     return _json(s)
@@ -1146,7 +1669,7 @@ def health():
 
 @app.route("/")
 def index():
-    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/html", "/health"]})
+    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/lc79/ws", "POST /api/lc79/ws/start", "POST /api/lc79/ws/stop", "/api/html", "/health"]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.
@@ -1155,7 +1678,7 @@ if __name__ != "__main__":
 
 
 def main():
-    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_UPSTREAM_URL, LC_POLL_SEC, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
+    global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -1165,8 +1688,6 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API phien moi nhat (…/api/tx)")
     ap.add_argument("--poll", type=float, default=POLL_SEC, help="chu ky quet upstream (giay)")
-    ap.add_argument("--lc-upstream", default=LC_UPSTREAM_URL, help="URL API history LC79")
-    ap.add_argument("--lc-poll", type=float, default=LC_POLL_SEC, help="chu ky quet API LC79 (giay)")
     lg = ap.add_mutually_exclusive_group()
     lg.add_argument("--lc-flip", action="store_true", help="BẬT bẻ final của LC79 (riêng, không ảnh hưởng Sun)")
     lg.add_argument("--lc-no-flip", action="store_true", help="TẮT bẻ final của LC79 (theo final gốc)")
@@ -1181,7 +1702,6 @@ def main():
     lwg.add_argument("--lc-no-wr-flip", action="store_true", help="TẮT flip trọng số WR của LC79")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
-    LC_UPSTREAM_URL, LC_POLL_SEC = a.lc_upstream, a.lc_poll
     if a.flip:
         FLIP_FINAL = True
     elif a.no_flip:
@@ -1201,8 +1721,9 @@ def main():
     ensure_poller()
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
-    print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html")
-    print(f"LC79 WR     ->  xet dung {LC_WR_WINDOW} van gan nhat tu API · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'} · flip trong so {'BAT (cu nhat nang nhat)' if LC_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}")
+    print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html (gan token o tab LC79)")
+    print(f"LC79 socket ->  {_ws['url']} · token {'da luu' if _ws['token'] else 'CHUA CO — gan o panel'}")
+    print(f"LC79 WR     ->  xet {LC_WR_WINDOW} van gan nhat DA CHAM · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'} · flip trong so {'BAT (cu nhat nang nhat)' if LC_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}")
     print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))

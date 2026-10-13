@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# dữ liệu chạy (có chứa token LC79 + lịch sử dự đoán) — không được commit
+lc79_*.json
+sunviw_*.json
+*.tmp

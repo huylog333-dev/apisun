@@ -184,10 +184,10 @@ LC_UPSTREAM_URL = os.environ.get(
     "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=a379cb76ee3f564314afa7136c476a4b",
 )
 LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
-LC_WR_WINDOW = 11          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
-LC_WR_DECAY = 0.75         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
-LC_WR_FLOOR = 0.95         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
-LC_WR_WEIGHT_NEWEST = 1.28  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
+LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
+LC_WR_DECAY = 0.95         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
+LC_WR_FLOOR = 1.15         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
+LC_WR_WEIGHT_NEWEST = 1.55  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR
 LC_WR_FLIP_WEIGHT_DEFAULT = True                  # FLIP trọng số WR của LC79 (RIÊNG, độc lập WR_FLIP_WEIGHT của Sun):
                                                    #   True  = ván CŨ nhất (trong LC_WR_WINDOW) nặng nhất = LC_WR_WEIGHT_NEWEST, giảm dần tới ván MỚI nhất

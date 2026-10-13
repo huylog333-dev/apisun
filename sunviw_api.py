@@ -90,7 +90,7 @@ from fractions import Fraction
 # -> tool quét 1 phiên gần nhất mỗi lần, tự tích lũy vào lịch sử (HIST_PATH) để phần WR vẫn có ván để chấm.
 UPSTREAM_URL = os.environ.get(
     "SUNVIW_UPSTREAM",
-    "https://interstate-competent-shortly-cigarette.trycloudflare.com/api/tx",
+    "https://well-summary-oclc-invisible.trycloudflare.com/api/tx",
 )
 UPSTREAM_TIMEOUT = 9      # giây
 HIST_PATH = os.environ.get("SUNVIW_HIST", "/tmp/sunviw_hist.json")   # lịch sử các phiên đã quét (tool tự tích lũy)

@@ -185,7 +185,7 @@ LC_UPSTREAM_URL = os.environ.get(
 )
 LC_POLL_SEC = 3.0          # chu kỳ quét API LC79 (giây)
 LC_WR_WINDOW = 15          # số ván gần nhất dùng để tính WR (tối đa ~99 vì API chỉ có ~100 phiên)
-LC_WR_DECAY = 0.95         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
+LC_WR_DECAY = 0.45         # tốc độ giảm trọng số ván cũ (như WR_DECAY của Sun)
 LC_WR_FLOOR = 1.15         # sàn trọng số ván cũ (như WR_FLOOR của Sun)
 LC_WR_WEIGHT_NEWEST = 1.55  # trọng số ván mới nhất (như WR_WEIGHT_NEWEST của Sun; 1.00 = hành vi bản gốc)
 LC_WR_MIN_GAMES = 1        # số ván tối thiểu để dùng WR

@@ -10,6 +10,8 @@ Chạy:
     python sunviw_api.py --lc-flip            # BẬT bẻ final của LC79 (RIÊNG, không liên quan Sun; --lc-no-flip = tắt; hoặc LC79_FLIP=1|0, hoặc sửa LC_FLIP_FINAL_DEFAULT)
     python sunviw_api.py --wr-flip            # BẬT FLIP TRỌNG SỐ WR của SUN: ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất (--no-wr-flip = tắt; hoặc SUNVIW_WR_FLIP=1|0, hoặc sửa WR_FLIP_WEIGHT_DEFAULT)
     python sunviw_api.py --lc-wr-flip         # BẬT FLIP TRỌNG SỐ WR của LC79 (RIÊNG, độc lập Sun; --lc-no-wr-flip = tắt; hoặc LC79_WR_FLIP=1|0, hoặc sửa LC_WR_FLIP_WEIGHT_DEFAULT)
+    python sunviw_api.py --zf-window 150      # ZF (SUN): SỐ VÁN gần nhất xét WR từng logic (--zf / --no-zf = bật/tắt ZF · --zf-z 2.0 = ngưỡng z · --zf-min 100 = số ván tối thiểu · --zf-flip / --zf-no-flip = bẻ riêng ZF)
+                                              #           hoặc env SUNVIW_ZF / SUNVIW_ZF_WINDOW / SUNVIW_ZF_Z / SUNVIW_ZF_MIN / SUNVIW_ZF_FLIP / SUNVIW_ZF_EXCLUDE, hoặc sửa ZF_*_DEFAULT ở khối "CONFIG ZF"
 
 Endpoint:
     GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
@@ -28,6 +30,7 @@ JSON /api/predict:
       "phien": 12346,            # phiên được dự đoán (n)
       "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của các logic đang dùng; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
+      "zf": true,                # true = final của ván này do ZF chốt · false = ZF chưa đủ điều kiện, đang dùng cách chốt cũ (be_final khi đó theo FLIP_FINAL)
       "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
                                  #     trọng số: ván mới nhất = WR_WEIGHT_NEWEST (cao nhất), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
       "phien_truoc": 12345,      # phiên mới nhất đã có kết quả (n-1)
@@ -68,6 +71,12 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
 ➕ L5N (logic mới thêm):  K = |(X + 3) × (Y ÷ 4)| − (Z ÷ 5)     ·  chẵn→XỈU / lẻ→TÀI
     Cùng quy ước với L3N: X = phiên % 20 · Y = MD5[6] % 20 · Z = MD5[30] % 20 (hex ký tự 6 và 30, không NaN).
     mod dùng _mod của file (chia cho 0 -> 0) · dấu ^ dùng _pow của file (cắt số mũ tối đa 8) · làm tròn kiểu Math.round của JS.
+🎯 ZF (Z-FILTER ĐỘNG) — cách chốt final MỚI của SUN (mặc định BẬT · chỉnh ở khối "CONFIG ZF" gần đầu file · LC79 giữ nguyên cách cũ):
+    Mỗi ván lấy ZF_WINDOW ván gần nhất đã chấm (CHỈNH ĐƯỢC ở ZF_WINDOW_DEFAULT / env SUNVIW_ZF_WINDOW / cờ --zf-window), tính WR từng logic.
+    Logic nào lệch khỏi 50% đủ mạnh (|z| >= ZF_Z) mới được bỏ phiếu:  WR > 50% -> THEO logic · WR < 50% -> ĐẢO logic.  Đa số phiếu = final.
+    Không logic nào đủ mạnh / hoà phiếu / chưa đủ ZF_MIN_GAMES ván -> tự quay về cách chốt cũ (WR có trọng số + nhóm THẤP/CAO) và JSON có "zf": false.
+    Ván do ZF chốt KHÔNG bị bẻ bởi FLIP_FINAL chung (ZF đã tự chọn hướng từng logic) — muốn bẻ riêng ZF dùng ZF_FLIP_FINAL. Ván quay về cách cũ vẫn bẻ theo FLIP_FINAL như trước.
+
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
@@ -175,6 +184,71 @@ ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
 PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
 PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WINDOW đủ dùng)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  🎯  CONFIG ZF (Z-FILTER ĐỘNG) — CÁCH CHỐT FINAL CỦA SUN  —  CHỈNH Ở ĐÂY   (LC79 KHÔNG dùng ZF, giữ cách chốt cũ)
+# ═══════════════════════════════════════════════════════════════════════════
+#   Mỗi ván: lấy ZF_WINDOW ván GẦN NHẤT đã chấm, tính WR (đoán đúng / số ván) của TỪNG logic.
+#   Logic nào lệch khỏi 50% đủ mạnh (|z| >= ZF_Z) mới được bỏ phiếu:
+#       WR > 50%  -> THEO logic (logic đoán gì phiếu đó)          WR < 50% -> ĐẢO logic (logic đoán TÀI thì phiếu XỈU, và ngược lại)
+#   z = (WR - 0.5) / (0.5 / sqrt(số ván xét)).  Vd 150 ván & ZF_Z = 2.0 -> chọn logic có WR >= 58.2% hoặc <= 41.8%.
+#   Đa số phiếu của các logic được chọn = final.
+#   Không logic nào được chọn / hoà phiếu / chưa đủ ZF_MIN_GAMES ván -> TỰ QUAY VỀ cách chốt cũ (WR có trọng số + nhóm THẤP/CAO),
+#   JSON báo "zf": false để tool bên ngoài tự bỏ ván nếu muốn.
+#
+#   ZF_ENABLED_DEFAULT   True = dùng ZF · False = chỉ dùng cách chốt cũ
+#   ZF_WINDOW_DEFAULT    SỐ VÁN gần nhất dùng để chấm WR từng logic (đã backtest 100 / 150 / 200; nhỏ = phản ứng nhanh nhưng nhiễu hơn)
+#   ZF_Z_DEFAULT         ngưỡng z để logic được bỏ phiếu (1.5 = lỏng, nhiều logic hơn · 2.0 = mặc định · 2.5 = chặt, ít ván được chốt hơn)
+#   ZF_MIN_GAMES_DEFAULT số ván đã chấm tối thiểu mới bật ZF (chưa đủ thì dùng cách cũ). Tự kẹp trong [10, ZF_WINDOW]. Chưa đủ ZF_WINDOW thì xét tất cả ván đang có.
+#   ZF_FLIP_FINAL_DEFAULT bẻ riêng kết quả ZF (TÀI<->XỈU). Mặc định False: ZF đã tự chọn THEO/ĐẢO từng logic nên bẻ nữa là đảo ngược lại chính nó.
+#                         FLIP_FINAL chung của SUN KHÔNG áp lên ván do ZF chốt (chỉ áp lên ván quay về cách cũ).
+#   ZF_EXCLUDE_DEFAULT   logic KHÔNG cho bỏ phiếu trong ZF. ANTI-L7 luôn ngược L7 100% -> trong ZF cả hai cùng bỏ 1 phiếu giống nhau (L7 bị đếm đôi) nên loại ANTI-L7.
+#   Lịch sử cần giữ >= cửa sổ ZF: HIST_KEEP / PERSIST_KEEP TỰ nới theo ZF_WINDOW (xem zf_apply_limits). Chạy trên Railway nên trỏ SUNVIW_HIST / SUNVIW_PERSIST vào ổ đĩa
+#   bền, nếu không mỗi lần deploy /tmp bị xoá và ZF phải gom lại >= ZF_MIN_GAMES ván mới chạy.
+#
+#   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
+#       env  : SUNVIW_ZF=1|0 · SUNVIW_ZF_WINDOW=150 · SUNVIW_ZF_Z=2.0 · SUNVIW_ZF_MIN=100 · SUNVIW_ZF_FLIP=1|0 · SUNVIW_ZF_EXCLUDE="ANTI-L7,..." (rỗng = không loại)
+#       lệnh : --zf / --no-zf · --zf-window N · --zf-z X · --zf-min N · --zf-flip / --zf-no-flip
+ZF_ENABLED_DEFAULT = True
+ZF_WINDOW_DEFAULT = 150
+ZF_Z_DEFAULT = 2.0
+ZF_MIN_GAMES_DEFAULT = 100
+ZF_FLIP_FINAL_DEFAULT = False
+ZF_EXCLUDE_DEFAULT = ("ANTI-L7",)
+
+
+def _env_num(name, default, cast):
+    v = os.environ.get(name, "").strip()
+    if not v:
+        return default
+    try:
+        return cast(v)
+    except ValueError:
+        return default
+
+
+ZF_ENABLED = _env_bool("SUNVIW_ZF", ZF_ENABLED_DEFAULT)
+ZF_WINDOW = _env_num("SUNVIW_ZF_WINDOW", ZF_WINDOW_DEFAULT, int)
+ZF_Z = _env_num("SUNVIW_ZF_Z", ZF_Z_DEFAULT, float)
+ZF_MIN_GAMES = _env_num("SUNVIW_ZF_MIN", ZF_MIN_GAMES_DEFAULT, int)
+ZF_FLIP_FINAL = _env_bool("SUNVIW_ZF_FLIP", ZF_FLIP_FINAL_DEFAULT)
+_zf_ex_env = os.environ.get("SUNVIW_ZF_EXCLUDE")
+ZF_EXCLUDE = tuple(x.strip() for x in _zf_ex_env.split(",") if x.strip()) if _zf_ex_env is not None else tuple(ZF_EXCLUDE_DEFAULT)
+_HIST_KEEP_BASE, _PERSIST_KEEP_BASE = HIST_KEEP, PERSIST_KEEP
+
+
+def zf_apply_limits():
+    """Chuẩn hoá tham số ZF + nới HIST_KEEP / PERSIST_KEEP đủ chứa cửa sổ ZF (gọi lúc import và sau khi đọc cờ dòng lệnh)."""
+    global ZF_WINDOW, ZF_Z, ZF_MIN_GAMES, HIST_KEEP, PERSIST_KEEP
+    ZF_WINDOW = max(10, int(ZF_WINDOW))
+    ZF_Z = max(0.0, float(ZF_Z))
+    ZF_MIN_GAMES = max(10, min(int(ZF_MIN_GAMES), ZF_WINDOW))
+    HIST_KEEP = max(_HIST_KEEP_BASE, ZF_WINDOW * 2 + 10)
+    PERSIST_KEEP = max(_PERSIST_KEEP_BASE, ZF_WINDOW + 10)
+
+
+zf_apply_limits()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG LC79 (GAME 2)  —  RIÊNG HOÀN TOÀN, KHÔNG ẢNH HƯỞNG CONFIG SUN Ở TRÊN  —  CHỈNH Ở ĐÂY
@@ -537,6 +611,73 @@ def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=No
             "wsum": float(wsum), "weights": [float(w) for w in weights], "flip": flip}
 
 
+def zf_decision(votes, graded, window=None, z_thr=None, min_games=None):
+    """ZF (Z-filter động): chấm WR từng logic trên `window` ván đã chấm gần nhất, chỉ cho logic lệch 50% đủ mạnh (|z| >= z_thr) bỏ phiếu,
+    WR > 50% -> THEO, WR < 50% -> ĐẢO, đa số phiếu = final. Trả dict luôn có khoá:
+      active (True = ZF chốt được final) · reason (ok | chua_du_van | khong_logic_du_manh | hoa_phieu) · n (số ván đã xét) · final
+      picks (chỉ số logic được chọn) · tai / xiu (số phiếu) · avg (TB WR theo hướng của các logic được chọn, 0-100) · per[i] = {wr, z, huong} hoặc None."""
+    window = ZF_WINDOW if window is None else window
+    z_thr = ZF_Z if z_thr is None else z_thr
+    min_games = ZF_MIN_GAMES if min_games is None else min_games
+    win = graded[-window:]
+    n = len(win)
+    need = max(1, min(min_games, window))
+    out = {"active": False, "reason": "chua_du_van", "n": n, "final": None, "picks": [], "tai": 0, "xiu": 0,
+           "avg": None, "per": [None] * len(votes), "need": need}
+    if n < need:
+        return out
+    skip = {i for i, nm in enumerate(LOGIC_NAMES) if nm in ZF_EXCLUDE}
+    half, root = n / 2.0, math.sqrt(n) / 2.0
+    tai = xiu = 0
+    picks, dir_wr = [], []
+    for i, v in enumerate(votes):
+        hit = sum(1 for g in win if g["votes"][i] == g["actual"])
+        z = (hit - half) / root                      # = (WR - 0.5) / (0.5 / sqrt(n))
+        huong = None
+        if i not in skip and z != 0 and abs(z) + 1e-9 >= z_thr:
+            huong = "THEO" if z > 0 else "ĐẢO"
+            p = v if z > 0 else flip_pred(v)
+            if p == TAI:
+                tai += 1
+            elif p == XIU:
+                xiu += 1
+            picks.append(i)
+            dir_wr.append(hit / n if z > 0 else 1 - hit / n)
+        out["per"][i] = {"wr": hit / n, "z": z, "huong": huong}
+    out.update(picks=picks, tai=tai, xiu=xiu)
+    if not picks:
+        out["reason"] = "khong_logic_du_manh"
+    elif tai == xiu:
+        out["reason"] = "hoa_phieu"
+    else:
+        out.update(active=True, reason="ok", final=TAI if tai > xiu else XIU, avg=sum(dir_wr) / len(dir_wr) * 100)
+    return out
+
+
+def decide_final(votes, graded, dec_wr=None):
+    """Chốt final của SUN: ZF nếu đủ điều kiện, không thì cách cũ (wr_decision). Trả (final, dùng_zf, zf, dec_wr).
+    `dec_wr` truyền sẵn thì không tính lại wr_decision; chỉ tính khi thật sự cần quay về cách cũ."""
+    zf = zf_decision(votes, graded) if ZF_ENABLED else None
+    if zf is not None and zf["active"]:
+        return zf["final"], True, zf, dec_wr
+    if dec_wr is None:
+        dec_wr = wr_decision(votes, graded)
+    return dec_wr["final"], False, zf, dec_wr
+
+
+def out_final_zf(final, used_zf):
+    """Final SUN đã đưa ra API. Ván do ZF chốt: chỉ bẻ khi ZF_FLIP_FINAL bật (KHÔNG dính FLIP_FINAL chung — ZF đã tự chọn hướng từng logic).
+    Ván quay về cách cũ: bẻ theo FLIP_FINAL như trước."""
+    if used_zf:
+        return flip_pred(final) if ZF_FLIP_FINAL else final
+    return out_final(final)
+
+
+def out_final_g(g):
+    """Final đã đưa ra API của 1 ván đã chấm (entry cũ không có khoá 'zf' = ván chốt bằng cách cũ)."""
+    return out_final_zf(g["final"], g.get("zf", False))
+
+
 # ─── LỊCH SỬ UPSTREAM ────────────────────────────────────────────────────
 def _parse_int(v):
     m = re.match(r"\s*[+-]?\d+", str(v))
@@ -660,9 +801,9 @@ def rebuild_graded(hist, saved_graded=None):
         votes = compute_all(cur["phien"] + 1, cur["d1"], cur["d2"], cur["d3"])
         # Chỉ dùng các ván đã chấm TRƯỚC phiên nxt (seed có thể chứa ván mới hơn -> nhìn trước đáp án, làm lệch đánh giá)
         combined = [g for g in merge_graded(seed, fresh) if g["session"] < nxt["phien"]]
-        dec = wr_decision(votes, combined)
+        final, used_zf, _zf, _wr = decide_final(votes, combined)          # ZF nếu đủ điều kiện, không thì cách cũ
         fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
-                      "votes": votes, "final": dec["final"], "ok": dec["final"] == nxt["actual"],
+                      "votes": votes, "final": final, "ok": final == nxt["actual"], "zf": used_zf,
                       "sig": LOGIC_SIG})
     return merge_graded(seed, fresh)
 
@@ -674,18 +815,21 @@ def build_result(hist):
     graded = rebuild_graded(hist, saved_graded=saved)
     persist_save(graded)
     votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
-    dec = wr_decision(votes, graded)
+    dec = wr_decision(votes, graded)                                   # cách chốt cũ: luôn tính (phương án dự phòng + hiển thị WR cũ)
+    final, used_zf, zf, _ = decide_final(votes, graded, dec)           # ZF nếu đủ điều kiện, không thì cách cũ
+    avg = zf["avg"] if used_zf else dec["avg"]
     base = {
         "ok": True,
         "phien": latest["phien"] + 1,
-        "du_doan": out_final(dec["final"]),
-        "be_final": FLIP_FINAL,
-        "do_tin_cay": None if dec["avg"] is None else round(dec["avg"], 1),
+        "du_doan": out_final_zf(final, used_zf),
+        "be_final": ZF_FLIP_FINAL if used_zf else FLIP_FINAL,          # bẻ ĐANG ÁP DỤNG cho ván này (ZF chốt -> ZF_FLIP_FINAL · cách cũ -> FLIP_FINAL)
+        "zf": used_zf,
+        "do_tin_cay": None if avg is None else round(avg, 1),
         "phien_truoc": latest["phien"],
         "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
         "tong": latest["total"],
         "ket_qua_truoc": latest["actual"],
-        "so_van_wr": dec["n"],
+        "so_van_wr": zf["n"] if used_zf else dec["n"],
         "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     tai = sum(1 for v in votes if v == TAI)
@@ -694,10 +838,23 @@ def build_result(hist):
         "so_logic": len(votes),
         "che_do_loc_trung": DEDUP_MODE,
         "logic_bi_loai": [n for n in ALL_LOGIC_NAMES if n not in LOGIC_NAMES],
-        "nhom_theo": {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
-        "nhom_tai_xiu": {"TÀI": dec["gT"], "XỈU": dec["gX"]},
+        "nhom_theo": "ZF (z-filter)" if used_zf else {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
+        "nhom_tai_xiu": {"TÀI": zf["tai"], "XỈU": zf["xiu"]} if used_zf else {"TÀI": dec["gT"], "XỈU": dec["gX"]},
         "hoa_dung_da_so_21": dec["tie"],
-        "trong_so_wr": {                                          # cơ chế WR có trọng số đang áp dụng
+        "zf": {                                                    # ZF (z-filter động) — xem khối CONFIG ZF
+            "bat": ZF_ENABLED,
+            "dang_dung": used_zf,                                  # True = final ván này do ZF chốt · False = đang dùng cách cũ
+            "ly_do": "tat" if zf is None else zf["reason"],        # ok | chua_du_van | khong_logic_du_manh | hoa_phieu | tat
+            "cua_so": ZF_WINDOW,                                   # số ván cấu hình (ZF_WINDOW)
+            "so_van_xet": 0 if zf is None else zf["n"],            # số ván thực tế đang xét (< cua_so khi lịch sử chưa đủ)
+            "van_toi_thieu": ZF_MIN_GAMES,
+            "nguong_z": ZF_Z,
+            "logic_loai": [n for n in ZF_EXCLUDE if n in LOGIC_NAMES],
+            "so_logic_chon": 0 if zf is None else len(zf["picks"]),
+            "phieu": None if zf is None else {"TÀI": zf["tai"], "XỈU": zf["xiu"]},
+            "be_final_zf": ZF_FLIP_FINAL,
+        },
+        "trong_so_wr": {                                          # cơ chế WR có trọng số (cách cũ / dự phòng)
             "so_van": dec["n"],
             "trong_so": dec["weights"],                           # cũ nhất -> mới nhất (đã tính flip nếu bật)
             "flip_trong_so": dec["flip"],                         # True = ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất
@@ -707,22 +864,25 @@ def build_result(hist):
         },
         "logic": [
             {"ten": LOGIC_NAMES[i], "du_doan": votes[i],
-             "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),
-             "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO"))}
+             "wr": (round(dec["wins"][i] / dec["wsum"] * 100, 1) if dec["wins"] else None),       # WR có trọng số (cách cũ)
+             "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO")),
+             "zf_wr": (None if not zf or zf["per"][i] is None else round(zf["per"][i]["wr"] * 100, 1)),    # WR thường trên cửa sổ ZF
+             "zf_z": (None if not zf or zf["per"][i] is None else round(zf["per"][i]["z"], 2)),
+             "zf_huong": (None if not zf or zf["per"][i] is None else zf["per"][i]["huong"])}      # THEO | ĐẢO | None (không đủ mạnh / bị loại)
             for i in range(len(votes))
         ],
-        "final_goc": dec["final"],
+        "final_goc": final,                                       # final trước khi bẻ (của ZF nếu ZF chốt, không thì của cách cũ)
         "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
     }
-    hist_rows = [{"phien": g["session"], "du_doan": out_final(g["final"]), "ket_qua": g["actual"], "tong": g.get("total"),
-                  "dung": out_final(g["final"]) == g["actual"]} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
+    hist_rows = [{"phien": g["session"], "du_doan": out_final_g(g), "ket_qua": g["actual"], "tong": g.get("total"),
+                  "dung": out_final_g(g) == g["actual"], "zf": g.get("zf", False)} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
     return {"base": base, "detail": detail, "hist": hist_rows}
 
 
 def _recent_accuracy(graded, size, with_chuoi=False):
     """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ nếu đang bật) ở `size` ván gần nhất."""
     win = graded[-size:]
-    oks = [out_final(g["final"]) == g["actual"] for g in win]
+    oks = [out_final_g(g) == g["actual"] for g in win]
     out = {"dung": sum(oks), "tong": len(win)}
     if with_chuoi:
         out = {"dung": out["dung"], "sai": len(win) - out["dung"], "tong": len(win),
@@ -1655,7 +1815,9 @@ def health():
         s = {k: _state[k] for k in ("latest", "error", "updated", "checked", "polls")}
     s.update(ok=s["error"] is None and s["latest"] is not None, upstream=UPSTREAM_URL,
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
-             wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST)       # trọng số cũ nhất -> mới nhất
+             wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST,       # trọng số cũ nhất -> mới nhất
+             zf=dict(bat=ZF_ENABLED, window=ZF_WINDOW, z=ZF_Z, min_games=ZF_MIN_GAMES, be_final_zf=ZF_FLIP_FINAL,
+                     loai=list(ZF_EXCLUDE), hist_keep=HIST_KEEP, persist_keep=PERSIST_KEEP))
     with _lc_lock:
         lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "events")}
         lc["latest"] = _lc_state["target"]
@@ -1679,6 +1841,7 @@ if __name__ != "__main__":
 
 def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
+    global ZF_ENABLED, ZF_WINDOW, ZF_Z, ZF_MIN_GAMES, ZF_FLIP_FINAL
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -1700,8 +1863,32 @@ def main():
     lwg = ap.add_mutually_exclusive_group()
     lwg.add_argument("--lc-wr-flip", action="store_true", help="BẬT flip trọng số WR của LC79 (riêng, không ảnh hưởng Sun)")
     lwg.add_argument("--lc-no-wr-flip", action="store_true", help="TẮT flip trọng số WR của LC79")
+    zg = ap.add_mutually_exclusive_group()
+    zg.add_argument("--zf", action="store_true", help="BẬT ZF (z-filter động) cho SUN")
+    zg.add_argument("--no-zf", action="store_true", help="TẮT ZF, chỉ dùng cách chốt cũ (WR có trọng số)")
+    ap.add_argument("--zf-window", type=int, default=None, help="ZF: SỐ VÁN gần nhất xét WR từng logic (mặc định ZF_WINDOW_DEFAULT)")
+    ap.add_argument("--zf-z", type=float, default=None, help="ZF: ngưỡng |z| để logic được bỏ phiếu (mặc định ZF_Z_DEFAULT)")
+    ap.add_argument("--zf-min", type=int, default=None, help="ZF: số ván đã chấm tối thiểu mới bật ZF (mặc định ZF_MIN_GAMES_DEFAULT)")
+    zfg = ap.add_mutually_exclusive_group()
+    zfg.add_argument("--zf-flip", action="store_true", help="BẺ riêng kết quả ZF (đảo TÀI<->XỈU)")
+    zfg.add_argument("--zf-no-flip", action="store_true", help="TẮT bẻ riêng kết quả ZF")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
+    if a.zf:
+        ZF_ENABLED = True
+    elif a.no_zf:
+        ZF_ENABLED = False
+    if a.zf_window is not None:
+        ZF_WINDOW = a.zf_window
+    if a.zf_z is not None:
+        ZF_Z = a.zf_z
+    if a.zf_min is not None:
+        ZF_MIN_GAMES = a.zf_min
+    if a.zf_flip:
+        ZF_FLIP_FINAL = True
+    elif a.zf_no_flip:
+        ZF_FLIP_FINAL = False
+    zf_apply_limits()                              # chuẩn hoá + nới HIST_KEEP / PERSIST_KEEP theo ZF_WINDOW
     if a.flip:
         FLIP_FINAL = True
     elif a.no_flip:
@@ -1724,7 +1911,8 @@ def main():
     print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html (gan token o tab LC79)")
     print(f"LC79 socket ->  {_ws['url']} · token {'da luu' if _ws['token'] else 'CHUA CO — gan o panel'}")
     print(f"LC79 WR     ->  xet {LC_WR_WINDOW} van gan nhat DA CHAM · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'} · flip trong so {'BAT (cu nhat nang nhat)' if LC_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}")
-    print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}")
+    print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}  (chi ap cho van quay ve cach cu; van do ZF chot khong bi be)")
+    print(f"ZF SUN      ->  {'BAT' if ZF_ENABLED else 'TAT'} · xet {ZF_WINDOW} van gan nhat · |z| >= {ZF_Z} · toi thieu {ZF_MIN_GAMES} van · be rieng ZF {'BAT' if ZF_FLIP_FINAL else 'TAT'} · loai {list(ZF_EXCLUDE) or 'khong'} · giu lich su {HIST_KEEP} phien")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))
     app.run(host=a.host, port=a.port, threaded=True)

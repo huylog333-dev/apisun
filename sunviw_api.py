@@ -141,7 +141,7 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #   Cách chia nhóm giữ nguyên: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO, nhóm THẤP đông hơn thì theo nhóm THẤP,
 #   còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
-WR_DECAY = 0.75            # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
+WR_DECAY = 0.55            # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
 WR_FLOOR = 0.95            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
 WR_WEIGHT_NEWEST = 1.42    # trọng số ván mới nhất (ĐÃ ÁP DỤNG vào tính WR; 1.00 = hành vi bản gốc)
 # dạng Fraction để tính/so sánh chính xác (dùng trong wr_weights)
@@ -209,7 +209,7 @@ PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WI
 #   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
 #       env  : SUNVIW_ZF=1|0 · SUNVIW_ZF_WINDOW=150 · SUNVIW_ZF_Z=2.0 · SUNVIW_ZF_MIN=100 · SUNVIW_ZF_FLIP=1|0 · SUNVIW_ZF_EXCLUDE="ANTI-L7,..." (rỗng = không loại)
 #       lệnh : --zf / --no-zf · --zf-window N · --zf-z X · --zf-min N · --zf-flip / --zf-no-flip
-ZF_ENABLED_DEFAULT = True
+ZF_ENABLED_DEFAULT = False
 ZF_WINDOW_DEFAULT = 150
 ZF_Z_DEFAULT = 2.0
 ZF_MIN_GAMES_DEFAULT = 100

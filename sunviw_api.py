@@ -140,10 +140,10 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #           dòng lệnh       :  python sunviw_api.py --wr-flip  |  --no-wr-flip
 #   Cách chia nhóm giữ nguyên: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO, nhóm THẤP đông hơn thì theo nhóm THẤP,
 #   còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
-WR_WINDOW = 17             # số ván gần nhất dùng để tính WR
+WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
 WR_DECAY = 0.85           # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
-WR_FLOOR = 1.05            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
-WR_WEIGHT_NEWEST = 1.37    # trọng số ván mới nhất (ĐÃ ÁP DỤNG vào tính WR; 1.00 = hành vi bản gốc)
+WR_FLOOR = 0.85            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
+WR_WEIGHT_NEWEST = 1.47    # trọng số ván mới nhất (ĐÃ ÁP DỤNG vào tính WR; 1.00 = hành vi bản gốc)
 # dạng Fraction để tính/so sánh chính xác (dùng trong wr_weights)
 _W_DECAY = Fraction(str(WR_DECAY))
 _W_FLOOR = Fraction(str(WR_FLOOR))
@@ -160,7 +160,7 @@ WR_FLIP_WEIGHT_DEFAULT = False   # FLIP trọng số WR của SUN: True = ván C
 #     biến môi trường :  SUNVIW_FLIP=1  (bật)  |  SUNVIW_FLIP=0  (tắt)
 #     dòng lệnh       :  python sunviw_api.py --flip      (bật)
 #                        python sunviw_api.py --no-flip   (tắt)
-FLIP_FINAL_DEFAULT = False
+FLIP_FINAL_DEFAULT = True
 
 
 def _env_bool(name, default):

@@ -10,6 +10,8 @@ Chạy:
     python sunviw_api.py --lc-flip            # BẬT bẻ final của LC79 (RIÊNG, không liên quan Sun; --lc-no-flip = tắt; hoặc LC79_FLIP=1|0, hoặc sửa LC_FLIP_FINAL_DEFAULT)
     python sunviw_api.py --wr-flip            # BẬT FLIP TRỌNG SỐ WR của SUN: ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất (--no-wr-flip = tắt; hoặc SUNVIW_WR_FLIP=1|0, hoặc sửa WR_FLIP_WEIGHT_DEFAULT)
     python sunviw_api.py --lc-wr-flip         # BẬT FLIP TRỌNG SỐ WR của LC79 (RIÊNG, độc lập Sun; --lc-no-wr-flip = tắt; hoặc LC79_WR_FLIP=1|0, hoặc sửa LC_WR_FLIP_WEIGHT_DEFAULT)
+    python sunviw_api.py --no-af              # TẮT AF của SUN (--af = bật · --af-low 37 / --af-high 63 = ngưỡng bẻ logic · --af-min 13 = số ván tối thiểu · --af-mode-window 7 / --af-mode-below 45 = bẻ theo WR chế độ · --af-flip / --af-no-flip = bẻ riêng AF)
+                                              #           hoặc env SUNVIW_AF / SUNVIW_AF_LOW / SUNVIW_AF_HIGH / SUNVIW_AF_MIN / SUNVIW_AF_MODE_WINDOW / SUNVIW_AF_MODE_MIN / SUNVIW_AF_MODE_BELOW / SUNVIW_AF_FLIP, hoặc sửa AF_*_DEFAULT ở khối "CONFIG AF"
     python sunviw_api.py --zf-window 150      # ZF (SUN): SỐ VÁN gần nhất xét WR từng logic (--zf / --no-zf = bật/tắt ZF · --zf-z 2.0 = ngưỡng z · --zf-min 100 = số ván tối thiểu · --zf-flip / --zf-no-flip = bẻ riêng ZF)
                                               #           hoặc env SUNVIW_ZF / SUNVIW_ZF_WINDOW / SUNVIW_ZF_Z / SUNVIW_ZF_MIN / SUNVIW_ZF_FLIP / SUNVIW_ZF_EXCLUDE, hoặc sửa ZF_*_DEFAULT ở khối "CONFIG ZF"
 
@@ -23,6 +25,7 @@ Endpoint:
     ...?hist=N                   -> (cả 2 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
     GET /api/html                -> panel HTML theo dõi cả 2 game, đổi qua lại, chọn số ván lịch sử
     GET /health                  -> trạng thái nền của cả 2 game
+    GET /api/ips                 -> DANH SÁCH IP đang dùng + đã từng dùng API / ws (tab "IP" của panel đọc từ đây; có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=)
 
 JSON /api/predict:
     {
@@ -77,11 +80,30 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
     Không logic nào đủ mạnh / hoà phiếu / chưa đủ ZF_MIN_GAMES ván -> tự quay về cách chốt cũ (WR có trọng số + nhóm THẤP/CAO) và JSON có "zf": false.
     Ván do ZF chốt KHÔNG bị bẻ bởi FLIP_FINAL chung (ZF đã tự chọn hướng từng logic) — muốn bẻ riêng ZF dùng ZF_FLIP_FINAL. Ván quay về cách cũ vẫn bẻ theo FLIP_FINAL như trước.
 
+🔀 AF = AUTO-FLIP + CAO/THẤP (port từ SUNVIW_9logics_autoflip_auto.html) — cách chốt final của SUN (mặc định BẬT · khối "CONFIG AF" · LC79 KHÔNG đụng tới):
+    Bước 1 (bẻ logic):  WR có trọng số của từng logic (cùng WR_WINDOW ván / trọng số như cách cũ của SUN). WR < AF_FLIP_LOW (37%) hoặc > AF_FLIP_HIGH (63%) -> ĐẢO phiếu logic đó
+                        (WR dùng = 100 − WR khi bị bẻ). Chưa đủ AF_MIN_GAMES ván -> không bẻ, vote tất cả logic.
+    Bước 2 (CAO/THẤP):  WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP. Nhóm nào ĐÔNG hơn thì chỉ vote trong nhóm đó (chế độ CAO / THẤP); bằng nhau -> vote tất cả (chế độ ALL).
+    Bước 3 (bẻ chế độ): WR của CHẾ ĐỘ đang chạy trong AF_MODE_WINDOW (7) ván gần nhất của chế độ đó < AF_MODE_BELOW (45%) -> ĐẢO final (không theo đa số nữa);
+                        từ 45% trở lên -> theo bình thường. Đang bẻ THẤP mà ván sau lên CAO thì xét lại WR của CAO. Chưa đủ AF_MODE_MIN ván của chế độ đó -> không bẻ.
+    Dữ liệu 2 chế độ: MỖI ván đã chấm lưu sẵn vote của nhóm CAO (hv) và của nhóm THẤP (lv) — cả khi tool đang chạy chế độ kia — nên WR 7 ván của cả 2 chế độ luôn có sẵn.
+                      WR chế độ luôn đo trên vote GỐC (chưa bẻ chế độ) để bẻ xong WR không tăng lại rồi tắt bẻ (dao động).
+    Ván do AF chốt KHÔNG bị bẻ bởi FLIP_FINAL chung (AF đã tự bẻ) — muốn bẻ riêng AF dùng AF_FLIP_FINAL. AF tắt (--no-af) -> quay về đúng cách cũ (WR có trọng số + nhóm THẤP/CAO + FLIP_FINAL).
+    Thứ tự chốt của SUN:  ZF (nếu bật & đủ điều kiện)  ->  AF  ->  cách cũ.   JSON thêm: "af", "che_do", "be_che_do"; ?detail=1 thêm chi_tiet.af (WR 2 chế độ, logic nào bị bẻ).
+
+🌐 TAB IP (panel /api/html) — theo dõi ai đang gọi API:
+    Mỗi request tới /api/predictsun · /api/predictlc79 · /api/lc79/ws* · /api/html được ghi lại IP của client (sau proxy Railway đọc X-Forwarded-For / X-Real-IP).
+    Tab "IP" hiện: IP ĐANG DÙNG (có request trong IP_ACTIVE_SEC giây gần nhất) + IP ĐÃ TỪNG DÙNG (lưu file, còn sau khi restart) · lần đầu / gần nhất · số request · chia theo loại (sun · lc79 · ws · panel) · User-Agent.
+    Khối "CONFIG IP" ở gần đầu file. Nên đặt SUNVIW_ADMIN_KEY để chỉ bạn xem được danh sách IP (panel là trang công khai).
+
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
+import atexit
 import collections
 import hashlib
+import hmac
+import ipaddress
 import json
 import math
 import os
@@ -249,6 +271,56 @@ def zf_apply_limits():
 
 zf_apply_limits()
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  🔀  CONFIG AF (AUTO-FLIP + CAO/THẤP + BẺ THEO WR CHẾ ĐỘ) — CÁCH CHỐT FINAL CỦA SUN  —  CHỈNH Ở ĐÂY   (LC79 KHÔNG dùng AF, giữ nguyên)
+# ═══════════════════════════════════════════════════════════════════════════
+#   Port từ SUNVIW_9logics_autoflip_auto.html. WR từng logic = WR CÓ TRỌNG SỐ của SUN (WR_WINDOW / WR_DECAY / WR_FLOOR / WR_WEIGHT_NEWEST / WR_FLIP_WEIGHT).
+#   Bước 1  bẻ logic     : WR < AF_FLIP_LOW -> đảo phiếu logic · WR > AF_FLIP_HIGH -> đảo phiếu logic (WR dùng = 100 − WR). Chưa đủ AF_MIN_GAMES ván -> không bẻ, vote tất cả.
+#   Bước 2  CAO / THẤP   : WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP · nhóm đông hơn được vote (CHẾ ĐỘ CAO / THẤP) · bằng nhau -> vote tất cả (ALL) · pool hoà phiếu -> đa số tất cả logic.
+#   Bước 3  bẻ chế độ    : WR của chế độ đang chạy trong AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ < AF_MODE_BELOW -> đảo final · ≥ AF_MODE_BELOW -> theo bình thường.
+#                          Cần đủ AF_MODE_MIN ván của chế độ đó mới xét bẻ. Cả CAO lẫn THẤP đều có chuỗi ván riêng (hv / lv lưu trong từng ván đã chấm).
+#   AF_ENABLED_DEFAULT    True = dùng AF · False = quay về cách cũ (wr_decision + FLIP_FINAL)
+#   AF_FLIP_LOW/HIGH      ngưỡng bẻ logic (37 / 63 như file HTML)
+#   AF_MIN_GAMES_DEFAULT  số ván đã chấm tối thiểu mới bẻ logic / chia nhóm (tự kẹp ≤ WR_WINDOW)
+#   AF_MODE_WINDOW        số ván gần nhất của mỗi chế độ để tính WR chế độ (7)
+#   AF_MODE_MIN           số ván tối thiểu của chế độ đó mới xét bẻ (7; tự kẹp ≤ AF_MODE_WINDOW)
+#   AF_MODE_BELOW         WR chế độ dưới mức này (%) -> bẻ final (45)
+#   AF_FLIP_FINAL_DEFAULT bẻ riêng kết quả AF (TÀI<->XỈU). Mặc định False vì AF đã tự bẻ; FLIP_FINAL chung KHÔNG áp lên ván do AF chốt.
+#   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
+#       env  : SUNVIW_AF=1|0 · SUNVIW_AF_LOW · SUNVIW_AF_HIGH · SUNVIW_AF_MIN · SUNVIW_AF_MODE_WINDOW · SUNVIW_AF_MODE_MIN · SUNVIW_AF_MODE_BELOW · SUNVIW_AF_FLIP=1|0
+#       lệnh : --af / --no-af · --af-low X · --af-high X · --af-min N · --af-mode-window N · --af-mode-below X · --af-flip / --af-no-flip
+AF_ENABLED_DEFAULT = True
+AF_FLIP_LOW_DEFAULT = 37
+AF_FLIP_HIGH_DEFAULT = 63
+AF_MIN_GAMES_DEFAULT = 13
+AF_MODE_WINDOW_DEFAULT = 7
+AF_MODE_MIN_DEFAULT = 7
+AF_MODE_BELOW_DEFAULT = 45
+AF_FLIP_FINAL_DEFAULT = False
+
+AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
+AF_FLIP_LOW = _env_num("SUNVIW_AF_LOW", AF_FLIP_LOW_DEFAULT, float)
+AF_FLIP_HIGH = _env_num("SUNVIW_AF_HIGH", AF_FLIP_HIGH_DEFAULT, float)
+AF_MIN_GAMES = _env_num("SUNVIW_AF_MIN", AF_MIN_GAMES_DEFAULT, int)
+AF_MODE_WINDOW = _env_num("SUNVIW_AF_MODE_WINDOW", AF_MODE_WINDOW_DEFAULT, int)
+AF_MODE_MIN = _env_num("SUNVIW_AF_MODE_MIN", AF_MODE_MIN_DEFAULT, int)
+AF_MODE_BELOW = _env_num("SUNVIW_AF_MODE_BELOW", AF_MODE_BELOW_DEFAULT, float)
+AF_FLIP_FINAL = _env_bool("SUNVIW_AF_FLIP", AF_FLIP_FINAL_DEFAULT)
+
+
+def af_apply_limits():
+    """Chuẩn hoá tham số AF (gọi lúc import và sau khi đọc cờ dòng lệnh)."""
+    global AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_MIN, AF_MODE_BELOW
+    AF_FLIP_LOW = min(max(0.0, float(AF_FLIP_LOW)), 50.0)
+    AF_FLIP_HIGH = min(max(50.0, float(AF_FLIP_HIGH)), 100.0)
+    AF_MIN_GAMES = max(1, int(AF_MIN_GAMES))
+    AF_MODE_WINDOW = max(1, int(AF_MODE_WINDOW))
+    AF_MODE_MIN = max(1, min(int(AF_MODE_MIN), AF_MODE_WINDOW))
+    AF_MODE_BELOW = min(max(0.0, float(AF_MODE_BELOW)), 100.0)
+
+
+af_apply_limits()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ⚙  CONFIG LC79 (GAME 2)  —  RIÊNG HOÀN TOÀN, KHÔNG ẢNH HƯỞNG CONFIG SUN Ở TRÊN  —  CHỈNH Ở ĐÂY
@@ -285,6 +357,29 @@ LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
 # ─── PANEL /api/html ─────────────────────────────────────────────────────
 PANEL_DEFAULT_SHOW = 30    # số ván lịch sử panel hiện mặc định (đổi trực tiếp trên panel, trình duyệt nhớ lại)
 HIST_MAX = 300             # trần số ván lịch sử cho ?hist=N và ô nhập trên panel
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  🌐  CONFIG IP — THEO DÕI IP TRUY CẬP (tab "IP" của panel /api/html)  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Mỗi request tới /api/predictsun · /api/predictlc79 · /api/lc79/ws* · /api/html được ghi lại IP client. /health, "/", /api/ips (chính tab IP) KHÔNG tính.
+#   IP_TRACK_ENABLED_DEFAULT  True = theo dõi · False = tắt (env SUNVIW_IPS=1|0)
+#   IP_ACTIVE_SEC             "đang dùng" = có request trong N giây gần nhất (env SUNVIW_IP_ACTIVE)
+#   IP_KEEP                   giữ tối đa N IP (đầy thì xoá IP lâu không thấy nhất)
+#   IP_PATH                   file lưu danh sách IP đã từng dùng (env SUNVIW_IPS_PATH). Railway nên trỏ vào ổ đĩa bền, không thì /tmp bị xoá mỗi lần deploy.
+#   IP_TRUST_PROXY_DEFAULT    True = đọc IP thật từ X-Forwarded-For / X-Real-IP (đúng khi chạy sau Railway / Cloudflare / nginx) · False = chỉ dùng IP kết nối trực tiếp
+#                             (env SUNVIW_IP_PROXY=1|0). Lưu ý: chạy KHÔNG qua proxy mà để True thì client tự đặt X-Forwarded-For giả được -> đặt False.
+#   IP_HEADER                 (tuỳ chọn) ép đọc IP từ 1 header cụ thể, vd. CF-Connecting-IP (env SUNVIW_IP_HEADER)
+#   IP_ADMIN_KEY              (khuyến nghị) đặt thì /api/ips và tab IP đòi key: header X-Admin-Key hoặc ?key=  (env SUNVIW_ADMIN_KEY). Để trống = ai mở panel cũng thấy danh sách IP.
+IP_TRACK_ENABLED_DEFAULT = True
+IP_ACTIVE_SEC = _env_num("SUNVIW_IP_ACTIVE", 60, int)
+IP_KEEP = 500
+IP_SAVE_SEC = 10.0         # ghi file tối đa mỗi N giây (IP mới xuất hiện thì ghi ngay)
+IP_PATH = os.environ.get("SUNVIW_IPS_PATH", "/tmp/sunviw_ips.json")
+IP_TRUST_PROXY_DEFAULT = True
+IP_HEADER = os.environ.get("SUNVIW_IP_HEADER", "").strip()
+IP_ADMIN_KEY = os.environ.get("SUNVIW_ADMIN_KEY", "")
+IP_TRACK_ENABLED = _env_bool("SUNVIW_IPS", IP_TRACK_ENABLED_DEFAULT)
+IP_TRUST_PROXY = _env_bool("SUNVIW_IP_PROXY", IP_TRUST_PROXY_DEFAULT)
 
 TAI, XIU = "TÀI", "XỈU"
 NAN = float("nan")
@@ -654,28 +749,120 @@ def zf_decision(votes, graded, window=None, z_thr=None, min_games=None):
     return out
 
 
+def af_mode_wr(graded):
+    """WR của 2 chế độ CAO / THẤP trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ.
+    Dữ liệu = vote gốc của nhóm CAO (hv) / nhóm THẤP (lv) đã LƯU trong từng ván đã chấm (cả khi tool đang chạy chế độ kia),
+    chấm với kết quả thật. Ván không có vote của nhóm đó (nhóm rỗng / hoà phiếu / chưa đủ ván) thì bỏ qua.
+    Trả {"CAO": {...}, "THAP": {...}}, mỗi chế độ có: n · w (số ván đúng) · need · wr (% hoặc None nếu chưa đủ ván) · flip (True = WR < AF_MODE_BELOW) · chuoi (cũ -> mới, True = đúng)."""
+    need = max(1, min(AF_MODE_MIN, AF_MODE_WINDOW))
+    out = {}
+    for mode, key in (("CAO", "hv"), ("THAP", "lv")):
+        rows = []
+        for g in reversed(graded):                       # đi từ ván mới nhất lùi về, lấy đủ AF_MODE_WINDOW ván có vote của chế độ này
+            v = g.get(key)
+            if v in (TAI, XIU):
+                rows.append(v == g["actual"])
+                if len(rows) >= AF_MODE_WINDOW:
+                    break
+        rows.reverse()
+        n, w = len(rows), sum(rows)
+        ready = n >= need
+        out[mode] = {"n": n, "w": w, "need": need, "wr": (w * 100.0 / n) if ready else None,
+                     "flip": bool(ready and w * 100 < AF_MODE_BELOW * n), "chuoi": rows}
+    return out
+
+
+def af_decision(votes, graded):
+    """AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) của SUN — port từ SUNVIW_9logics_autoflip_auto.html (xem khối CONFIG AF).
+    Trả dict: mode (CAO | THAP | ALL) · final (SAU bẻ chế độ) · base (TRƯỚC bẻ chế độ) · mflip (đã bẻ chế độ) · tie (pool hoà phiếu -> dùng đa số tất cả logic)
+    preds (phiếu sau bẻ logic) · flips[i] (LOW | HIGH | None) · wins / wsum (trọng số) · eff[i] (WR dùng, 0-100) · group[i] (CAO | THAP | None) · hi / lo (chỉ số logic mỗi nhóm)
+    hv / lv (vote gốc của nhóm CAO / THẤP — LƯU vào ván đã chấm) · gT / gX (phiếu TÀI / XỈU trong pool) · avg (TB WR dùng của pool, độ tin cậy) · mw (WR 2 chế độ)."""
+    nl = len(votes)
+    all_vote = vote_result(votes)
+    win = graded[-WR_WINDOW:]                             # cũ -> mới (cùng cửa sổ WR với cách cũ của SUN)
+    n = len(win)
+    need = max(1, min(AF_MIN_GAMES, WR_WINDOW))
+    mw = af_mode_wr(graded)
+    out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False,
+           "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
+           "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None,
+           "gT": sum(1 for v in votes if v == TAI), "gX": sum(1 for v in votes if v == XIU), "avg": None, "mw": mw}
+    if n < need:                                          # chưa đủ ván -> không bẻ, vote tất cả (như file HTML)
+        return out
+    weights = wr_weights(n)                               # trọng số WR của SUN (cũ nhất -> mới nhất)
+    wsum = sum(weights)
+    wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0)) for i in range(nl)]
+    thr_lo, thr_hi = Fraction(str(AF_FLIP_LOW)), Fraction(str(AF_FLIP_HIGH))
+    preds, flips, effw, group = [], [], [], []
+    for i, w in enumerate(wins):
+        f = "LOW" if w * 100 < thr_lo * wsum else ("HIGH" if w * 100 > thr_hi * wsum else None)     # Bước 1: bẻ logic
+        e = (wsum - w) if f else w                        # trọng số đúng SAU bẻ -> WR dùng = 100 − WR gốc khi bị bẻ
+        preds.append(flip_pred(votes[i]) if f else votes[i])
+        flips.append(f)
+        effw.append(e)
+        group.append("CAO" if e * 2 > wsum else ("THAP" if e * 2 < wsum else None))                   # Bước 2: nhóm theo WR dùng
+    hi = [i for i, g in enumerate(group) if g == "CAO"]
+    lo = [i for i, g in enumerate(group) if g == "THAP"]
+
+    def _pv(idx):
+        return vote_result([preds[i] for i in idx]) if idx else None
+
+    hv, lv = _pv(hi), _pv(lo)
+    if len(hi) > len(lo):
+        mode, pool, base = "CAO", hi, hv
+    elif len(lo) > len(hi):
+        mode, pool, base = "THAP", lo, lv
+    else:
+        mode, pool = "ALL", list(range(nl))
+        base = vote_result(preds)
+    tie = False
+    if base == "SKIP":                                    # pool hoà phiếu -> đa số tất cả logic (đã bẻ logic); vẫn hoà -> đa số gốc (như cách cũ)
+        tie = True
+        base = vote_result(preds)
+        if base == "SKIP":
+            base = all_vote
+    mflip, final = False, base
+    if mode != "ALL" and not tie and mw[mode]["flip"]:    # Bước 3: bẻ theo WR của chế độ đang chạy
+        mflip, final = True, flip_pred(base)
+    pv = [preds[i] for i in pool]
+    out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, preds=preds, flips=flips,
+               wins=[float(w) for w in wins], wsum=float(wsum), weights=[float(w) for w in weights],
+               eff=[float(e / wsum * 100) for e in effw], group=group, hi=hi, lo=lo,
+               hv=hv if hv in (TAI, XIU) else None, lv=lv if lv in (TAI, XIU) else None,
+               gT=sum(1 for x in pv if x == TAI), gX=sum(1 for x in pv if x == XIU),
+               avg=(float(sum(effw[i] for i in pool) / (len(pool) * wsum) * 100) if pool else None))
+    return out
+
+
 def decide_final(votes, graded, dec_wr=None):
-    """Chốt final của SUN: ZF nếu đủ điều kiện, không thì cách cũ (wr_decision). Trả (final, dùng_zf, zf, dec_wr).
-    `dec_wr` truyền sẵn thì không tính lại wr_decision; chỉ tính khi thật sự cần quay về cách cũ."""
+    """Chốt final của SUN: ZF nếu đủ điều kiện -> AF (nếu bật) -> cách cũ (wr_decision). Trả (final, dùng_zf, zf, dec_wr, af).
+    `af` = dict của af_decision khi final do AF chốt, không thì None. `dec_wr` truyền sẵn thì không tính lại wr_decision;
+    chỉ tính khi thật sự cần quay về cách cũ (AF tắt)."""
     zf = zf_decision(votes, graded) if ZF_ENABLED else None
     if zf is not None and zf["active"]:
-        return zf["final"], True, zf, dec_wr
+        return zf["final"], True, zf, dec_wr, None
+    if AF_ENABLED:
+        af = af_decision(votes, graded)
+        return af["final"], False, zf, dec_wr, af
     if dec_wr is None:
         dec_wr = wr_decision(votes, graded)
-    return dec_wr["final"], False, zf, dec_wr
+    return dec_wr["final"], False, zf, dec_wr, None
 
 
-def out_final_zf(final, used_zf):
+def out_final_zf(final, used_zf, used_af=False):
     """Final SUN đã đưa ra API. Ván do ZF chốt: chỉ bẻ khi ZF_FLIP_FINAL bật (KHÔNG dính FLIP_FINAL chung — ZF đã tự chọn hướng từng logic).
+    Ván do AF chốt: chỉ bẻ khi AF_FLIP_FINAL bật (KHÔNG dính FLIP_FINAL chung — AF đã tự bẻ logic + chế độ).
     Ván quay về cách cũ: bẻ theo FLIP_FINAL như trước."""
     if used_zf:
         return flip_pred(final) if ZF_FLIP_FINAL else final
+    if used_af:
+        return flip_pred(final) if AF_FLIP_FINAL else final
     return out_final(final)
 
 
 def out_final_g(g):
-    """Final đã đưa ra API của 1 ván đã chấm (entry cũ không có khoá 'zf' = ván chốt bằng cách cũ)."""
-    return out_final_zf(g["final"], g.get("zf", False))
+    """Final đã đưa ra API của 1 ván đã chấm (entry cũ không có khoá 'zf' / 'af' = ván chốt bằng cách cũ)."""
+    return out_final_zf(g["final"], g.get("zf", False), g.get("af", False))
 
 
 # ─── LỊCH SỬ UPSTREAM ────────────────────────────────────────────────────
@@ -801,10 +988,13 @@ def rebuild_graded(hist, saved_graded=None):
         votes = compute_all(cur["phien"] + 1, cur["d1"], cur["d2"], cur["d3"])
         # Chỉ dùng các ván đã chấm TRƯỚC phiên nxt (seed có thể chứa ván mới hơn -> nhìn trước đáp án, làm lệch đánh giá)
         combined = [g for g in merge_graded(seed, fresh) if g["session"] < nxt["phien"]]
-        final, used_zf, _zf, _wr = decide_final(votes, combined)          # ZF nếu đủ điều kiện, không thì cách cũ
-        fresh.append({"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
-                      "votes": votes, "final": final, "ok": final == nxt["actual"], "zf": used_zf,
-                      "sig": LOGIC_SIG})
+        final, used_zf, _zf, _wr, af = decide_final(votes, combined)      # ZF nếu đủ điều kiện -> AF -> cách cũ
+        entry = {"session": nxt["phien"], "total": nxt["total"], "actual": nxt["actual"],
+                 "votes": votes, "final": final, "ok": final == nxt["actual"], "zf": used_zf,
+                 "sig": LOGIC_SIG}
+        if af is not None:                                                # lưu dữ liệu 2 chế độ: vote gốc của nhóm CAO (hv) và nhóm THẤP (lv) của ván này
+            entry.update(af=True, mode=af["mode"], mflip=af["mflip"], hv=af["hv"], lv=af["lv"])
+        fresh.append(entry)
     return merge_graded(seed, fresh)
 
 
@@ -816,20 +1006,24 @@ def build_result(hist):
     persist_save(graded)
     votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
     dec = wr_decision(votes, graded)                                   # cách chốt cũ: luôn tính (phương án dự phòng + hiển thị WR cũ)
-    final, used_zf, zf, _ = decide_final(votes, graded, dec)           # ZF nếu đủ điều kiện, không thì cách cũ
-    avg = zf["avg"] if used_zf else dec["avg"]
+    final, used_zf, zf, _, af = decide_final(votes, graded, dec)       # ZF nếu đủ điều kiện -> AF -> cách cũ
+    used_af = af is not None
+    avg = zf["avg"] if used_zf else (af["avg"] if used_af else dec["avg"])
     base = {
         "ok": True,
         "phien": latest["phien"] + 1,
-        "du_doan": out_final_zf(final, used_zf),
-        "be_final": ZF_FLIP_FINAL if used_zf else FLIP_FINAL,          # bẻ ĐANG ÁP DỤNG cho ván này (ZF chốt -> ZF_FLIP_FINAL · cách cũ -> FLIP_FINAL)
+        "du_doan": out_final_zf(final, used_zf, used_af),
+        "be_final": ZF_FLIP_FINAL if used_zf else (AF_FLIP_FINAL if used_af else FLIP_FINAL),   # bẻ ĐANG ÁP DỤNG cho ván này (ZF -> ZF_FLIP_FINAL · AF -> AF_FLIP_FINAL · cách cũ -> FLIP_FINAL)
         "zf": used_zf,
+        "af": used_af,                                                 # True = final ván này do AF chốt (auto-flip + CAO/THẤP + bẻ chế độ)
+        "che_do": af["mode"] if used_af else None,                     # CAO | THAP | ALL (chỉ khi AF chốt)
+        "be_che_do": af["mflip"] if used_af else False,                # True = ván này đã bẻ theo WR chế độ (WR 7 ván của chế độ đang chạy < 45%)
         "do_tin_cay": None if avg is None else round(avg, 1),
         "phien_truoc": latest["phien"],
         "xuc_xac": [latest["d1"], latest["d2"], latest["d3"]],
         "tong": latest["total"],
         "ket_qua_truoc": latest["actual"],
-        "so_van_wr": zf["n"] if used_zf else dec["n"],
+        "so_van_wr": zf["n"] if used_zf else (af["n"] if used_af else dec["n"]),
         "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     tai = sum(1 for v in votes if v == TAI)
@@ -838,8 +1032,11 @@ def build_result(hist):
         "so_logic": len(votes),
         "che_do_loc_trung": DEDUP_MODE,
         "logic_bi_loai": [n for n in ALL_LOGIC_NAMES if n not in LOGIC_NAMES],
-        "nhom_theo": "ZF (z-filter)" if used_zf else {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]],
-        "nhom_tai_xiu": {"TÀI": zf["tai"], "XỈU": zf["xiu"]} if used_zf else {"TÀI": dec["gT"], "XỈU": dec["gX"]},
+        "nhom_theo": ("ZF (z-filter)" if used_zf else
+                      ({"ALL": "AF · da so", "CAO": "AF · WR cao", "THAP": "AF · WR thap"}[af["mode"]] if used_af
+                       else {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]])),
+        "nhom_tai_xiu": ({"TÀI": zf["tai"], "XỈU": zf["xiu"]} if used_zf else
+                         ({"TÀI": af["gT"], "XỈU": af["gX"]} if used_af else {"TÀI": dec["gT"], "XỈU": dec["gX"]})),
         "hoa_dung_da_so_21": dec["tie"],
         "zf": {                                                    # ZF (z-filter động) — xem khối CONFIG ZF
             "bat": ZF_ENABLED,
@@ -853,6 +1050,28 @@ def build_result(hist):
             "so_logic_chon": 0 if zf is None else len(zf["picks"]),
             "phieu": None if zf is None else {"TÀI": zf["tai"], "XỈU": zf["xiu"]},
             "be_final_zf": ZF_FLIP_FINAL,
+        },
+        "af": {                                                    # AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) — xem khối CONFIG AF
+            "bat": AF_ENABLED,
+            "dang_dung": used_af,                                  # True = final ván này do AF chốt
+            "che_do": af["mode"] if used_af else None,             # CAO | THAP | ALL
+            "be_che_do": af["mflip"] if used_af else False,        # True = đã bẻ theo WR chế độ ở ván này
+            "final_truoc_be_che_do": af["base"] if used_af else None,
+            "hoa_phieu_nhom": af["tie"] if used_af else False,     # True = nhóm được chọn hoà phiếu -> dùng đa số tất cả logic
+            "so_van_wr": af["n"] if used_af else None,
+            "van_toi_thieu": max(1, min(AF_MIN_GAMES, WR_WINDOW)),
+            "nguong_be_logic": {"thap": AF_FLIP_LOW, "cao": AF_FLIP_HIGH},
+            "so_logic_nhom": {"CAO": len(af["hi"]), "THAP": len(af["lo"])} if used_af else None,
+            "logic_bi_be": [LOGIC_NAMES[i] for i, f in enumerate(af["flips"]) if f] if used_af else [],
+            "wr_che_do": {                                         # WR của từng chế độ trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ (vote gốc, chưa bẻ chế độ)
+                m: {"so_van": x["n"], "dung": x["w"], "wr": None if x["wr"] is None else round(x["wr"], 1),
+                    "be": x["flip"],                               # True = WR < AF_MODE_BELOW -> chế độ này sẽ bị bẻ khi được chọn
+                    "chuoi": "".join(ICON_DUNG if ok else ICON_SAI for ok in reversed(x["chuoi"]))}   # mới -> cũ
+                for m, x in (af["mw"] if used_af else af_mode_wr(graded)).items()},
+            "cua_so_che_do": AF_MODE_WINDOW,
+            "van_toi_thieu_che_do": max(1, min(AF_MODE_MIN, AF_MODE_WINDOW)),
+            "nguong_be_che_do": AF_MODE_BELOW,
+            "be_final_af": AF_FLIP_FINAL,
         },
         "trong_so_wr": {                                          # cơ chế WR có trọng số (cách cũ / dự phòng)
             "so_van": dec["n"],
@@ -868,14 +1087,19 @@ def build_result(hist):
              "nhom": (None if not dec["wins"] else ("THAP" if i in dec["low"] else "CAO")),
              "zf_wr": (None if not zf or zf["per"][i] is None else round(zf["per"][i]["wr"] * 100, 1)),    # WR thường trên cửa sổ ZF
              "zf_z": (None if not zf or zf["per"][i] is None else round(zf["per"][i]["z"], 2)),
-             "zf_huong": (None if not zf or zf["per"][i] is None else zf["per"][i]["huong"])}      # THEO | ĐẢO | None (không đủ mạnh / bị loại)
+             "zf_huong": (None if not zf or zf["per"][i] is None else zf["per"][i]["huong"]),      # THEO | ĐẢO | None (không đủ mạnh / bị loại)
+             "af_be": (af["flips"][i] if used_af else None),                                         # LOW | HIGH | None: logic có bị bẻ ở bước 1 của AF không
+             "af_du_doan": (af["preds"][i] if used_af else None),                                    # phiếu SAU khi bẻ logic
+             "af_wr": (round(af["eff"][i], 1) if used_af and af["eff"][i] is not None else None),    # WR dùng (100 − WR gốc nếu bị bẻ)
+             "af_nhom": (af["group"][i] if used_af else None)}                                       # CAO | THAP | None
             for i in range(len(votes))
         ],
-        "final_goc": final,                                       # final trước khi bẻ (của ZF nếu ZF chốt, không thì của cách cũ)
+        "final_goc": final,                                       # final trước khi bẻ chung (của ZF nếu ZF chốt · của AF nếu AF chốt (đã gồm bẻ logic + bẻ chế độ) · không thì của cách cũ)
         "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
     }
     hist_rows = [{"phien": g["session"], "du_doan": out_final_g(g), "ket_qua": g["actual"], "tong": g.get("total"),
-                  "dung": out_final_g(g) == g["actual"], "zf": g.get("zf", False)} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
+                  "dung": out_final_g(g) == g["actual"], "zf": g.get("zf", False),
+                  "af": g.get("af", False), "che_do": g.get("mode"), "be_che_do": g.get("mflip", False)} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
     return {"base": base, "detail": detail, "hist": hist_rows}
 
 
@@ -1562,6 +1786,7 @@ h1{font-size:17px;margin:0;font-weight:800}
 .tab{background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:12px;padding:10px 14px;font:inherit;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
 .tab.on{border-color:var(--mu);box-shadow:inset 0 -3px 0 var(--tx)}
 .tab small{color:var(--mu)}
+.tab.ipt{grid-column:1/-1}
 .tai{color:var(--tai)}.xiu{color:var(--xiu)}.okc{color:var(--ok)}.noc{color:var(--no)}.mu{color:var(--mu);font-size:13px}
 .hero{background:var(--pn);border:1px solid var(--ln);border-radius:16px;padding:18px;display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center}
 .big{font-size:clamp(52px,16vw,88px);font-weight:800;line-height:1;margin:4px 0}
@@ -1625,7 +1850,7 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 <div id="hist"></div>
 <script>
 const G={sun:{n:'Sun',u:'/api/predictsun'},lc:{n:'LC79',u:'/api/predictlc79'}};
-let cur=localStorage.getItem('g') in G?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__;
+let cur=(localStorage.getItem('g') in G||localStorage.getItem('g')==='ip')?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__,IPD=null;
 const D={},$=s=>document.querySelector(s),cl=v=>v==='TÀI'?'tai':v==='XỈU'?'xiu':'';
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const P={1:[[50,50]],2:[[26,26],[74,74]],3:[[26,26],[50,50],[74,74]],4:[[26,26],[74,26],[26,74],[74,74]],5:[[26,26],[74,26],[50,50],[26,74],[74,74]],6:[[26,26],[74,26],[26,50],[74,50],[26,74],[74,74]]};
@@ -1635,10 +1860,12 @@ const acc=d=>{const h=d.lich_su||[],k=h.filter(x=>x.dung).length;return{k,t:h.le
 function render(){
   $('#ws').hidden=cur!=='lc';
   $('#tabs').innerHTML=Object.entries(G).map(([k,g])=>{const d=D[k]||{},a=acc(d);
-    return `<button class="tab${k===cur?' on':''}" data-g="${k}"><span>${g.n} <b class="${cl(d.du_doan)}">${d.ok?d.du_doan:'…'}</b></span><small>${a.p===null?'–':a.p+'%'}</small></button>`}).join('');
+    return `<button class="tab${k===cur?' on':''}" data-g="${k}"><span>${g.n} <b class="${cl(d.du_doan)}">${d.ok?d.du_doan:'…'}</b></span><small>${a.p===null?'–':a.p+'%'}</small></button>`}).join('')+`<button class="tab ipt${cur==='ip'?' on':''}" data-g="ip"><span>IP truy cập <b class="${IPD&&IPD.ok&&IPD.dang_dung?'okc':''}">${IPD&&IPD.ok?IPD.dang_dung+' đang dùng':(IPD&&IPD.khoa?'🔒':'…')}</b></span><small>${IPD&&IPD.ok?IPD.tong+' IP':''}</small></button>`;
+  $('.cfg').hidden=cur==='ip';
+  if(cur==='ip'){if(!(IPD&&IPD.khoa&&$('#ak')))$('#main').innerHTML=ipHtml();$('#hist').innerHTML='';$('#st').className='';$('#st').innerHTML='<i></i>'+esc(new Date().toLocaleTimeString());return}
   const d=D[cur]||{},a=acc(d);
   if(!d.ok){$('#main').innerHTML=`<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;$('#hist').innerHTML='';return}
-  $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''} · xét ${d.so_van_wr} ván</div></div><div class="prev">${prevHtml(d)}</div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
+  $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''}${d.be_che_do?' · bẻ chế độ '+d.che_do:''} · xét ${d.so_van_wr} ván</div></div><div class="prev">${prevHtml(d)}</div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
   const h=d.lich_su||[];
   $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua}${x.tong==null?'':` <span class="mu">(${x.tong})</span>`}</td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ kết quả phiên đó (Sun: API · LC79: event session-result của socket).</p>`;
   $('#st').className=Object.values(D).some(x=>x&&(!x.ok||x.stale))?'bad':'';
@@ -1677,8 +1904,21 @@ $('#wsGo').onclick=async()=>{
   wsLoad();load();
 };
 $('#wsOff').onclick=async()=>{try{await fetch('/api/lc79/ws/stop',{method:'POST'})}catch(e){}wsLoad()};
+const agoT=s=>s<60?s+'s':s<3600?Math.floor(s/60)+'p':s<86400?Math.floor(s/3600)+'g':Math.floor(s/86400)+'n';
+function ipHtml(){
+  const d=IPD||{};
+  if(d.khoa)return `<section class="hero" style="grid-template-columns:1fr"><div><div class="mu">🔒 Cần admin key để xem danh sách IP</div><div style="display:flex;gap:8px;margin-top:8px"><input id="ak" type="password" placeholder="Admin key" autocomplete="off" style="width:200px;background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:inherit"><button id="akb" style="background:none;border:1px solid var(--ln);color:var(--mu);border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer">Mở</button></div></div></section>`;
+  if(!d.ok)return `<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;
+  const by=o=>Object.entries(o||{}).map(([k,v])=>k+' '+v).join(' · ');
+  return `<section class="hero" style="grid-template-columns:1fr"><div><div class="mu">IP truy cập API (Sun · LC79 · WS · panel)</div><div class="stats"><span><b class="okc">${d.dang_dung}</b> <span class="mu">đang dùng (trong ${d.cua_so_giay}s)</span></span><span><b>${d.tong}</b> <span class="mu">IP đã từng dùng</span></span></div><div class="mu">IP của bạn: ${esc(d.ban||'?')}</div></div></section><table><tr><th>IP</th><th>Trạng thái</th><th>Gần nhất</th><th class="r">Request</th></tr>${(d.ips||[]).map(x=>`<tr><td title="${esc(x.ua||'')}"><b>${esc(x.ip)}</b>${x.la_ban?' <span class="mu">(bạn)</span>':''}<div class="mu" style="font-size:11.5px">${esc(by(x.theo_loai))}</div></td><td class="${x.dang_dung?'okc':'mu'}">${x.dang_dung?'● đang dùng':'○ đã dùng'}</td><td class="mu">${esc(x.gan_nhat)}<div style="font-size:11.5px">${agoT(x.truoc_giay)} trước · từ ${esc(x.lan_dau)}</div></td><td class="r">${x.so_request}</td></tr>`).join('')}</table>`;
+}
+async function loadIps(){
+  try{const k=localStorage.getItem('ak')||'';const r=await fetch('/api/ips',{cache:'no-store',headers:k?{'X-Admin-Key':k}:{}});IPD=await r.json()}
+  catch(e){IPD={ok:false,loi:'Mất kết nối: '+e}}
+}
+document.addEventListener('click',e=>{if(e.target.id==='akb'){const v=$('#ak');localStorage.setItem('ak',v?v.value.trim():'');loadIps().then(render)}});
 async function load(){
-  await Promise.all([wsLoad(),...Object.entries(G).map(async([k,g])=>{
+  await Promise.all([wsLoad(),loadIps(),...Object.entries(G).map(async([k,g])=>{
     try{const r=await fetch(`${g.u}?hist=${N}`,{cache:'no-store'});D[k]=await r.json()}
     catch(e){D[k]={ok:false,loi:'Mất kết nối: '+e}}})]);
   render();
@@ -1686,6 +1926,119 @@ async function load(){
 load();setInterval(load,3000);
 </script></body></html>
 """
+
+
+# ─── THEO DÕI IP TRUY CẬP (tab "IP" của panel) — xem khối CONFIG IP ──────────
+_ip_lock = threading.Lock()
+_ip_store = {}              # ip -> {"ip","first","last","hits","by":{loại: số request},"ua"}
+_ip_state = {"loaded": False, "saved": 0.0, "dirty": False}
+
+
+def ip_kind(path):
+    """Loại request được tính vào danh sách IP (None = không tính: /health, /, /api/ips ...)."""
+    if path in ("/api/predictsun", "/api/predict"):
+        return "sun"
+    if path in ("/api/predictlc79", "/api/prdictlc79"):
+        return "lc79"
+    if path.startswith("/api/lc79/ws"):
+        return "ws"
+    if path == "/api/html":
+        return "panel"
+    return None
+
+
+def _fmt_ts(ts):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def _ip_load_locked():
+    """Nạp danh sách IP đã lưu (1 lần). Gọi trong _ip_lock."""
+    if _ip_state["loaded"]:
+        return
+    _ip_state["loaded"] = True
+    try:
+        with open(IP_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:  # noqa: BLE001
+        return
+    for r in data if isinstance(data, list) else []:
+        try:
+            ip = str(r.get("ip", ""))
+            if ip != "unknown":
+                ip = str(ipaddress.ip_address(ip))
+            by = {str(k): int(v) for k, v in (r.get("by") or {}).items()}
+            _ip_store[ip] = {"ip": ip, "first": float(r["first"]), "last": float(r["last"]),
+                             "hits": int(r.get("hits", 0)), "by": by, "ua": str(r.get("ua", ""))[:120]}
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _ip_save_locked(now):
+    """Ghi danh sách IP ra file (atomic). Gọi trong _ip_lock."""
+    try:
+        tmp = IP_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(sorted(_ip_store.values(), key=lambda r: r["first"]), f, ensure_ascii=False)
+        os.replace(tmp, IP_PATH)
+        _ip_state["saved"] = now
+        _ip_state["dirty"] = False
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def ip_flush():
+    """Ghi nốt các request chưa kịp lưu (gọi khi tắt server) để không mất tối đa IP_SAVE_SEC giây dữ liệu."""
+    with _ip_lock:
+        if _ip_state["loaded"] and _ip_state["dirty"]:
+            _ip_save_locked(time.time())
+
+
+atexit.register(ip_flush)
+
+
+def ip_touch(ip, kind, ua=""):
+    """Ghi 1 request của `ip` (loại `kind`). IP mới -> ghi file ngay; IP cũ -> ghi file tối đa mỗi IP_SAVE_SEC giây."""
+    now = time.time()
+    ua = re.sub(r"[\x00-\x1f\x7f]", " ", str(ua or ""))[:120]
+    with _ip_lock:
+        _ip_load_locked()
+        r = _ip_store.get(ip)
+        is_new = r is None
+        if is_new:
+            r = _ip_store[ip] = {"ip": ip, "first": now, "last": now, "hits": 0, "by": {}, "ua": ""}
+            while len(_ip_store) > IP_KEEP:                       # đầy -> bỏ IP lâu không thấy nhất
+                del _ip_store[min(_ip_store, key=lambda k: _ip_store[k]["last"])]
+        r["last"] = now
+        r["hits"] += 1
+        r["by"][kind] = r["by"].get(kind, 0) + 1
+        if ua:
+            r["ua"] = ua
+        _ip_state["dirty"] = True
+        if is_new or now - _ip_state["saved"] >= IP_SAVE_SEC:
+            _ip_save_locked(now)
+
+
+def ip_snapshot(me=None):
+    """Danh sách IP cho /api/ips: đang dùng trước (mới nhất trước), rồi tới các IP đã từng dùng."""
+    now = time.time()
+    with _ip_lock:
+        _ip_load_locked()
+        rows = [dict(r, by=dict(r["by"])) for r in _ip_store.values()]
+    out = []
+    for r in rows:
+        age = max(0.0, now - r["last"])
+        out.append({"ip": r["ip"], "dang_dung": age <= IP_ACTIVE_SEC, "lan_dau": _fmt_ts(r["first"]), "gan_nhat": _fmt_ts(r["last"]),
+                    "truoc_giay": int(age), "so_request": r["hits"], "theo_loai": r["by"], "ua": r.get("ua", ""), "la_ban": r["ip"] == me})
+    out.sort(key=lambda x: (not x["dang_dung"], x["truoc_giay"]))
+    return {"ok": True, "tong": len(out), "dang_dung": sum(1 for x in out if x["dang_dung"]),
+            "cua_so_giay": IP_ACTIVE_SEC, "ban": me, "ips": out}
+
+
+def ip_health():
+    with _ip_lock:
+        _ip_load_locked()
+        n = len(_ip_store)
+    return dict(bat=IP_TRACK_ENABLED, tong=n, active_sec=IP_ACTIVE_SEC, khoa=bool(IP_ADMIN_KEY), tin_proxy=IP_TRUST_PROXY)
 
 
 # ─── FLASK ────────────────────────────────────────────────────────────────
@@ -1707,6 +2060,54 @@ def _cors(resp):
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+def client_ip():
+    """IP của client. Sau proxy (Railway / Cloudflare / nginx) đọc X-Forwarded-For / X-Real-IP (hoặc header đặt ở SUNVIW_IP_HEADER) khi IP_TRUST_PROXY bật;
+    giá trị không phải IP hợp lệ thì bỏ qua và dùng IP kết nối trực tiếp (remote_addr)."""
+    cands = []
+    if IP_TRUST_PROXY:
+        if IP_HEADER:
+            cands.append(request.headers.get(IP_HEADER, ""))
+        else:
+            cands += [request.headers.get("X-Forwarded-For", ""), request.headers.get("X-Real-IP", "")]
+    cands.append(request.remote_addr or "")
+    for c in cands:
+        v = (c or "").split(",")[0].strip()            # X-Forwarded-For: client, proxy1, proxy2 -> lấy phần tử đầu
+        if v.startswith("["):
+            v = v[1:].split("]")[0]
+        elif v.count(":") == 1:                        # IPv4:port
+            v = v.split(":")[0]
+        if v:
+            try:
+                return str(ipaddress.ip_address(v))
+            except ValueError:
+                continue
+    return "unknown"
+
+
+@app.before_request
+def _track_ip():
+    """Ghi IP mọi request tới API / ws / panel. Không bao giờ được làm hỏng request."""
+    if not IP_TRACK_ENABLED or request.method == "OPTIONS":
+        return None
+    try:
+        kind = ip_kind(request.path)
+        if kind:
+            ip_touch(client_ip(), kind, request.headers.get("User-Agent", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+@app.route("/api/ips")
+def api_ips():
+    """Danh sách IP đang dùng + đã từng dùng (tab IP của panel). Có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=."""
+    if IP_ADMIN_KEY:
+        k = request.headers.get("X-Admin-Key") or request.args.get("key", "")
+        if not hmac.compare_digest(str(k).encode("utf-8"), IP_ADMIN_KEY.encode("utf-8")):
+            return _json({"ok": False, "khoa": True, "loi": "can admin key (header X-Admin-Key hoac ?key=)"}, 403)
+    return _json(ip_snapshot(client_ip()))
 
 
 def _hist_n():
@@ -1817,7 +2218,10 @@ def health():
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
              wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST,       # trọng số cũ nhất -> mới nhất
              zf=dict(bat=ZF_ENABLED, window=ZF_WINDOW, z=ZF_Z, min_games=ZF_MIN_GAMES, be_final_zf=ZF_FLIP_FINAL,
-                     loai=list(ZF_EXCLUDE), hist_keep=HIST_KEEP, persist_keep=PERSIST_KEEP))
+                     loai=list(ZF_EXCLUDE), hist_keep=HIST_KEEP, persist_keep=PERSIST_KEEP),
+             af=dict(bat=AF_ENABLED, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
+                     mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_final_af=AF_FLIP_FINAL),
+             ips=ip_health())
     with _lc_lock:
         lc = {k: _lc_state[k] for k in ("error", "updated", "checked", "events")}
         lc["latest"] = _lc_state["target"]
@@ -1831,7 +2235,7 @@ def health():
 
 @app.route("/")
 def index():
-    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/lc79/ws", "POST /api/lc79/ws/start", "POST /api/lc79/ws/stop", "/api/html", "/health"]})
+    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/lc79/ws", "POST /api/lc79/ws/start", "POST /api/lc79/ws/stop", "/api/html", "/api/ips", "/health"]})
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.
@@ -1842,6 +2246,7 @@ if __name__ != "__main__":
 def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
     global ZF_ENABLED, ZF_WINDOW, ZF_Z, ZF_MIN_GAMES, ZF_FLIP_FINAL
+    global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -1872,8 +2277,38 @@ def main():
     zfg = ap.add_mutually_exclusive_group()
     zfg.add_argument("--zf-flip", action="store_true", help="BẺ riêng kết quả ZF (đảo TÀI<->XỈU)")
     zfg.add_argument("--zf-no-flip", action="store_true", help="TẮT bẻ riêng kết quả ZF")
+    ag = ap.add_mutually_exclusive_group()
+    ag.add_argument("--af", action="store_true", help="BẬT AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) cho SUN")
+    ag.add_argument("--no-af", action="store_true", help="TẮT AF, quay về cách chốt cũ của SUN")
+    ap.add_argument("--af-low", type=float, default=None, help="AF: WR logic dưới mức này (%%) -> bẻ logic (mặc định AF_FLIP_LOW_DEFAULT)")
+    ap.add_argument("--af-high", type=float, default=None, help="AF: WR logic trên mức này (%%) -> bẻ logic (mặc định AF_FLIP_HIGH_DEFAULT)")
+    ap.add_argument("--af-min", type=int, default=None, help="AF: số ván đã chấm tối thiểu mới bẻ logic / chia nhóm (mặc định AF_MIN_GAMES_DEFAULT)")
+    ap.add_argument("--af-mode-window", type=int, default=None, help="AF: số ván gần nhất của mỗi chế độ để tính WR chế độ (mặc định AF_MODE_WINDOW_DEFAULT)")
+    ap.add_argument("--af-mode-below", type=float, default=None, help="AF: WR chế độ dưới mức này (%%) -> bẻ final (mặc định AF_MODE_BELOW_DEFAULT)")
+    afg = ap.add_mutually_exclusive_group()
+    afg.add_argument("--af-flip", action="store_true", help="BẺ riêng kết quả AF (đảo TÀI<->XỈU)")
+    afg.add_argument("--af-no-flip", action="store_true", help="TẮT bẻ riêng kết quả AF")
     a = ap.parse_args()
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
+    if a.af:
+        AF_ENABLED = True
+    elif a.no_af:
+        AF_ENABLED = False
+    if a.af_low is not None:
+        AF_FLIP_LOW = a.af_low
+    if a.af_high is not None:
+        AF_FLIP_HIGH = a.af_high
+    if a.af_min is not None:
+        AF_MIN_GAMES = a.af_min
+    if a.af_mode_window is not None:
+        AF_MODE_WINDOW = a.af_mode_window
+    if a.af_mode_below is not None:
+        AF_MODE_BELOW = a.af_mode_below
+    if a.af_flip:
+        AF_FLIP_FINAL = True
+    elif a.af_no_flip:
+        AF_FLIP_FINAL = False
+    af_apply_limits()                              # chuẩn hoá tham số AF
     if a.zf:
         ZF_ENABLED = True
     elif a.no_zf:
@@ -1911,7 +2346,9 @@ def main():
     print(f"LC79        ->  http://{a.host}:{a.port}/api/predictlc79 · panel http://{a.host}:{a.port}/api/html (gan token o tab LC79)")
     print(f"LC79 socket ->  {_ws['url']} · token {'da luu' if _ws['token'] else 'CHUA CO — gan o panel'}")
     print(f"LC79 WR     ->  xet {LC_WR_WINDOW} van gan nhat DA CHAM · van moi nhat x{LC_WR_WEIGHT_NEWEST} · be final {'BAT' if LC_FLIP_FINAL else 'TAT'} · flip trong so {'BAT (cu nhat nang nhat)' if LC_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}")
-    print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}  (chi ap cho van quay ve cach cu; van do ZF chot khong bi be)")
+    print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}  (chi ap cho van quay ve cach cu; van do ZF / AF chot khong bi be)")
+    print(f"IP          ->  theo doi {'BAT' if IP_TRACK_ENABLED else 'TAT'} · dang dung = co request trong {IP_ACTIVE_SEC}s · tin proxy {'BAT' if IP_TRUST_PROXY else 'TAT'} · admin key {'CO' if IP_ADMIN_KEY else 'KHONG (ai mo panel cung thay danh sach IP)'} · file {IP_PATH}")
+    print(f"AF SUN      ->  {'BAT' if AF_ENABLED else 'TAT'} · be logic WR < {AF_FLIP_LOW:g}% hoac > {AF_FLIP_HIGH:g}% (toi thieu {AF_MIN_GAMES} van) · be che do CAO/THAP khi WR {AF_MODE_WINDOW} van gan nhat cua che do < {AF_MODE_BELOW:g}% (can {AF_MODE_MIN} van) · be rieng AF {'BAT' if AF_FLIP_FINAL else 'TAT'}")
     print(f"ZF SUN      ->  {'BAT' if ZF_ENABLED else 'TAT'} · xet {ZF_WINDOW} van gan nhat · |z| >= {ZF_Z} · toi thieu {ZF_MIN_GAMES} van · be rieng ZF {'BAT' if ZF_FLIP_FINAL else 'TAT'} · loai {list(ZF_EXCLUDE) or 'khong'} · giu lich su {HIST_KEEP} phien")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))

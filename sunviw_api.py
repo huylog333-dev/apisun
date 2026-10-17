@@ -381,6 +381,7 @@ LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
 #   BV_WR_DECAY / BV_WR_FLOOR / BV_WR_WEIGHT_NEWEST / BV_WR_FLIP_WEIGHT_DEFAULT   trọng số WR — ý nghĩa y như WR_DECAY / WR_FLOOR / WR_WEIGHT_NEWEST / WR_FLIP_WEIGHT_DEFAULT của SUN
 #   BV_FLIP_FINAL_DEFAULT  bẻ final kiểu cũ (RIÊNG, độc lập FLIP_FINAL của SUN): chỉ áp cho ván quay về cách cũ (AF / ZF tắt hoặc chưa đủ điều kiện)
 #   BV_AF_*             AF (bẻ logic WR < LOW / > HIGH · CAO/THẤP · bẻ chế độ WR MODE_WINDOW ván < MODE_BELOW) — ý nghĩa y như khối CONFIG AF của SUN
+#                       RIÊNG BV_AF_MIN_GAMES = 0 (mặc định) -> tool chỉ bắt đầu bẻ logic / chia nhóm khi đã quét ĐỦ BV_WR_WINDOW ván (12 hay 13 tuỳ số bạn chọn); chưa đủ thì vote đa số tất cả logic
 #   BV_ZF_*             ZF (z-filter động) — ý nghĩa y như khối CONFIG ZF của SUN
 #   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
 #       env  : BETVIP_UPSTREAM · BETVIP_POLL · BETVIP_WR_WINDOW · BETVIP_SCAN · BETVIP_WR_DECAY · BETVIP_WR_FLOOR · BETVIP_WR_NEWEST · BETVIP_WR_FLIP=1|0 · BETVIP_FLIP=1|0
@@ -395,7 +396,7 @@ BV_REFERER = os.environ.get("BETVIP_REFERER", "").strip()
 BV_POLL_SEC = _env_num("BETVIP_POLL", 3.0, float)
 BV_HIST_BASE = 300          # giữ tối đa N phiên gần nhất trong bộ nhớ (tự nới theo BV_SCAN_GAMES / BV_ZF_WINDOW, xem bv_apply_limits)
 BV_WR_WINDOW_DEFAULT = 13
-BV_SCAN_GAMES_DEFAULT = 13
+BV_SCAN_GAMES_DEFAULT = 0
 BV_WR_DECAY_DEFAULT = 0.95
 BV_WR_FLOOR_DEFAULT = 0.75
 BV_WR_WEIGHT_NEWEST_DEFAULT = 1.4
@@ -405,7 +406,7 @@ BV_FLIP_FINAL_DEFAULT = True
 BV_AF_ENABLED_DEFAULT = True
 BV_AF_FLIP_LOW_DEFAULT = 37
 BV_AF_FLIP_HIGH_DEFAULT = 63
-BV_AF_MIN_GAMES_DEFAULT = 13
+BV_AF_MIN_GAMES_DEFAULT = 0     # 0 = bằng BV_WR_WINDOW: phải quét ĐỦ N ván (N = số ván xét WR) mới bẻ logic / chia CAO-THẤP · số > 0 = ngưỡng riêng (tự kẹp <= BV_WR_WINDOW)
 BV_AF_MODE_WINDOW_DEFAULT = 7
 BV_AF_MODE_MIN_DEFAULT = 7
 BV_AF_MODE_BELOW_DEFAULT = 45
@@ -460,7 +461,7 @@ def bv_apply_limits():
     BV_ZF_MIN_GAMES = max(10, min(int(BV_ZF_MIN_GAMES), BV_ZF_WINDOW))
     BV_AF_FLIP_LOW = min(max(0.0, float(BV_AF_FLIP_LOW)), 50.0)
     BV_AF_FLIP_HIGH = min(max(50.0, float(BV_AF_FLIP_HIGH)), 100.0)
-    BV_AF_MIN_GAMES = max(1, int(BV_AF_MIN_GAMES))
+    BV_AF_MIN_GAMES = max(0, int(BV_AF_MIN_GAMES))
     BV_AF_MODE_WINDOW = max(1, int(BV_AF_MODE_WINDOW))
     BV_AF_MODE_MIN = max(1, min(int(BV_AF_MODE_MIN), BV_AF_MODE_WINDOW))
     BV_AF_MODE_BELOW = min(max(0.0, float(BV_AF_MODE_BELOW)), 100.0)
@@ -468,6 +469,12 @@ def bv_apply_limits():
 
 
 bv_apply_limits()
+
+
+def _bv_af_need():
+    """Số ván đã chấm tối thiểu mới bẻ logic / chia nhóm của BETVIP: BV_AF_MIN_GAMES = 0 -> đủ BV_WR_WINDOW ván; còn lại kẹp trong [1, BV_WR_WINDOW]."""
+    return BV_WR_WINDOW if BV_AF_MIN_GAMES <= 0 else max(1, min(BV_AF_MIN_GAMES, BV_WR_WINDOW))
+
 
 # ─── PANEL /api/html ─────────────────────────────────────────────────────
 PANEL_DEFAULT_SHOW = 30    # số ván lịch sử panel hiện mặc định (đổi trực tiếp trên panel, trình duyệt nhớ lại)
@@ -1950,7 +1957,7 @@ def bv_af_decision(votes, graded):
     all_vote = vote_result(votes)
     win = graded[-BV_WR_WINDOW:]                          # cũ -> mới
     n = len(win)
-    need = max(1, min(BV_AF_MIN_GAMES, BV_WR_WINDOW))
+    need = _bv_af_need()
     mw = bv_af_mode_wr(graded)
     out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False,
            "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
@@ -2181,7 +2188,7 @@ def bv_build_result(hist):
             "final_truoc_be_che_do": af["base"] if used_af else None,
             "hoa_phieu_nhom": af["tie"] if used_af else False,
             "so_van_wr": af["n"] if used_af else None,
-            "van_toi_thieu": max(1, min(BV_AF_MIN_GAMES, BV_WR_WINDOW)),
+            "van_toi_thieu": _bv_af_need(),
             "nguong_be_logic": {"thap": BV_AF_FLIP_LOW, "cao": BV_AF_FLIP_HIGH},
             "so_logic_nhom": {"CAO": len(af["hi"]), "THAP": len(af["lo"])} if used_af else None,
             "logic_bi_be": [LOGIC_NAMES[i] for i, f in enumerate(af["flips"]) if f] if used_af else [],
@@ -2781,7 +2788,7 @@ def health():
              wr_flip=BV_WR_FLIP_WEIGHT, wr_decay=BV_WR_DECAY, wr_floor=BV_WR_FLOOR, wr_newest=BV_WR_WEIGHT_NEWEST,
              wr_weights=[round(float(w), 4) for w in wr_weights(BV_WR_WINDOW, _BV_DECAY, _BV_FLOOR, _BV_NEWEST, BV_WR_FLIP_WEIGHT)],
              zf=dict(bat=BV_ZF_ENABLED, window=BV_ZF_WINDOW, z=BV_ZF_Z, min_games=BV_ZF_MIN_GAMES, be_final_zf=BV_ZF_FLIP_FINAL, loai=list(BV_ZF_EXCLUDE)),
-             af=dict(bat=BV_AF_ENABLED, flip_low=BV_AF_FLIP_LOW, flip_high=BV_AF_FLIP_HIGH, min_games=BV_AF_MIN_GAMES, mode_window=BV_AF_MODE_WINDOW,
+             af=dict(bat=BV_AF_ENABLED, flip_low=BV_AF_FLIP_LOW, flip_high=BV_AF_FLIP_HIGH, min_games=_bv_af_need(), mode_window=BV_AF_MODE_WINDOW,
                      mode_min=BV_AF_MODE_MIN, mode_below=BV_AF_MODE_BELOW, be_final_af=BV_AF_FLIP_FINAL))
     s["betvip"] = bv
     return _json(s)

@@ -15,9 +15,6 @@ Chạy:
     python sunviw_api.py --zf-window 150      # ZF (SUN): SỐ VÁN gần nhất xét WR từng logic (--zf / --no-zf = bật/tắt ZF · --zf-z 2.0 = ngưỡng z · --zf-min 100 = số ván tối thiểu · --zf-flip / --zf-no-flip = bẻ riêng ZF)
                                               #           hoặc env SUNVIW_ZF / SUNVIW_ZF_WINDOW / SUNVIW_ZF_Z / SUNVIW_ZF_MIN / SUNVIW_ZF_FLIP / SUNVIW_ZF_EXCLUDE, hoặc sửa ZF_*_DEFAULT ở khối "CONFIG ZF"
 
-    python sunviw_api.py --nx-url "https://.../v1/tx/sessions?...&at=..."   # NX (BETVIP): đổi URL API list (hoặc env NX_UPSTREAM)
-    python sunviw_api.py --nx-zf --nx-zf-window 100 --nx-no-af --nx-no-flip # NX có config RIÊNG (flip / WR flip / ZF / AF ...): tất cả cờ bắt đầu bằng --nx-  (xem khối "CONFIG NX")
-
 Endpoint:
     GET /api/predictsun          -> [SUN] JSON dự đoán (đọc từ cache, trả về ngay). /api/predict = tên cũ, giữ để tool cũ không hỏng
     GET /api/predictsun?detail=1 -> thêm chi_tiet: vote từng logic + WR từng logic
@@ -25,11 +22,11 @@ Endpoint:
     GET /api/lc79/ws             -> trạng thái socket LC79 (không bao giờ trả token)
     POST /api/lc79/ws/start      -> gắn token + bật socket LC79: {"token":"...","url":"(tuỳ chọn)","auth":"(tuỳ chọn)"}; token rỗng = dùng token đã lưu
     POST /api/lc79/ws/stop       -> tắt socket LC79
-    GET /api/predictnx           -> [NX · BETVIP] JSON dự đoán (nguồn = API list phiên), config RIÊNG (xem "CONFIG NX"); cũng có ?detail=1 · ?mo_phong=1 (lịch sử gồm cả ván mô phỏng)
-    GET /api/nx                  -> trạng thái quét API NX + nhật ký (đã che token trong URL)
-    ...?hist=N                   -> (cả 3 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
+    ...?hist=N                   -> (cả 2 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
     GET /api/html                -> panel HTML theo dõi cả 2 game, đổi qua lại, chọn số ván lịch sử
     GET /health                  -> trạng thái nền của cả 2 game
+    GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa / xem key, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
+    POST /api/key/check          -> tool xác thực key người dùng: {"key":"..."} -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
     GET /api/ips                 -> DANH SÁCH IP đang dùng + đã từng dùng API / ws (tab "IP" của panel đọc từ đây; có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=)
 
 JSON /api/predict:
@@ -101,14 +98,11 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
     Tab "IP" hiện: IP ĐANG DÙNG (có request trong IP_ACTIVE_SEC giây gần nhất) + IP ĐÃ TỪNG DÙNG (lưu file, còn sau khi restart) · lần đầu / gần nhất · số request · chia theo loại (sun · lc79 · ws · panel) · User-Agent.
     Khối "CONFIG IP" ở gần đầu file. Nên đặt SUNVIW_ADMIN_KEY để chỉ bạn xem được danh sách IP (panel là trang công khai).
 
-🟣 NX (BETVIP NX) = GAME 3 — tab "NX" của panel, dùng đúng bộ logic + cách chốt (ZF -> AF -> WR trọng số) như Sun nhưng config / lịch sử RIÊNG:
-    API trả list phiên (mới -> cũ). Mỗi lần quét: lấy phiên MỚI NHẤT N -> dự đoán phiên N+1 bằng xúc xắc phiên N -> LƯU dự đoán -> đợi API trả kết quả phiên N+1
-    -> so với dự đoán đã lưu -> ĐÚNG / SAI (in ra console, panel, JSON) -> cập nhật WR -> dự đoán tiếp. Ván lưu trong NX_PRED_PATH nên restart không mất.
-
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
 import argparse
 import atexit
+import base64
 import collections
 import hashlib
 import hmac
@@ -117,13 +111,13 @@ import json
 import math
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 import unicodedata
 import urllib.request
 from fractions import Fraction
-from types import SimpleNamespace
 
 # ─── CẤU HÌNH ────────────────────────────────────────────────────────────
 # Upstream MỚI: /api/tx chỉ trả 1 PHIÊN MỚI NHẤT dạng 1 object:
@@ -134,7 +128,21 @@ UPSTREAM_URL = os.environ.get(
     "https://well-summary-oclc-invisible.trycloudflare.com/api/tx",
 )
 UPSTREAM_TIMEOUT = 9      # giây
-HIST_PATH = os.environ.get("SUNVIW_HIST", "/tmp/sunviw_hist.json")   # lịch sử các phiên đã quét (tool tự tích lũy)
+# THƯ MỤC LƯU DỮ LIỆU BỀN: Railway gắn Volume thì tự đặt RAILWAY_VOLUME_MOUNT_PATH (vd. /data) -> mọi file lưu (lịch sử, graded, key, IP, token LC79...)
+# nằm trong Volume nên KHÔNG MẤT sau mỗi lần deploy / restart. Không có Volume (chạy máy local) -> dùng /tmp như cũ.
+# Muốn tự chọn thư mục: đặt SUNVIW_DATA_DIR. Từng file vẫn ghi đè riêng được bằng SUNVIW_HIST / SUNVIW_PERSIST / SUNVIW_KEYS_PATH / SUNVIW_IPS_PATH / LC79_WS_CFG / LC79_PRED.
+DATA_DIR = os.environ.get("SUNVIW_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "/tmp"
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except OSError:
+    DATA_DIR = "/tmp"
+
+
+def _data_path(name):
+    return os.path.join(DATA_DIR, name)
+
+
+HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sunviw_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
 HIST_KEEP = 300            # giữ tối đa N phiên gần nhất trong lịch sử (>= WR_WINDOW + EVAL_WINDOW là đủ)
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
@@ -214,7 +222,7 @@ ICON_DUNG = "✅"            # icon hiện cho ván ĐOÁN ĐÚNG trong chuỗi 
 ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
-PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", "/tmp/sunviw_graded.json")
+PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", _data_path("sunviw_graded.json"))
 PERSIST_KEEP = 50          # giữ tối đa N graded entry trong file (>= WR_WINDOW đủ dùng)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -344,7 +352,7 @@ af_apply_limits()
 #   Phiên mới đến mà kết quả phiên trước chưa về -> chờ tối đa LC_WAIT_RESULT_SEC giây để WR được cập nhật trước khi vote.
 LC_WS_URL_DEFAULT = os.environ.get("LC79_WS_URL", "wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket")
 LC_WS_AUTH_DEFAULT = '40/txmd5,{"token":"{TOKEN}"}'   # mỗi dòng 1 khung · {TOKEN} = token · dòng 1 gửi ngay khi mở kết nối, các dòng sau gửi sau khi namespace connect
-LC_WS_CFG_PATH = os.environ.get("LC79_WS_CFG", "/tmp/lc79_ws_cfg.json")   # file lưu token + URL + khung auth + cờ tự bật (quyền 600)
+LC_WS_CFG_PATH = os.environ.get("LC79_WS_CFG", _data_path("lc79_ws_cfg.json"))   # file lưu token + URL + khung auth + cờ tự bật (quyền 600)
 LC_WS_ORIGIN = os.environ.get("LC79_WS_ORIGIN", "")   # nếu server socket đòi Origin cụ thể thì đặt ở đây (mặc định để trống)
 LC_WS_RETRY_BASE, LC_WS_RETRY_MAX = 2.0, 30.0         # nối lại: 2s, 4s, 8s ... tối đa 30s
 LC_WAIT_RESULT_SEC = 4.0                              # chờ kết quả phiên trước tối đa N giây trước khi vote phiên mới
@@ -361,113 +369,8 @@ LC_WR_FLIP_WEIGHT = _env_bool("LC79_WR_FLIP", LC_WR_FLIP_WEIGHT_DEFAULT)
 LC_FLIP_FINAL_DEFAULT = False                      # bẻ final của LC79 (RIÊNG, độc lập FLIP_FINAL của Sun): True = bẻ · False = theo final gốc
                                                    # ưu tiên: cờ dòng lệnh --lc-flip/--lc-no-flip > env LC79_FLIP=1|0 > giá trị này
 LC_FLIP_FINAL = _env_bool("LC79_FLIP", LC_FLIP_FINAL_DEFAULT)
-LC_PRED_PATH = os.environ.get("LC79_PRED", "/tmp/lc79_preds.json")   # file lưu các dự đoán LC đã chấm / đang chờ (kèm vote từng logic để tính WR sau restart)
+LC_PRED_PATH = os.environ.get("LC79_PRED", _data_path("lc79_preds.json"))   # file lưu các dự đoán LC đã chấm / đang chờ (kèm vote từng logic để tính WR sau restart)
 LC_PRED_KEEP = 300         # giữ tối đa N dự đoán LC trong file
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  ⚙  CONFIG NX (GAME 3 · BETVIP NX)  —  RIÊNG HOÀN TOÀN, KHÔNG ẢNH HƯỞNG SUN / LC79  —  CHỈNH Ở ĐÂY
-# ═══════════════════════════════════════════════════════════════════════════
-#   NGUỒN DỮ LIỆU NX = API REST trả list phiên (mới -> cũ):  {"list":[{"id":7189400,"resultTruyenThong":"XIU","dices":[1,1,5],"point":7}, ...]}
-#   Mỗi lần quét (NX_POLL_SEC giây):
-#       1) CHẤM: phiên nào tool đã LƯU dự đoán mà API vừa trả kết quả -> so với dự đoán -> ĐÚNG / SAI -> cập nhật WR (in ra console + panel + JSON)
-#       2) Lấy phiên MỚI NHẤT (id lớn nhất) = N  ->  dự đoán phiên N+1 bằng xúc xắc của phiên N (công thức md5 y hệt Sun)  ->  LƯU dự đoán (chỉ 1 lần, đổi config sau đó không tính lại)
-#       3) Đợi API trả phiên N+1 -> quay lại bước 1
-#   LOGIC + CÁCH CHỐT = y như Sun (bộ logic dùng chung, chốt final: ZF -> AF -> WR có trọng số), nhưng TOÀN BỘ tham số dưới đây là của RIÊNG NX,
-#   mặc định = đúng giá trị Sun đang dùng; muốn khác Sun cứ sửa ở đây (hoặc env / cờ dòng lệnh --nx-*) mà không đụng tab Sun / LC79.
-#
-#   VÁN MÔ PHỎNG: lần chạy đầu (hoặc sau khi tool nghỉ 1 lúc) chưa có ván nào đã chấm -> tool lấy các phiên đã có trong list, TỰ TÍNH LẠI dự đoán từng phiên
-#   (chỉ dùng dữ liệu TRƯỚC phiên đó, không nhìn trước đáp án) để WR / ZF / AF có dữ liệu ngay. Ván này đánh dấu "mo_phong": true, ĐƯỢC dùng để tính WR
-#   nhưng KHÔNG tính vào thống kê đúng/sai và lịch sử (mặc định). Muốn xem cả ván mô phỏng: ?mo_phong=1. Tắt hẳn: NX_BACKFILL_DEFAULT = False (env NX_BACKFILL=0 · cờ --nx-no-backfill).
-#
-#   NX_UPSTREAM_URL  URL API list phiên (env NX_UPSTREAM). Link có tham số at=... (giống token) -> nếu repo công khai nên đặt bằng env trên Railway thay vì để trong file.
-#                    Server báo 403 -> thử đặt NX_ORIGIN (vd. https://xxx.com) để gửi kèm Origin + Referer.
-#   NX_WR_*          WR có trọng số (ý nghĩa y hệt khối CONFIG WR CÓ TRỌNG SỐ của Sun)
-#   NX_FLIP_FINAL    bẻ final chỉ áp lên ván quay về cách cũ (y như FLIP_FINAL của Sun) · NX_ZF_* / NX_AF_*  y như khối CONFIG ZF / CONFIG AF của Sun
-#   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
-#       env  : NX_UPSTREAM · NX_POLL · NX_FLIP=1|0 · NX_WR_FLIP=1|0 · NX_ZF=1|0 · NX_ZF_WINDOW · NX_ZF_Z · NX_ZF_MIN · NX_ZF_FLIP=1|0 · NX_ZF_EXCLUDE="ANTI-L7,..."
-#              NX_AF=1|0 · NX_AF_LOW · NX_AF_HIGH · NX_AF_MIN · NX_AF_MODE_WINDOW · NX_AF_MODE_MIN · NX_AF_MODE_BELOW · NX_AF_FLIP=1|0 · NX_BACKFILL=1|0 · NX_PRED (đường dẫn file lưu)
-#       lệnh : --nx-url · --nx-poll · --nx-flip/--nx-no-flip · --nx-wr-flip/--nx-no-wr-flip · --nx-zf/--nx-no-zf · --nx-zf-window/-z/-min · --nx-zf-flip/--nx-zf-no-flip
-#              --nx-af/--nx-no-af · --nx-af-low/-high/-min/-mode-window/-mode-below · --nx-af-flip/--nx-af-no-flip · --nx-backfill/--nx-no-backfill
-NX_UPSTREAM_URL = os.environ.get("NX_UPSTREAM", "https://wtx.macminim6.online/v1/tx/sessions?cp=R&cl=R&pf=web&at=4bf6797d83052bbb5d4902851be0d13b")
-NX_TIMEOUT = 9             # giây
-NX_POLL_SEC = _env_num("NX_POLL", 3.0, float)        # chu kỳ quét API
-NX_ORIGIN = os.environ.get("NX_ORIGIN", "").strip()  # (tuỳ chọn) gửi kèm Origin + Referer nếu server đòi
-NX_UA = os.environ.get("NX_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-NX_PRED_PATH = os.environ.get("NX_PRED", "/tmp/nx_preds.json")   # file lưu dự đoán (đã chấm + đang chờ). Railway nên trỏ vào ổ đĩa bền, không thì /tmp bị xoá mỗi lần deploy
-NX_PRED_KEEP_BASE = 300    # giữ tối đa N ván trong file (tự nới theo NX_ZF_WINDOW / NX_WR_WINDOW, xem nx_apply_limits)
-NX_BACKFILL_DEFAULT = True
-NX_BACKFILL = _env_bool("NX_BACKFILL", NX_BACKFILL_DEFAULT)
-
-NX_WR_WINDOW = 13          # số ván gần nhất dùng để tính WR                      (= Sun)
-NX_WR_DECAY = 0.95         # tốc độ giảm trọng số khi ván cũ dần                    (= Sun)
-NX_WR_FLOOR = 0.75         # sàn trọng số của ván cũ                                 (= Sun)
-NX_WR_WEIGHT_NEWEST = 1.4  # trọng số ván mới nhất                                   (= Sun)
-NX_WR_MIN_GAMES = 1        # số ván đã chấm tối thiểu để dùng WR                     (= Sun)
-NX_WR_FLIP_WEIGHT_DEFAULT = False   # flip trọng số WR: True = ván CŨ nhất nặng nhất · False = ván mới nhất nặng nhất (= Sun)
-NX_FLIP_FINAL_DEFAULT = True        # bẻ final (chỉ ván quay về cách cũ)           (= Sun)
-NX_ZF_ENABLED_DEFAULT = False       # (= Sun)
-NX_ZF_WINDOW_DEFAULT = 150
-NX_ZF_Z_DEFAULT = 2.0
-NX_ZF_MIN_GAMES_DEFAULT = 100
-NX_ZF_FLIP_FINAL_DEFAULT = False
-NX_ZF_EXCLUDE_DEFAULT = ("ANTI-L7",)
-NX_AF_ENABLED_DEFAULT = True        # (= Sun)
-NX_AF_FLIP_LOW_DEFAULT = 37
-NX_AF_FLIP_HIGH_DEFAULT = 63
-NX_AF_MIN_GAMES_DEFAULT = 13
-NX_AF_MODE_WINDOW_DEFAULT = 7
-NX_AF_MODE_MIN_DEFAULT = 7
-NX_AF_MODE_BELOW_DEFAULT = 45
-NX_AF_FLIP_FINAL_DEFAULT = False
-
-NX_WR_FLIP_WEIGHT = _env_bool("NX_WR_FLIP", NX_WR_FLIP_WEIGHT_DEFAULT)
-NX_FLIP_FINAL = _env_bool("NX_FLIP", NX_FLIP_FINAL_DEFAULT)
-NX_ZF_ENABLED = _env_bool("NX_ZF", NX_ZF_ENABLED_DEFAULT)
-NX_ZF_WINDOW = _env_num("NX_ZF_WINDOW", NX_ZF_WINDOW_DEFAULT, int)
-NX_ZF_Z = _env_num("NX_ZF_Z", NX_ZF_Z_DEFAULT, float)
-NX_ZF_MIN_GAMES = _env_num("NX_ZF_MIN", NX_ZF_MIN_GAMES_DEFAULT, int)
-NX_ZF_FLIP_FINAL = _env_bool("NX_ZF_FLIP", NX_ZF_FLIP_FINAL_DEFAULT)
-_nx_ex_env = os.environ.get("NX_ZF_EXCLUDE")
-NX_ZF_EXCLUDE = tuple(x.strip() for x in _nx_ex_env.split(",") if x.strip()) if _nx_ex_env is not None else tuple(NX_ZF_EXCLUDE_DEFAULT)
-NX_AF_ENABLED = _env_bool("NX_AF", NX_AF_ENABLED_DEFAULT)
-NX_AF_FLIP_LOW = _env_num("NX_AF_LOW", NX_AF_FLIP_LOW_DEFAULT, float)
-NX_AF_FLIP_HIGH = _env_num("NX_AF_HIGH", NX_AF_FLIP_HIGH_DEFAULT, float)
-NX_AF_MIN_GAMES = _env_num("NX_AF_MIN", NX_AF_MIN_GAMES_DEFAULT, int)
-NX_AF_MODE_WINDOW = _env_num("NX_AF_MODE_WINDOW", NX_AF_MODE_WINDOW_DEFAULT, int)
-NX_AF_MODE_MIN = _env_num("NX_AF_MODE_MIN", NX_AF_MODE_MIN_DEFAULT, int)
-NX_AF_MODE_BELOW = _env_num("NX_AF_MODE_BELOW", NX_AF_MODE_BELOW_DEFAULT, float)
-NX_AF_FLIP_FINAL = _env_bool("NX_AF_FLIP", NX_AF_FLIP_FINAL_DEFAULT)
-NX_PRED_KEEP = NX_PRED_KEEP_BASE
-
-
-def nx_apply_limits():
-    """Chuẩn hoá tham số NX (gọi lúc import và sau khi đọc cờ dòng lệnh) + nới NX_PRED_KEEP đủ chứa cửa sổ ZF / WR."""
-    global NX_ZF_WINDOW, NX_ZF_Z, NX_ZF_MIN_GAMES, NX_PRED_KEEP
-    global NX_AF_FLIP_LOW, NX_AF_FLIP_HIGH, NX_AF_MIN_GAMES, NX_AF_MODE_WINDOW, NX_AF_MODE_MIN, NX_AF_MODE_BELOW
-    NX_ZF_WINDOW = max(10, int(NX_ZF_WINDOW))
-    NX_ZF_Z = max(0.0, float(NX_ZF_Z))
-    NX_ZF_MIN_GAMES = max(10, min(int(NX_ZF_MIN_GAMES), NX_ZF_WINDOW))
-    NX_PRED_KEEP = max(NX_PRED_KEEP_BASE, NX_ZF_WINDOW + 10, int(NX_WR_WINDOW) + 10)
-    NX_AF_FLIP_LOW = min(max(0.0, float(NX_AF_FLIP_LOW)), 50.0)
-    NX_AF_FLIP_HIGH = min(max(50.0, float(NX_AF_FLIP_HIGH)), 100.0)
-    NX_AF_MIN_GAMES = max(1, int(NX_AF_MIN_GAMES))
-    NX_AF_MODE_WINDOW = max(1, int(NX_AF_MODE_WINDOW))
-    NX_AF_MODE_MIN = max(1, min(int(NX_AF_MODE_MIN), NX_AF_MODE_WINDOW))
-    NX_AF_MODE_BELOW = min(max(0.0, float(NX_AF_MODE_BELOW)), 100.0)
-
-
-nx_apply_limits()
-
-
-def nx_cfg():
-    """Config chốt final của NX (đọc LIVE từ biến global NX_*)."""
-    return SimpleNamespace(
-        name="nx", wr_window=NX_WR_WINDOW, wr_decay=NX_WR_DECAY, wr_floor=NX_WR_FLOOR, wr_newest=NX_WR_WEIGHT_NEWEST,
-        wr_min=NX_WR_MIN_GAMES, wr_flip=NX_WR_FLIP_WEIGHT, flip_final=NX_FLIP_FINAL,
-        zf_on=NX_ZF_ENABLED, zf_window=NX_ZF_WINDOW, zf_z=NX_ZF_Z, zf_min=NX_ZF_MIN_GAMES, zf_flip=NX_ZF_FLIP_FINAL, zf_exclude=tuple(NX_ZF_EXCLUDE),
-        af_on=NX_AF_ENABLED, af_low=NX_AF_FLIP_LOW, af_high=NX_AF_FLIP_HIGH, af_min=NX_AF_MIN_GAMES, af_mode_window=NX_AF_MODE_WINDOW,
-        af_mode_min=NX_AF_MODE_MIN, af_mode_below=NX_AF_MODE_BELOW, af_flip=NX_AF_FLIP_FINAL)
-
 
 # ─── PANEL /api/html ─────────────────────────────────────────────────────
 PANEL_DEFAULT_SHOW = 30    # số ván lịch sử panel hiện mặc định (đổi trực tiếp trên panel, trình duyệt nhớ lại)
@@ -489,7 +392,7 @@ IP_TRACK_ENABLED_DEFAULT = True
 IP_ACTIVE_SEC = _env_num("SUNVIW_IP_ACTIVE", 60, int)
 IP_KEEP = 500
 IP_SAVE_SEC = 10.0         # ghi file tối đa mỗi N giây (IP mới xuất hiện thì ghi ngay)
-IP_PATH = os.environ.get("SUNVIW_IPS_PATH", "/tmp/sunviw_ips.json")
+IP_PATH = os.environ.get("SUNVIW_IPS_PATH", _data_path("sunviw_ips.json"))
 IP_TRUST_PROXY_DEFAULT = True
 IP_HEADER = os.environ.get("SUNVIW_IP_HEADER", "").strip()
 IP_ADMIN_KEY = os.environ.get("SUNVIW_ADMIN_KEY", "")
@@ -610,10 +513,9 @@ def flip_pred(p):
     return XIU if p == TAI else TAI if p == XIU else p
 
 
-def out_final(final, cfg=None):
-    """Final đã đưa ra API (sau bẻ nếu bật). cfg=None -> config SUN."""
-    c = cfg or sun_cfg()
-    return flip_pred(final) if c.flip_final else final
+def out_final(final):
+    """Final đã đưa ra API (sau bẻ nếu bật)."""
+    return flip_pred(final) if FLIP_FINAL else final
 
 
 def vote_result(preds):
@@ -766,28 +668,6 @@ def compute_all_full_md5(session, md5):
     return l123 + [tta2, tta4, tta5, l7, llow1, llow2, anti_l7] + sun + s2 + tx + [la, lb, l3n, l4n, l5n]
 
 
-# ─── BỘ CONFIG CHỐT FINAL (SUN · NX mỗi game 1 bộ riêng) ──────────────────
-def sun_cfg():
-    """Config chốt final của SUN, đọc LIVE từ biến global (để cờ dòng lệnh đổi được sau khi import)."""
-    return SimpleNamespace(
-        name="sun", wr_window=WR_WINDOW, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST,
-        wr_min=WR_MIN_GAMES, wr_flip=WR_FLIP_WEIGHT, flip_final=FLIP_FINAL,
-        zf_on=ZF_ENABLED, zf_window=ZF_WINDOW, zf_z=ZF_Z, zf_min=ZF_MIN_GAMES, zf_flip=ZF_FLIP_FINAL, zf_exclude=tuple(ZF_EXCLUDE),
-        af_on=AF_ENABLED, af_low=AF_FLIP_LOW, af_high=AF_FLIP_HIGH, af_min=AF_MIN_GAMES, af_mode_window=AF_MODE_WINDOW,
-        af_mode_min=AF_MODE_MIN, af_mode_below=AF_MODE_BELOW, af_flip=AF_FLIP_FINAL)
-
-
-def _wr_w(n, c):
-    """Trọng số WR (Fraction) của n ván gần nhất theo config c."""
-    return wr_weights(n, Fraction(str(c.wr_decay)), Fraction(str(c.wr_floor)), Fraction(str(c.wr_newest)), c.wr_flip)
-
-
-def _wr_kw(c):
-    """Tham số cho wr_decision() theo config c."""
-    return dict(window=c.wr_window, decay=Fraction(str(c.wr_decay)), floor=Fraction(str(c.wr_floor)),
-                min_games=c.wr_min, newest=Fraction(str(c.wr_newest)), flip=c.wr_flip)
-
-
 # ─── WR · QUYẾT ĐỊNH CUỐI · ĐỘ TIN CẬY ───────────────────────────────────
 def wr_weights(n, decay=None, floor=None, newest=None, flip=None):
     """Trọng số của n ván gần nhất, thứ tự cũ nhất -> mới nhất (kiểu Fraction = chính xác tuyệt đối khi so với 50%).
@@ -844,15 +724,14 @@ def wr_decision(votes, graded, window=None, decay=None, floor=None, min_games=No
             "wsum": float(wsum), "weights": [float(w) for w in weights], "flip": flip}
 
 
-def zf_decision(votes, graded, window=None, z_thr=None, min_games=None, cfg=None):
+def zf_decision(votes, graded, window=None, z_thr=None, min_games=None):
     """ZF (Z-filter động): chấm WR từng logic trên `window` ván đã chấm gần nhất, chỉ cho logic lệch 50% đủ mạnh (|z| >= z_thr) bỏ phiếu,
     WR > 50% -> THEO, WR < 50% -> ĐẢO, đa số phiếu = final. Trả dict luôn có khoá:
       active (True = ZF chốt được final) · reason (ok | chua_du_van | khong_logic_du_manh | hoa_phieu) · n (số ván đã xét) · final
       picks (chỉ số logic được chọn) · tai / xiu (số phiếu) · avg (TB WR theo hướng của các logic được chọn, 0-100) · per[i] = {wr, z, huong} hoặc None."""
-    c = cfg or sun_cfg()                              # None -> config SUN; NX truyền config riêng
-    window = c.zf_window if window is None else window
-    z_thr = c.zf_z if z_thr is None else z_thr
-    min_games = c.zf_min if min_games is None else min_games
+    window = ZF_WINDOW if window is None else window
+    z_thr = ZF_Z if z_thr is None else z_thr
+    min_games = ZF_MIN_GAMES if min_games is None else min_games
     win = graded[-window:]
     n = len(win)
     need = max(1, min(min_games, window))
@@ -860,7 +739,7 @@ def zf_decision(votes, graded, window=None, z_thr=None, min_games=None, cfg=None
            "avg": None, "per": [None] * len(votes), "need": need}
     if n < need:
         return out
-    skip = {i for i, nm in enumerate(LOGIC_NAMES) if nm in c.zf_exclude}
+    skip = {i for i, nm in enumerate(LOGIC_NAMES) if nm in ZF_EXCLUDE}
     half, root = n / 2.0, math.sqrt(n) / 2.0
     tai = xiu = 0
     picks, dir_wr = [], []
@@ -888,13 +767,12 @@ def zf_decision(votes, graded, window=None, z_thr=None, min_games=None, cfg=None
     return out
 
 
-def af_mode_wr(graded, cfg=None):
+def af_mode_wr(graded):
     """WR của 2 chế độ CAO / THẤP trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ.
     Dữ liệu = vote gốc của nhóm CAO (hv) / nhóm THẤP (lv) đã LƯU trong từng ván đã chấm (cả khi tool đang chạy chế độ kia),
     chấm với kết quả thật. Ván không có vote của nhóm đó (nhóm rỗng / hoà phiếu / chưa đủ ván) thì bỏ qua.
     Trả {"CAO": {...}, "THAP": {...}}, mỗi chế độ có: n · w (số ván đúng) · need · wr (% hoặc None nếu chưa đủ ván) · flip (True = WR < AF_MODE_BELOW) · chuoi (cũ -> mới, True = đúng)."""
-    c = cfg or sun_cfg()
-    need = max(1, min(c.af_mode_min, c.af_mode_window))
+    need = max(1, min(AF_MODE_MIN, AF_MODE_WINDOW))
     out = {}
     for mode, key in (("CAO", "hv"), ("THAP", "lv")):
         rows = []
@@ -902,38 +780,37 @@ def af_mode_wr(graded, cfg=None):
             v = g.get(key)
             if v in (TAI, XIU):
                 rows.append(v == g["actual"])
-                if len(rows) >= c.af_mode_window:
+                if len(rows) >= AF_MODE_WINDOW:
                     break
         rows.reverse()
         n, w = len(rows), sum(rows)
         ready = n >= need
         out[mode] = {"n": n, "w": w, "need": need, "wr": (w * 100.0 / n) if ready else None,
-                     "flip": bool(ready and w * 100 < c.af_mode_below * n), "chuoi": rows}
+                     "flip": bool(ready and w * 100 < AF_MODE_BELOW * n), "chuoi": rows}
     return out
 
 
-def af_decision(votes, graded, cfg=None):
+def af_decision(votes, graded):
     """AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) của SUN — port từ SUNVIW_9logics_autoflip_auto.html (xem khối CONFIG AF).
     Trả dict: mode (CAO | THAP | ALL) · final (SAU bẻ chế độ) · base (TRƯỚC bẻ chế độ) · mflip (đã bẻ chế độ) · tie (pool hoà phiếu -> dùng đa số tất cả logic)
     preds (phiếu sau bẻ logic) · flips[i] (LOW | HIGH | None) · wins / wsum (trọng số) · eff[i] (WR dùng, 0-100) · group[i] (CAO | THAP | None) · hi / lo (chỉ số logic mỗi nhóm)
     hv / lv (vote gốc của nhóm CAO / THẤP — LƯU vào ván đã chấm) · gT / gX (phiếu TÀI / XỈU trong pool) · avg (TB WR dùng của pool, độ tin cậy) · mw (WR 2 chế độ)."""
-    c = cfg or sun_cfg()
     nl = len(votes)
     all_vote = vote_result(votes)
-    win = graded[-c.wr_window:]                           # cũ -> mới (cùng cửa sổ WR với cách cũ của SUN)
+    win = graded[-WR_WINDOW:]                             # cũ -> mới (cùng cửa sổ WR với cách cũ của SUN)
     n = len(win)
-    need = max(1, min(c.af_min, c.wr_window))
-    mw = af_mode_wr(graded, c)
+    need = max(1, min(AF_MIN_GAMES, WR_WINDOW))
+    mw = af_mode_wr(graded)
     out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False,
            "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
            "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None,
            "gT": sum(1 for v in votes if v == TAI), "gX": sum(1 for v in votes if v == XIU), "avg": None, "mw": mw}
     if n < need:                                          # chưa đủ ván -> không bẻ, vote tất cả (như file HTML)
         return out
-    weights = _wr_w(n, c)                                 # trọng số WR của game này (cũ nhất -> mới nhất)
+    weights = wr_weights(n)                               # trọng số WR của SUN (cũ nhất -> mới nhất)
     wsum = sum(weights)
     wins = [sum((wt for wt, g in zip(weights, win) if g["votes"][i] == g["actual"]), Fraction(0)) for i in range(nl)]
-    thr_lo, thr_hi = Fraction(str(c.af_low)), Fraction(str(c.af_high))
+    thr_lo, thr_hi = Fraction(str(AF_FLIP_LOW)), Fraction(str(AF_FLIP_HIGH))
     preds, flips, effw, group = [], [], [], []
     for i, w in enumerate(wins):
         f = "LOW" if w * 100 < thr_lo * wsum else ("HIGH" if w * 100 > thr_hi * wsum else None)     # Bước 1: bẻ logic
@@ -975,37 +852,35 @@ def af_decision(votes, graded, cfg=None):
     return out
 
 
-def decide_final(votes, graded, dec_wr=None, cfg=None):
+def decide_final(votes, graded, dec_wr=None):
     """Chốt final của SUN: ZF nếu đủ điều kiện -> AF (nếu bật) -> cách cũ (wr_decision). Trả (final, dùng_zf, zf, dec_wr, af).
     `af` = dict của af_decision khi final do AF chốt, không thì None. `dec_wr` truyền sẵn thì không tính lại wr_decision;
     chỉ tính khi thật sự cần quay về cách cũ (AF tắt)."""
-    c = cfg or sun_cfg()
-    zf = zf_decision(votes, graded, cfg=c) if c.zf_on else None
+    zf = zf_decision(votes, graded) if ZF_ENABLED else None
     if zf is not None and zf["active"]:
         return zf["final"], True, zf, dec_wr, None
-    if c.af_on:
-        af = af_decision(votes, graded, c)
+    if AF_ENABLED:
+        af = af_decision(votes, graded)
         return af["final"], False, zf, dec_wr, af
     if dec_wr is None:
-        dec_wr = wr_decision(votes, graded, **_wr_kw(c))
+        dec_wr = wr_decision(votes, graded)
     return dec_wr["final"], False, zf, dec_wr, None
 
 
-def out_final_zf(final, used_zf, used_af=False, cfg=None):
+def out_final_zf(final, used_zf, used_af=False):
     """Final SUN đã đưa ra API. Ván do ZF chốt: chỉ bẻ khi ZF_FLIP_FINAL bật (KHÔNG dính FLIP_FINAL chung — ZF đã tự chọn hướng từng logic).
     Ván do AF chốt: chỉ bẻ khi AF_FLIP_FINAL bật (KHÔNG dính FLIP_FINAL chung — AF đã tự bẻ logic + chế độ).
     Ván quay về cách cũ: bẻ theo FLIP_FINAL như trước."""
-    c = cfg or sun_cfg()
     if used_zf:
-        return flip_pred(final) if c.zf_flip else final
+        return flip_pred(final) if ZF_FLIP_FINAL else final
     if used_af:
-        return flip_pred(final) if c.af_flip else final
-    return out_final(final, c)
+        return flip_pred(final) if AF_FLIP_FINAL else final
+    return out_final(final)
 
 
-def out_final_g(g, cfg=None):
+def out_final_g(g):
     """Final đã đưa ra API của 1 ván đã chấm (entry cũ không có khoá 'zf' / 'af' = ván chốt bằng cách cũ)."""
-    return out_final_zf(g["final"], g.get("zf", False), g.get("af", False), cfg)
+    return out_final_zf(g["final"], g.get("zf", False), g.get("af", False))
 
 
 # ─── LỊCH SỬ UPSTREAM ────────────────────────────────────────────────────
@@ -1141,24 +1016,22 @@ def rebuild_graded(hist, saved_graded=None):
     return merge_graded(seed, fresh)
 
 
-def _decide(votes, graded, c):
-    """Chốt final theo config c: tính wr_decision (dự phòng + hiển thị) rồi ZF -> AF -> cách cũ. Dùng chung cho SUN và NX."""
-    dec = wr_decision(votes, graded, **_wr_kw(c))                      # cách chốt cũ: luôn tính (phương án dự phòng + hiển thị WR cũ)
-    final, used_zf, zf, _, af = decide_final(votes, graded, dec, c)    # ZF nếu đủ điều kiện -> AF -> cách cũ
-    return {"dec": dec, "final": final, "used_zf": used_zf, "zf": zf, "af": af, "used_af": af is not None}
-
-
-def decision_view(latest, votes, graded, c, d=None):
-    """Lắp JSON `base` + `detail` cho phiên kế tiếp của `latest` theo config c (dùng chung SUN · NX).
-    d = kết quả _decide() tính sẵn (None -> tự tính). Trả {base, detail, final, used_zf, used_af, zf, af, dec}."""
-    d = d or _decide(votes, graded, c)
-    dec, final, used_zf, zf, af, used_af = d["dec"], d["final"], d["used_zf"], d["zf"], d["af"], d["used_af"]
+def build_result(hist):
+    """Từ lịch sử (cũ -> mới) -> dict kết quả dự đoán cho phiên kế tiếp."""
+    latest = hist[-1]
+    saved = persist_load()
+    graded = rebuild_graded(hist, saved_graded=saved)
+    persist_save(graded)
+    votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
+    dec = wr_decision(votes, graded)                                   # cách chốt cũ: luôn tính (phương án dự phòng + hiển thị WR cũ)
+    final, used_zf, zf, _, af = decide_final(votes, graded, dec)       # ZF nếu đủ điều kiện -> AF -> cách cũ
+    used_af = af is not None
     avg = zf["avg"] if used_zf else (af["avg"] if used_af else dec["avg"])
     base = {
         "ok": True,
         "phien": latest["phien"] + 1,
-        "du_doan": out_final_zf(final, used_zf, used_af, c),
-        "be_final": c.zf_flip if used_zf else (c.af_flip if used_af else c.flip_final),   # bẻ ĐANG ÁP DỤNG cho ván này (ZF -> zf_flip · AF -> af_flip · cách cũ -> flip_final)
+        "du_doan": out_final_zf(final, used_zf, used_af),
+        "be_final": ZF_FLIP_FINAL if used_zf else (AF_FLIP_FINAL if used_af else FLIP_FINAL),   # bẻ ĐANG ÁP DỤNG cho ván này (ZF -> ZF_FLIP_FINAL · AF -> AF_FLIP_FINAL · cách cũ -> FLIP_FINAL)
         "zf": used_zf,
         "af": used_af,                                                 # True = final ván này do AF chốt (auto-flip + CAO/THẤP + bẻ chế độ)
         "che_do": af["mode"] if used_af else None,                     # CAO | THAP | ALL (chỉ khi AF chốt)
@@ -1169,7 +1042,7 @@ def decision_view(latest, votes, graded, c, d=None):
         "tong": latest["total"],
         "ket_qua_truoc": latest["actual"],
         "so_van_wr": zf["n"] if used_zf else (af["n"] if used_af else dec["n"]),
-        "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True, cfg=c),
+        "tool_dung_sai_10_van": _recent_accuracy(graded, EVAL_WINDOW, with_chuoi=True),
     }
     tai = sum(1 for v in votes if v == TAI)
     detail = {
@@ -1184,47 +1057,47 @@ def decision_view(latest, votes, graded, c, d=None):
                          ({"TÀI": af["gT"], "XỈU": af["gX"]} if used_af else {"TÀI": dec["gT"], "XỈU": dec["gX"]})),
         "hoa_dung_da_so_21": dec["tie"],
         "zf": {                                                    # ZF (z-filter động) — xem khối CONFIG ZF
-            "bat": c.zf_on,
+            "bat": ZF_ENABLED,
             "dang_dung": used_zf,                                  # True = final ván này do ZF chốt · False = đang dùng cách cũ
             "ly_do": "tat" if zf is None else zf["reason"],        # ok | chua_du_van | khong_logic_du_manh | hoa_phieu | tat
-            "cua_so": c.zf_window,                                 # số ván cấu hình (ZF_WINDOW)
+            "cua_so": ZF_WINDOW,                                   # số ván cấu hình (ZF_WINDOW)
             "so_van_xet": 0 if zf is None else zf["n"],            # số ván thực tế đang xét (< cua_so khi lịch sử chưa đủ)
-            "van_toi_thieu": c.zf_min,
-            "nguong_z": c.zf_z,
-            "logic_loai": [n for n in c.zf_exclude if n in LOGIC_NAMES],
+            "van_toi_thieu": ZF_MIN_GAMES,
+            "nguong_z": ZF_Z,
+            "logic_loai": [n for n in ZF_EXCLUDE if n in LOGIC_NAMES],
             "so_logic_chon": 0 if zf is None else len(zf["picks"]),
             "phieu": None if zf is None else {"TÀI": zf["tai"], "XỈU": zf["xiu"]},
-            "be_final_zf": c.zf_flip,
+            "be_final_zf": ZF_FLIP_FINAL,
         },
         "af": {                                                    # AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) — xem khối CONFIG AF
-            "bat": c.af_on,
+            "bat": AF_ENABLED,
             "dang_dung": used_af,                                  # True = final ván này do AF chốt
             "che_do": af["mode"] if used_af else None,             # CAO | THAP | ALL
             "be_che_do": af["mflip"] if used_af else False,        # True = đã bẻ theo WR chế độ ở ván này
             "final_truoc_be_che_do": af["base"] if used_af else None,
             "hoa_phieu_nhom": af["tie"] if used_af else False,     # True = nhóm được chọn hoà phiếu -> dùng đa số tất cả logic
             "so_van_wr": af["n"] if used_af else None,
-            "van_toi_thieu": max(1, min(c.af_min, c.wr_window)),
-            "nguong_be_logic": {"thap": c.af_low, "cao": c.af_high},
+            "van_toi_thieu": max(1, min(AF_MIN_GAMES, WR_WINDOW)),
+            "nguong_be_logic": {"thap": AF_FLIP_LOW, "cao": AF_FLIP_HIGH},
             "so_logic_nhom": {"CAO": len(af["hi"]), "THAP": len(af["lo"])} if used_af else None,
             "logic_bi_be": [LOGIC_NAMES[i] for i, f in enumerate(af["flips"]) if f] if used_af else [],
             "wr_che_do": {                                         # WR của từng chế độ trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ (vote gốc, chưa bẻ chế độ)
                 m: {"so_van": x["n"], "dung": x["w"], "wr": None if x["wr"] is None else round(x["wr"], 1),
                     "be": x["flip"],                               # True = WR < AF_MODE_BELOW -> chế độ này sẽ bị bẻ khi được chọn
                     "chuoi": "".join(ICON_DUNG if ok else ICON_SAI for ok in reversed(x["chuoi"]))}   # mới -> cũ
-                for m, x in (af["mw"] if used_af else af_mode_wr(graded, c)).items()},
-            "cua_so_che_do": c.af_mode_window,
-            "van_toi_thieu_che_do": max(1, min(c.af_mode_min, c.af_mode_window)),
-            "nguong_be_che_do": c.af_mode_below,
-            "be_final_af": c.af_flip,
+                for m, x in (af["mw"] if used_af else af_mode_wr(graded)).items()},
+            "cua_so_che_do": AF_MODE_WINDOW,
+            "van_toi_thieu_che_do": max(1, min(AF_MODE_MIN, AF_MODE_WINDOW)),
+            "nguong_be_che_do": AF_MODE_BELOW,
+            "be_final_af": AF_FLIP_FINAL,
         },
         "trong_so_wr": {                                          # cơ chế WR có trọng số (cách cũ / dự phòng)
             "so_van": dec["n"],
             "trong_so": dec["weights"],                           # cũ nhất -> mới nhất (đã tính flip nếu bật)
             "flip_trong_so": dec["flip"],                         # True = ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất
-            "van_moi_nhat": c.wr_newest,                          # trọng số CAO NHẤT (gán cho ván mới nhất, hoặc ván cũ nhất nếu flip)
-            "he_so_giam": c.wr_decay,                             # tốc độ quên ván cũ
-            "san_trong_so": c.wr_floor,                           # sàn trọng số ván cũ
+            "van_moi_nhat": WR_WEIGHT_NEWEST,                     # trọng số CAO NHẤT (WR_WEIGHT_NEWEST; gán cho ván mới nhất, hoặc ván cũ nhất nếu flip)
+            "he_so_giam": WR_DECAY,                               # WR_DECAY: tốc độ quên ván cũ
+            "san_trong_so": WR_FLOOR,                             # WR_FLOOR: sàn trọng số ván cũ
         },
         "logic": [
             {"ten": LOGIC_NAMES[i], "du_doan": votes[i],
@@ -1240,29 +1113,18 @@ def decision_view(latest, votes, graded, c, d=None):
             for i in range(len(votes))
         ],
         "final_goc": final,                                       # final trước khi bẻ chung (của ZF nếu ZF chốt · của AF nếu AF chốt (đã gồm bẻ logic + bẻ chế độ) · không thì của cách cũ)
-        "tool_dung_sai_15_van": _recent_accuracy(graded, c.wr_window, cfg=c),
+        "tool_dung_sai_15_van": _recent_accuracy(graded, WR_WINDOW),
     }
-    return {"base": base, "detail": detail, "final": final, "used_zf": used_zf, "used_af": used_af, "zf": zf, "af": af, "dec": dec}
-
-
-def build_result(hist):
-    """Từ lịch sử (cũ -> mới) -> dict kết quả dự đoán cho phiên kế tiếp (SUN)."""
-    latest = hist[-1]
-    saved = persist_load()
-    graded = rebuild_graded(hist, saved_graded=saved)
-    persist_save(graded)
-    votes = compute_all(latest["phien"] + 1, latest["d1"], latest["d2"], latest["d3"])
-    view = decision_view(latest, votes, graded, sun_cfg())
     hist_rows = [{"phien": g["session"], "du_doan": out_final_g(g), "ket_qua": g["actual"], "tong": g.get("total"),
                   "dung": out_final_g(g) == g["actual"], "zf": g.get("zf", False),
                   "af": g.get("af", False), "che_do": g.get("mode"), "be_che_do": g.get("mflip", False)} for g in reversed(graded[-HIST_MAX:])]   # mới -> cũ
-    return {"base": view["base"], "detail": view["detail"], "hist": hist_rows}
+    return {"base": base, "detail": detail, "hist": hist_rows}
 
 
-def _recent_accuracy(graded, size, with_chuoi=False, cfg=None):
+def _recent_accuracy(graded, size, with_chuoi=False):
     """Đúng/sai của final ĐÃ ĐƯA RA API (sau bẻ nếu đang bật) ở `size` ván gần nhất."""
     win = graded[-size:]
-    oks = [out_final_g(g, cfg) == g["actual"] for g in win]
+    oks = [out_final_g(g) == g["actual"] for g in win]
     out = {"dung": sum(oks), "tong": len(win)}
     if with_chuoi:
         out = {"dung": out["dung"], "sai": len(win) - out["dung"], "tong": len(win),
@@ -1330,7 +1192,6 @@ def ensure_poller():
         return
     _poller_started = True
     threading.Thread(target=_poll_loop, daemon=True, name="sunviw-poller").start()
-    nx_start_poller()                             # NX (BETVIP): quét API list phiên, lưu dự đoán, chấm khi API trả kết quả
     lc_ws_autostart()                             # LC79: nạp token đã lưu, lần trước đang bật thì tự bật lại socket
 
 
@@ -1923,265 +1784,6 @@ def _acc_rows(rows, n=10):
             "chuoi": "".join(ICON_DUNG if r["dung"] else ICON_SAI for r in w)}      # mới -> cũ
 
 
-# ─── NX (GAME 3 · BETVIP NX): QUÉT LIST · LƯU DỰ ĐOÁN · ĐỢI API TRẢ KẾT QUẢ · CHẤM ĐÚNG/SAI ───
-_nx_lock = threading.RLock()            # bảo vệ _nx_preds + _nx_state (giữ ngắn; việc gọi mạng nằm NGOÀI lock)
-_nx_preds = {}                          # phien -> dự đoán đã LƯU (dung=None: đang chờ API trả kết quả phiên đó)
-_nx_loaded = False
-_nx_state = {"target": None, "latest": None, "base": None, "detail": None, "error": None, "updated": None,
-             "checked": None, "polls": 0, "fetched": 0}
-_nx_log = collections.deque(maxlen=80)  # nhật ký NX (token trong URL luôn bị che)
-_nx_poller_started = False
-_NX_TOKEN_RE = re.compile(r"(at=)[^&\s]+")
-
-
-def _nx_mask(s):
-    return _NX_TOKEN_RE.sub(r"\1***", str(s))
-
-
-def _nx_say(msg):
-    line = f"{time.strftime('%H:%M:%S')} {_nx_mask(msg)}"
-    _nx_log.append(line)
-    try:
-        print("[NX] " + line, flush=True)
-    except Exception:  # noqa: BLE001 - console không in được tiếng Việt / emoji thì bỏ qua, không được làm hỏng luồng quét
-        pass
-
-
-def _nx_fetch():
-    h = {"User-Agent": NX_UA, "Accept": "application/json, text/plain, */*", "Cache-Control": "no-cache"}
-    if NX_ORIGIN:
-        h["Origin"] = NX_ORIGIN
-        h["Referer"] = NX_ORIGIN.rstrip("/") + "/"
-    req = urllib.request.Request(NX_UPSTREAM_URL, headers=h)
-    with urllib.request.urlopen(req, timeout=NX_TIMEOUT) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-
-def nx_parse(data):
-    """{"list":[{"id","resultTruyenThong","dices":[a,b,c],"point"}, ...]} -> list phiên (cũ -> mới). Bỏ phiên thiếu id / xúc xắc sai.
-    Kết quả thật = resultTruyenThong (TAI/XIU) của API; thiếu thì suy từ tổng xúc xắc. Tổng luôn tính từ xúc xắc."""
-    arr = None
-    if isinstance(data, list):
-        arr = data
-    elif isinstance(data, dict):
-        for v in (data.get("list"), data.get("data"), (data.get("data") or {}).get("list") if isinstance(data.get("data"), dict) else None):
-            if isinstance(v, list):
-                arr = v
-                break
-    m = {}
-    for r in arr or []:
-        if not isinstance(r, dict):
-            continue
-        phien = _parse_int(r.get("id"))
-        dd = r.get("dices")
-        if phien is None or not isinstance(dd, list) or len(dd) != 3:
-            continue
-        d = [_parse_int(x) for x in dd]
-        if None in d or any(x < 1 or x > 6 for x in d):
-            continue
-        total = sum(d)
-        m[phien] = {"phien": phien, "d1": d[0], "d2": d[1], "d3": d[2], "total": total,
-                    "actual": norm_kq(r.get("resultTruyenThong")) or actual_of(total)}
-    return [m[k] for k in sorted(m)]
-
-
-# ── lưu / nạp ────────────────────────────────────────────────────────────
-def _nx_load():
-    """Nạp dự đoán đã lưu (1 lần). Bỏ ván lưu từ bộ logic khác. Gọi trong _nx_lock."""
-    global _nx_loaded
-    if _nx_loaded:
-        return
-    _nx_loaded = True
-    try:
-        with open(NX_PRED_PATH, "r", encoding="utf-8") as f:
-            for r in json.load(f):
-                if isinstance(r, dict) and "phien" in r and r.get("sig") == LOGIC_SIG and isinstance(r.get("votes"), list):
-                    _nx_preds[int(r["phien"])] = r
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _nx_save():
-    """Ghi dự đoán ra file (atomic). Gọi trong _nx_lock."""
-    try:
-        rows = [_nx_preds[k] for k in sorted(_nx_preds)][-NX_PRED_KEEP:]
-        tmp = NX_PRED_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False)
-        os.replace(tmp, NX_PRED_PATH)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _nx_trim():
-    for k in sorted(_nx_preds)[:-NX_PRED_KEEP]:
-        del _nx_preds[k]
-
-
-def _nx_graded(before=None):
-    """Các ván ĐÃ CHẤM (cũ -> mới) theo đúng dạng graded của Sun (session/actual/votes/final/zf/af/mode/mflip/hv/lv) để WR / ZF / AF dùng chung code.
-    before = chỉ lấy ván có phiên < before (không nhìn trước đáp án). Gồm cả ván mô phỏng. Gọi trong _nx_lock."""
-    n = len(LOGIC_NAMES)
-    out = []
-    for k in sorted(_nx_preds):
-        p = _nx_preds[k]
-        if not p.get("ket_qua") or len(p.get("votes") or []) != n or (before is not None and k >= before):
-            continue
-        out.append({"session": k, "total": p.get("tong"), "actual": p["ket_qua"], "votes": p["votes"], "final": p["final_goc"],
-                    "zf": p.get("zf", False), "af": p.get("af", False), "mode": p.get("mode"), "mflip": p.get("mflip", False),
-                    "hv": p.get("hv"), "lv": p.get("lv")})
-    return out[-NX_PRED_KEEP:]
-
-
-# ── dự đoán · chấm ───────────────────────────────────────────────────────
-def _nx_build(latest, c, simulated):
-    """Dự đoán phiên latest+1 từ xúc xắc phiên `latest` (chỉ dùng ván đã chấm TRƯỚC phiên đó). Trả (p, votes, graded, d). p = bản ghi để LƯU."""
-    target = latest["phien"] + 1
-    votes = compute_all(target, latest["d1"], latest["d2"], latest["d3"])
-    graded = _nx_graded(before=target)
-    d = _decide(votes, graded, c)
-    zf, af, dec, used_zf, used_af = d["zf"], d["af"], d["dec"], d["used_zf"], d["used_af"]
-    avg = zf["avg"] if used_zf else (af["avg"] if used_af else dec["avg"])
-    p = {"phien": target, "du_doan": out_final_zf(d["final"], used_zf, used_af, c), "final_goc": d["final"],
-         "be_final": c.zf_flip if used_zf else (c.af_flip if used_af else c.flip_final),
-         "zf": used_zf, "af": used_af,
-         "mode": af["mode"] if used_af else None, "mflip": af["mflip"] if used_af else False,
-         "hv": af["hv"] if used_af else None, "lv": af["lv"] if used_af else None,       # vote gốc nhóm CAO / THẤP (cho WR 2 chế độ)
-         "do_tin_cay": None if avg is None else round(avg, 1),
-         "so_van_wr": zf["n"] if used_zf else (af["n"] if used_af else dec["n"]),
-         "votes": votes, "phien_truoc": latest["phien"], "xuc_xac_truoc": [latest["d1"], latest["d2"], latest["d3"]],
-         "tong_truoc": latest["total"], "ket_qua_truoc": latest["actual"],
-         "sig": LOGIC_SIG, "luc": _now(), "mo_phong": simulated,
-         "dung": None, "ket_qua": None, "tong": None, "xuc_xac": None}
-    return p, votes, graded, d
-
-
-def _nx_set_result(p, r):
-    """Gắn kết quả thật của API (bản ghi r) vào dự đoán p và chấm đúng/sai."""
-    p.update(ket_qua=r["actual"], tong=r["total"], xuc_xac=[r["d1"], r["d2"], r["d3"]],
-             dung=(p["du_doan"] == r["actual"]), cham=_now())
-
-
-def _nx_grade(by):
-    """API vừa trả kết quả những phiên nào mà tool đã LƯU dự đoán -> so sánh -> ĐÚNG / SAI. Gọi trong _nx_lock."""
-    changed = False
-    for k in sorted(_nx_preds):
-        p = _nx_preds[k]
-        r = by.get(k)
-        if p.get("dung") is not None or r is None:
-            continue
-        _nx_set_result(p, r)
-        changed = True
-        _nx_say(f"{ICON_DUNG if p['dung'] else ICON_SAI} phiên {k}: dự đoán {p['du_doan']} · kết quả {p['ket_qua']} "
-                f"({r['d1']}-{r['d2']}-{r['d3']}={r['total']}) → {'ĐÚNG' if p['dung'] else 'SAI'}")
-    if changed:
-        _nx_save()
-
-
-def _nx_backfill(recs, c):
-    """Ván MÔ PHỎNG: phiên đã có trong list mà tool chưa có dự đoán (chạy lần đầu / vừa nghỉ) -> tính lại từ dữ liệu TRƯỚC phiên đó để WR / ZF / AF có dữ liệu. Gọi trong _nx_lock."""
-    lo = min(_nx_preds) if _nx_preds else None
-    made = 0
-    for i in range(len(recs) - 1):
-        cur, nxt = recs[i], recs[i + 1]
-        if nxt["phien"] != cur["phien"] + 1 or nxt["phien"] in _nx_preds or (lo is not None and nxt["phien"] < lo):
-            continue
-        p = _nx_build(cur, c, True)[0]
-        _nx_set_result(p, nxt)
-        _nx_preds[nxt["phien"]] = p
-        made += 1
-    if made:
-        _nx_trim()
-        _nx_save()
-        _nx_say(f"nạp {made} ván mô phỏng từ list (để WR / ZF / AF có dữ liệu · không tính vào thống kê đúng/sai)")
-
-
-def _nx_apply_view(view, p, latest):
-    """Đặt trạng thái hiện tại = dự đoán p (du_doan / bẻ / ZF / AF luôn theo bản ĐÃ LƯU, không theo config hiện tại)."""
-    base = view["base"]
-    base.update(game="nx", du_doan=p["du_doan"], be_final=p["be_final"], zf=bool(p.get("zf")), af=bool(p.get("af")),
-                che_do=p.get("mode") if p.get("af") else None, be_che_do=bool(p.get("mflip")) if p.get("af") else False,
-                do_tin_cay=p.get("do_tin_cay"), so_van_wr=p.get("so_van_wr", base["so_van_wr"]))
-    _nx_state.update(target=p["phien"], latest=latest["phien"], base=base, detail=view["detail"], updated=_now(), error=None)
-
-
-def nx_refresh():
-    """1 lần quét: chấm ván đã lưu -> (nạp ván mô phỏng) -> dự đoán + LƯU phiên mới nhất+1. Ném exception nếu lỗi (poller ghi lại)."""
-    recs = nx_parse(_nx_fetch())
-    if not recs:
-        raise ValueError("NX: API khong tra phien hop le (can list[].id + dices[3])")
-    c = nx_cfg()
-    with _nx_lock:
-        _nx_load()
-        latest = recs[-1]
-        _nx_state["checked"] = _now()
-        _nx_state["fetched"] = len(recs)
-        if _nx_state["latest"] is not None and latest["phien"] < _nx_state["latest"]:
-            return                                                # list cũ hơn cái đã thấy (cache / lệch nút) -> bỏ qua, giữ nguyên trạng thái
-        _nx_grade({r["phien"]: r for r in recs})                  # 1) API trả kết quả -> so với dự đoán đã lưu
-        if NX_BACKFILL:
-            _nx_backfill(recs, c)                                 # 2) (chỉ khi thiếu) ván mô phỏng cho WR
-        target = latest["phien"] + 1
-        p = _nx_preds.get(target)
-        if p is None:                                             # 3) phiên mới nhất + 1: dự đoán + LƯU (1 lần)
-            p, votes, graded, d = _nx_build(latest, c, False)
-            _nx_preds[target] = p
-            _nx_trim()
-            _nx_save()
-            _nx_apply_view(decision_view(latest, votes, graded, c, d), p, latest)
-            _nx_say(f"✔ phiên mới nhất {latest['phien']} ({latest['d1']}-{latest['d2']}-{latest['d3']}={latest['total']} {latest['actual']}) "
-                    f"→ dự đoán phiên {target}: {p['du_doan']} · đã lưu, đợi API trả kết quả")
-        elif _nx_state["target"] != target:                       # đã có dự đoán lưu sẵn (vd. restart giữa ván) -> nạp lại, không tính lại
-            _nx_apply_view(decision_view(latest, p["votes"], _nx_graded(before=target), c), p, latest)
-            _nx_say(f"nạp lại dự đoán đã lưu phiên {target}: {p['du_doan']}")
-        else:
-            _nx_state["error"] = None
-            _nx_state["latest"] = latest["phien"]
-
-
-def _nx_poll_loop():
-    while True:
-        try:
-            nx_refresh()
-        except Exception as e:  # noqa: BLE001 - giữ poller sống dù API lỗi
-            with _nx_lock:
-                _nx_state["error"] = _nx_mask(f"{type(e).__name__}: {e}")
-                _nx_state["checked"] = _now()
-        with _nx_lock:
-            _nx_state["polls"] += 1
-        time.sleep(NX_POLL_SEC)
-
-
-def nx_start_poller():
-    global _nx_poller_started
-    if _nx_poller_started:
-        return
-    _nx_poller_started = True
-    threading.Thread(target=_nx_poll_loop, daemon=True, name="nx-poller").start()
-
-
-def nx_history(include_sim=False):
-    """Các ván NX đã chấm đúng/sai, mới -> cũ. Mặc định chỉ ván THẬT (đã lưu dự đoán trước khi có kết quả); include_sim=True thêm ván mô phỏng."""
-    with _nx_lock:
-        _nx_load()
-        rows = [p for _, p in sorted(_nx_preds.items(), reverse=True)
-                if p.get("dung") is not None and (include_sim or not p.get("mo_phong"))]
-    return [{"phien": p["phien"], "du_doan": p["du_doan"], "ket_qua": p["ket_qua"], "tong": p.get("tong"), "dung": p["dung"],
-             "zf": bool(p.get("zf")), "af": bool(p.get("af")), "che_do": p.get("mode"), "be_che_do": bool(p.get("mflip")),
-             "mo_phong": bool(p.get("mo_phong"))} for p in rows]
-
-
-def nx_counts():
-    with _nx_lock:
-        g = [p for p in _nx_preds.values() if p.get("dung") is not None]
-    sim = sum(1 for p in g if p.get("mo_phong"))
-    return {"that": len(g) - sim, "mo_phong": sim}
-
-
-def nx_masked_url():
-    return _nx_mask(NX_UPSTREAM_URL)
-
-
 # ─── PANEL HTML (/api/html) ──────────────────────────────────────────────
 PANEL_HTML = r"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
@@ -2198,7 +1800,7 @@ h1{font-size:17px;margin:0;font-weight:800}
 #st{font-size:12px;color:var(--mu)}
 #st i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px}
 #st.bad i{background:var(--no)}
-.tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
 .tab{background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:12px;padding:10px 14px;font:inherit;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
 .tab.on{border-color:var(--mu);box-shadow:inset 0 -3px 0 var(--tx)}
 .tab small{color:var(--mu)}
@@ -2236,7 +1838,12 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 .st-off{color:var(--mu)}.st-wait{color:#ffb020}.st-ready{color:var(--ok)}.st-err{color:var(--no)}
 [hidden]{display:none!important}
 @media(max-width:480px){.hero{grid-template-columns:1fr}.prev{text-align:left}}
+.kov{position:fixed;inset:0;background:rgba(10,14,26,.96);display:none;align-items:center;justify-content:center;z-index:99;padding:20px}
+.kbox{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:20px;width:100%;max-width:360px}
+.kbox input{width:100%;margin:10px 0;background:var(--bg);border:1px solid var(--ln);color:var(--tx);border-radius:9px;padding:10px;font:inherit}
+.kbox button{width:100%;background:var(--xiu);color:#06121c;border:0;border-radius:10px;padding:10px;font:inherit;font-weight:700;cursor:pointer}
 </style></head><body>
+<div class="kov" id="kov"><div class="kbox"><b>Nhập key để dùng tool</b><input id="kin" placeholder="SV-XXXX-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off"><button id="kgo">Xác nhận</button><p id="kmsg" class="noc" style="margin:10px 0 0;font-size:13px"></p></div></div>
 <header><h1>SUNVIW · Tài Xỉu</h1><div id="st"></div></header>
 <nav class="tabs" id="tabs"></nav>
 <details class="ws" id="ws" hidden>
@@ -2265,7 +1872,20 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 </div>
 <div id="hist"></div>
 <script>
-const G={sun:{n:'Sun',u:'/api/predictsun'},lc:{n:'LC79',u:'/api/predictlc79'},nx:{n:'NX',u:'/api/predictnx'}};
+(function(){
+const f0=window.fetch.bind(window),ov=document.getElementById('kov'),inp=document.getElementById('kin'),mg=document.getElementById('kmsg');
+function show(t){mg.textContent=t||'';ov.style.display='flex';inp.focus()}
+window.fetch=function(u,o){o=Object.assign({},o||{});const k=localStorage.getItem('uk')||'';if(k)o.headers=Object.assign({},o.headers||{},{'X-User-Key':k});
+  return f0(u,o).then(r=>{if(r.status===401&&String(u).indexOf('/api/')===0&&String(u).indexOf('/api/key/')!==0)show(k?'Key không hợp lệ hoặc đã hết hạn':'');return r})};
+async function go(){const v=inp.value.trim();if(!v)return;mg.textContent='';
+  try{const r=await f0('/api/key/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v})});const j=await r.json();
+    if(j.ok){localStorage.setItem('uk',v.toUpperCase());location.reload()}else mg.textContent=j.loi||'Key không hợp lệ'}catch(e){mg.textContent='Không kết nối được server'}}
+document.getElementById('kgo').onclick=go;inp.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
+if(!localStorage.getItem('uk'))show('');
+})();
+</script>
+<script>
+const G={sun:{n:'Sun',u:'/api/predictsun'},lc:{n:'LC79',u:'/api/predictlc79'}};
 let cur=(localStorage.getItem('g') in G||localStorage.getItem('g')==='ip')?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__,IPD=null;
 const D={},$=s=>document.querySelector(s),cl=v=>v==='TÀI'?'tai':v==='XỈU'?'xiu':'';
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -2283,7 +1903,7 @@ function render(){
   if(!d.ok){$('#main').innerHTML=`<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;$('#hist').innerHTML='';return}
   $('#main').innerHTML=`<section class="hero"><div><div class="mu">Dự đoán phiên ${d.phien}</div><div class="big ${cl(d.du_doan)}">${d.du_doan}</div><div class="mu">Độ tin cậy ${d.do_tin_cay==null?'–':d.do_tin_cay+'%'}${d.be_final?' · đã bẻ final':''}${d.be_che_do?' · bẻ chế độ '+d.che_do:''} · xét ${d.so_van_wr} ván</div></div><div class="prev">${prevHtml(d)}</div></section><div class="stats"><span><b class="okc">${a.k}</b> <span class="mu">đúng</span></span><span><b class="noc">${a.t-a.k}</b> <span class="mu">sai</span></span><span><b>${a.p===null?'–':a.p+'%'}</b> <span class="mu">trên ${a.t} ván</span></span></div>`;
   const h=d.lich_su||[];
-  $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua}${x.tong==null?'':` <span class="mu">(${x.tong})</span>`}</td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ kết quả phiên đó (Sun: API · LC79: event session-result của socket · NX: API list phiên).</p>`;
+  $('#hist').innerHTML=h.length?`<div class="strip">${h.map(x=>`<span class="chip ${x.dung?'ok':'no'}" title="#${x.phien}">${x.dung?'✓':'✗'}</span>`).join('')}</div><table><tr><th>Phiên</th><th>Dự đoán</th><th>Kết quả</th><th class="r">Đúng/sai</th></tr>${h.map(x=>`<tr><td>#${x.phien}</td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td class="${cl(x.ket_qua)}">${x.ket_qua}${x.tong==null?'':` <span class="mu">(${x.tong})</span>`}</td><td class="r ${x.dung?'okc':'noc'}">${x.dung?'Đúng':'Sai'}</td></tr>`).join('')}</table>`:`<p class="mu">Chưa có ván nào được chấm. Tool lưu dự đoán rồi chờ kết quả phiên đó (Sun: API · LC79: event session-result của socket).</p>`;
   $('#st').className=Object.values(D).some(x=>x&&(!x.ok||x.stale))?'bad':'';
   $('#st').innerHTML=`<i></i>${esc(d.cap_nhat||'')}`;
 }
@@ -2326,7 +1946,7 @@ function ipHtml(){
   if(d.khoa)return `<section class="hero" style="grid-template-columns:1fr"><div><div class="mu">🔒 Cần admin key để xem danh sách IP</div><div style="display:flex;gap:8px;margin-top:8px"><input id="ak" type="password" placeholder="Admin key" autocomplete="off" style="width:200px;background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:inherit"><button id="akb" style="background:none;border:1px solid var(--ln);color:var(--mu);border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer">Mở</button></div></div></section>`;
   if(!d.ok)return `<div class="hero"><div class="mu">${esc(d.loi||'Đang tải…')}</div></div>`;
   const by=o=>Object.entries(o||{}).map(([k,v])=>k+' '+v).join(' · ');
-  return `<section class="hero" style="grid-template-columns:1fr"><div><div class="mu">IP truy cập API (Sun · LC79 · NX · WS · panel)</div><div class="stats"><span><b class="okc">${d.dang_dung}</b> <span class="mu">đang dùng (trong ${d.cua_so_giay}s)</span></span><span><b>${d.tong}</b> <span class="mu">IP đã từng dùng</span></span></div><div class="mu">IP của bạn: ${esc(d.ban||'?')}</div></div></section><table><tr><th>IP</th><th>Trạng thái</th><th>Gần nhất</th><th class="r">Request</th></tr>${(d.ips||[]).map(x=>`<tr><td title="${esc(x.ua||'')}"><b>${esc(x.ip)}</b>${x.la_ban?' <span class="mu">(bạn)</span>':''}<div class="mu" style="font-size:11.5px">${esc(by(x.theo_loai))}</div></td><td class="${x.dang_dung?'okc':'mu'}">${x.dang_dung?'● đang dùng':'○ đã dùng'}</td><td class="mu">${esc(x.gan_nhat)}<div style="font-size:11.5px">${agoT(x.truoc_giay)} trước · từ ${esc(x.lan_dau)}</div></td><td class="r">${x.so_request}</td></tr>`).join('')}</table>`;
+  return `<section class="hero" style="grid-template-columns:1fr"><div><div class="mu">IP truy cập API (Sun · LC79 · WS · panel)</div><div class="stats"><span><b class="okc">${d.dang_dung}</b> <span class="mu">đang dùng (trong ${d.cua_so_giay}s)</span></span><span><b>${d.tong}</b> <span class="mu">IP đã từng dùng</span></span></div><div class="mu">IP của bạn: ${esc(d.ban||'?')}</div></div></section><table><tr><th>IP</th><th>Trạng thái</th><th>Gần nhất</th><th class="r">Request</th></tr>${(d.ips||[]).map(x=>`<tr><td title="${esc(x.ua||'')}"><b>${esc(x.ip)}</b>${x.la_ban?' <span class="mu">(bạn)</span>':''}<div class="mu" style="font-size:11.5px">${esc(by(x.theo_loai))}</div></td><td class="${x.dang_dung?'okc':'mu'}">${x.dang_dung?'● đang dùng':'○ đã dùng'}</td><td class="mu">${esc(x.gan_nhat)}<div style="font-size:11.5px">${agoT(x.truoc_giay)} trước · từ ${esc(x.lan_dau)}</div></td><td class="r">${x.so_request}</td></tr>`).join('')}</table>`;
 }
 async function loadIps(){
   try{const k=localStorage.getItem('ak')||'';const r=await fetch('/api/ips',{cache:'no-store',headers:k?{'X-Admin-Key':k}:{}});IPD=await r.json()}
@@ -2356,8 +1976,6 @@ def ip_kind(path):
         return "sun"
     if path in ("/api/predictlc79", "/api/prdictlc79"):
         return "lc79"
-    if path in ("/api/predictnx", "/api/nx"):
-        return "nx"
     if path.startswith("/api/lc79/ws"):
         return "ws"
     if path == "/api/html":
@@ -2518,6 +2136,611 @@ def _track_ip():
     return None
 
 
+# ─── KEY NGƯỜI DÙNG + TRANG ADMIN (/api/admin) ────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  🔑  CONFIG KEY / ADMIN  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Trang quản trị: GET /api/admin  (KHÔNG hiện ở trang chủ "/").  CHỈ MỘT Ô NHẬP KEY — server tự phân loại:
+#     · Admin chính : nhập MẬT KHẨU admin chính vào chính ô đó (kiểm tra Ở SERVER, trình duyệt / view-source KHÔNG chứa mật khẩu). Tạo key admin phụ + key người dùng,
+#                     xóa key, xem mọi key (ai tạo, hạn, ai đang dùng, IP đang gắn) và RESET IP cho key admin phụ.
+#     · Admin phụ   : nhập key admin phụ (do admin chính tạo). Key chưa ai dùng -> nhập username (vd. Dark) -> key gắn với username đó VÀ gắn với IP lúc đăng nhập đầu tiên.
+#                     Key đã gắn IP thì KHÔNG đăng nhập được từ IP khác (phiên đang mở cũng chỉ chạy ở đúng IP đó) cho tới khi admin chính bấm Reset IP.
+#                     Admin phụ tạo / xóa KEY NGƯỜI DÙNG (chỉ key mình tạo) với hạn 1-2-7-14-30-60-90-180-365 ngày.
+#     · Key người dùng / key không tồn tại -> trang admin báo rõ là key người dùng (không phải admin) hoặc không tìm thấy key.
+#   Người dùng nhập KEY NGƯỜI DÙNG ở panel /api/html (hoặc tool gọi POST /api/key/check {"key": "..."}).
+#   Khi KEY_GATE_API bật: /api/predictsun · /api/predictlc79 · /api/lc79/ws* · /api/ips đòi key hợp lệ (header X-User-Key hoặc ?key=; riêng /api/ips chỉ nhận header).
+#
+#   SUNVIW_MAIN_PASS   (KHUYẾN NGHỊ) mật khẩu admin chính đặt ở biến môi trường Railway -> trong code không còn dấu vết mật khẩu nào. Không đặt = dùng hash mặc định trong code.
+#   SUNVIW_KEYS_PATH   file lưu key (mặc định <DATA_DIR>/sunviw_keys.json; DATA_DIR = Volume Railway nếu có, không thì /tmp). Railway: PHẢI gắn Volume, không thì MẤT KEY mỗi lần deploy.
+#   SUNVIW_SECRET      (tuỳ chọn) khoá ký phiên đăng nhập admin; không đặt = tự sinh và lưu chung file key.
+#   SUNVIW_GATE_API    1 = bắt buộc key cho các endpoint ở trên (mặc định) · 0 = tắt (ai gọi API cũng được như trước)
+ADMIN_MAIN_NAME = "admin chính"
+_ADMIN_SALT = b"sunviw-admin-v1:93eacb1bcbb59252"
+ADMIN_PASS_HASH_DEFAULT = "69eb8d5a0692dade93234908118f99d1b8990e3484dc3fca7bb3847d8b6578eb"         # PBKDF2-SHA256 (200.000 vòng) — không đảo ngược được thành mật khẩu, nhưng mật khẩu toàn số ngắn vẫn dò được nếu lộ hash -> nên đặt SUNVIW_MAIN_PASS
+KEYS_PATH = os.environ.get("SUNVIW_KEYS_PATH", _data_path("sunviw_keys.json"))
+KEY_GATE_API = _env_bool("SUNVIW_GATE_API", True)
+KEY_DAYS = (1, 2, 7, 14, 30, 60, 90, 180, 365)       # hạn key cho phép (ngày)
+KEY_MAX_TOTAL = 5000                                  # trần số key lưu trong file
+ADMIN_SESSION_SEC = 12 * 3600                         # phiên đăng nhập admin sống bao lâu
+LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong LOGIN_LOCK_SEC -> khóa IP đó LOGIN_LOCK_SEC giây
+LOGIN_LOCK_SEC = 900
+
+
+def _pw_hash(pw):
+    return hashlib.pbkdf2_hmac("sha256", str(pw).encode("utf-8"), _ADMIN_SALT, 200000).hex()
+
+
+_ENV_MAIN_PASS = os.environ.get("SUNVIW_MAIN_PASS", "")
+ADMIN_PASS_HASH = _pw_hash(_ENV_MAIN_PASS) if _ENV_MAIN_PASS else ADMIN_PASS_HASH_DEFAULT
+_MEM_SECRET = secrets.token_hex(32)
+_kv_lock = threading.RLock()
+_KEY_ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"        # bỏ 0/O/1/I cho dễ đọc
+
+
+def _kv_load():
+    try:
+        with open(KEYS_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("keys"), dict):
+            return d
+    except Exception:  # noqa: BLE001
+        pass
+    return {"secret": "", "keys": {}}
+
+
+def _kv_save(d):
+    if not d.get("secret"):
+        d["secret"] = _MEM_SECRET
+    tmp = KEYS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False)
+    os.replace(tmp, KEYS_PATH)
+
+
+def _secret_bytes():
+    s = os.environ.get("SUNVIW_SECRET", "")
+    if not s:
+        with _kv_lock:
+            d = _kv_load()
+            if not d.get("secret"):
+                try:
+                    _kv_save(d)
+                except OSError:
+                    pass
+            s = d.get("secret") or _MEM_SECRET
+    return s.encode("utf-8")
+
+
+def _norm_key(s):
+    return re.sub(r"[^A-Za-z0-9-]", "", str(s or "")).upper()[:40]
+
+
+def _new_key(prefix, keys):
+    while True:
+        k = prefix + "-" + "-".join("".join(secrets.choice(_KEY_ALPHA) for _ in range(4)) for _ in range(4))
+        if k not in keys:
+            return k
+
+
+def _clean_username(s):
+    s = re.sub(r"\s+", " ", str(s or "")).strip()
+    if not 2 <= len(s) <= 20 or not all(c.isalnum() or c in " _.-" for c in s):
+        return None
+    if s.lower() in ("admin", "admin chính", "admin chinh", "main"):
+        return None
+    return s
+
+
+# ─ phiên đăng nhập admin: token ký HMAC (không lưu server, chạy được nhiều worker) ─
+def _tok_make(role, name, key="", ip=""):
+    p = {"r": role, "n": name, "k": key, "i": ip, "e": int(time.time()) + ADMIN_SESSION_SEC}
+    raw = base64.urlsafe_b64encode(json.dumps(p, ensure_ascii=False).encode("utf-8")).decode().rstrip("=")
+    return raw + "." + hmac.new(_secret_bytes(), raw.encode(), hashlib.sha256).hexdigest()
+
+
+def _tok_check():
+    """Trả {"r","n","k"} nếu header X-Admin-Token hợp lệ, ngược lại None.
+    Admin phụ: key của họ còn tồn tại + còn hạn + key đang gắn ĐÚNG IP của phiên + request đến từ đúng IP đó
+    (admin chính reset IP / xóa key -> phiên cũ chết ngay)."""
+    t = request.headers.get("X-Admin-Token", "")
+    try:
+        raw, sig = t.split(".", 1)
+        if not hmac.compare_digest(sig, hmac.new(_secret_bytes(), raw.encode(), hashlib.sha256).hexdigest()):
+            return None
+        p = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8"))
+        if p["e"] < time.time():
+            return None
+        if p["r"] == "main":
+            return {"r": "main", "n": ADMIN_MAIN_NAME, "k": ""}
+        if p["r"] == "sub":
+            rec = _kv_load()["keys"].get(p["k"])
+            if (rec and rec.get("type") == "sub" and rec.get("owner") == p["n"] and rec["exp"] > time.time()
+                    and rec.get("ip") and rec.get("ip") == p.get("i") == client_ip()):
+                return {"r": "sub", "n": p["n"], "k": p["k"]}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+# ─ chống dò mật khẩu / key: sai quá LOGIN_MAX_FAIL lần thì khóa IP ─
+_rl = {}
+_rl_lock = threading.Lock()
+
+
+def _rl_wait(ip):
+    with _rl_lock:
+        r = _rl.get(ip)
+        return max(0, int(r[2] - time.time())) if r else 0
+
+
+def _rl_fail(ip):
+    now = time.time()
+    with _rl_lock:
+        if len(_rl) > 5000:
+            _rl.clear()
+        r = _rl.get(ip)
+        if not r or now - r[1] > LOGIN_LOCK_SEC:
+            r = _rl[ip] = [0, now, 0.0]
+        r[0] += 1
+        if r[0] >= LOGIN_MAX_FAIL:
+            r[2] = now + LOGIN_LOCK_SEC
+
+
+def _rl_reset(ip):
+    with _rl_lock:
+        _rl.pop(ip, None)
+
+
+def _check_user_key(k):
+    """(record, lỗi, đã_tồn_tại). Chỉ key loại 'user' còn hạn mới qua."""
+    k = _norm_key(k)
+    if not k:
+        return None, "thieu key", False
+    r = _kv_load()["keys"].get(k)
+    if not r or r.get("type") != "user":
+        return None, "key khong hop le", False
+    if r["exp"] <= time.time():
+        return None, "key da het han", True
+    return r, "", True
+
+
+_GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predictlc79", "/api/prdictlc79", "/api/ips"}
+
+
+@app.before_request
+def _gate_key():
+    """KEY_GATE_API bật -> các endpoint dữ liệu đòi key người dùng hợp lệ."""
+    p = request.path
+    if not KEY_GATE_API or request.method == "OPTIONS" or not (p in _GATED_EXACT or p.startswith("/api/lc79/ws")):
+        return None
+    k = request.headers.get("X-User-Key", "")
+    if not k and p != "/api/ips":                      # /api/ips đã dùng ?key= cho admin key cũ -> chỉ nhận header
+        k = request.args.get("key", "")
+    rec, err, _ = _check_user_key(k)
+    if rec:
+        return None
+    return _json({"ok": False, "can_key": True, "loi": err + " (gui header X-User-Key hoac ?key=)"}, 401)
+
+
+@app.route("/api/key/check", methods=["GET", "POST"])
+def api_key_check():
+    """Tool / panel xác thực key người dùng: POST {"key": "..."} hoặc GET ?key=..."""
+    ip = client_ip()
+    w = _rl_wait(ip)
+    if w:
+        return _json({"ok": False, "loi": f"nhap sai qua nhieu, thu lai sau {w}s"}, 429)
+    b = request.get_json(silent=True) or {}
+    k = b.get("key") or request.headers.get("X-User-Key") or request.args.get("key", "")
+    rec, err, exists = _check_user_key(k)
+    if not rec:
+        if not exists:
+            _rl_fail(ip)
+        return _json({"ok": False, "loi": err}, 401)
+    _rl_reset(ip)
+    return _json({"ok": True, "het_han": rec["exp"], "con_lai_giay": max(0, int(rec["exp"] - time.time()))})
+
+
+@app.route("/api/admin")
+def api_admin_page():
+    resp = Response(ADMIN_HTML, content_type="text/html; charset=utf-8")
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return resp
+
+
+@app.route("/api/admin/login", methods=["POST"])
+def api_admin_login():
+    """Đăng nhập admin bằng MỘT ô key: {"key": "..."} (+ "username" khi key admin phụ chưa ai dùng). Server tự phân loại:
+       key admin phụ · key người dùng (không vào được trang admin) · mật khẩu admin chính · không tồn tại.
+       Trả luôn "kind": main | sub | user | none | locked. (Còn nhận cả {"password"} cũ cho tool đã viết từ trước.)"""
+    ip = client_ip()
+    w = _rl_wait(ip)
+    if w:
+        return _json({"ok": False, "kind": "locked", "loi": f"Nhập sai quá nhiều, thử lại sau {w} giây."}, 429)
+    b = request.get_json(silent=True) or {}
+    raw = str(b.get("key") or b.get("password") or "")[:128]
+    k = _norm_key(raw)
+    now = int(time.time())
+    with _kv_lock:
+        d = _kv_load()
+        rec = d["keys"].get(k) if k else None
+        if rec:                                          # key có trong file -> phân loại theo type
+            if rec["exp"] <= now:
+                return _json({"ok": False, "kind": rec.get("type"), "loi": "Key này đã hết hạn."}, 403)
+            if rec.get("type") != "sub":
+                return _json({"ok": False, "kind": "user", "loi": "Key hợp lệ nhưng chỉ dùng để vào tool ở panel /api/html, không phải key admin."}, 403)
+            if not rec.get("owner"):                     # key admin phụ chưa ai dùng -> nhập username, gắn username + IP
+                if not str(b.get("username") or "").strip():
+                    return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Nhập username để kích hoạt. Key sẽ gắn với username này và IP hiện tại của bạn."})
+                name = _clean_username(b.get("username"))
+                if not name:
+                    return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Username 2-20 ký tự (chữ, số, dấu cách . _ -), không dùng 'admin'."}, 400)
+                if any(r.get("type") == "sub" and str(r.get("owner") or "").lower() == name.lower() for r in d["keys"].values()):
+                    return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Username này đã có người dùng, chọn tên khác."}, 400)
+                rec["owner"], rec["bound"], rec["ip"], rec["ip_at"] = name, now, ip, now
+                try:
+                    _kv_save(d)
+                except OSError as e:
+                    return _json({"ok": False, "kind": "sub", "loi": f"Không ghi được file key: {e}"}, 500)
+            elif not rec.get("ip"):                      # key cũ (trước bản này) hoặc vừa bị admin chính reset IP -> gắn IP hiện tại
+                rec["ip"], rec["ip_at"] = ip, now
+                try:
+                    _kv_save(d)
+                except OSError as e:
+                    return _json({"ok": False, "kind": "sub", "loi": f"Không ghi được file key: {e}"}, 500)
+            elif rec["ip"] != ip:                        # đã gắn IP khác -> chặn tới khi admin chính reset
+                _rl_fail(ip)
+                return _json({"ok": False, "kind": "sub", "ip_locked": True,
+                              "loi": "Key này đã gắn với một IP khác nên không đăng nhập được ở thiết bị này. Nhờ admin chính reset IP rồi đăng nhập lại."}, 403)
+            name = rec["owner"]
+            _rl_reset(ip)
+            return _json({"ok": True, "kind": "sub", "role": "sub", "name": name, "token": _tok_make("sub", name, k, ip)})
+    if raw and hmac.compare_digest(_pw_hash(raw), ADMIN_PASS_HASH):   # không phải key trong file -> thử mật khẩu admin chính
+        _rl_reset(ip)
+        return _json({"ok": True, "kind": "main", "role": "main", "name": ADMIN_MAIN_NAME, "token": _tok_make("main", ADMIN_MAIN_NAME)})
+    _rl_fail(ip)
+    return _json({"ok": False, "kind": "none", "loi": "Không có key nào khớp (hoặc sai mật khẩu admin chính)."}, 403)
+
+
+def _need_admin():
+    s = _tok_check()
+    return s, (None if s else _json({"ok": False, "loi": "chua dang nhap / phien het han"}, 401))
+
+
+@app.route("/api/admin/keys")
+def api_admin_keys():
+    s, err = _need_admin()
+    if err:
+        return err
+    now = time.time()
+    keys = _kv_load()["keys"]
+    made = {}
+    for r in keys.values():
+        if r.get("by") == "sub":
+            made[r.get("by_name")] = made.get(r.get("by_name"), 0) + 1
+    rows = []
+    for k, r in keys.items():
+        if s["r"] != "main" and not (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"]):
+            continue                                    # admin phụ chỉ thấy key người dùng do chính mình tạo
+        rows.append({"key": k, "loai": r.get("type"), "nguoi_tao": r.get("by_name"), "tao_luc": r.get("created"), "het_han": r["exp"],
+                     "con_lai": max(0, int(r["exp"] - now)), "het": r["exp"] <= now, "ngay": r.get("days"), "ghi_chu": r.get("note", ""),
+                     "dung_boi": r.get("owner"), "da_tao": made.get(r.get("owner"), 0) if r.get("type") == "sub" else None,
+                     "ip": r.get("ip") if s["r"] == "main" and r.get("type") == "sub" else None, "ip_luc": r.get("ip_at") if s["r"] == "main" else None})
+    rows.sort(key=lambda x: -(x["tao_luc"] or 0))
+    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "keys": rows})
+
+
+@app.route("/api/admin/keys/create", methods=["POST"])
+def api_admin_keys_create():
+    s, err = _need_admin()
+    if err:
+        return err
+    b = request.get_json(silent=True) or {}
+    kind = "sub" if b.get("type") == "sub" else "user"
+    if kind == "sub" and s["r"] != "main":
+        return _json({"ok": False, "loi": "chi admin chinh moi tao duoc key admin phu"}, 403)
+    try:
+        days = int(b.get("days"))
+    except (TypeError, ValueError):
+        days = 0
+    if days not in KEY_DAYS:
+        return _json({"ok": False, "loi": "han key khong hop le"}, 400)
+    try:
+        cnt = max(1, min(int(b.get("count", 1)), 20))
+    except (TypeError, ValueError):
+        cnt = 1
+    note = re.sub(r"[\x00-\x1f\x7f]", " ", str(b.get("note") or "")).strip()[:40]
+    now = int(time.time())
+    with _kv_lock:
+        d = _kv_load()
+        if len(d["keys"]) + cnt > KEY_MAX_TOTAL:
+            return _json({"ok": False, "loi": "day file key, xoa bot key het han"}, 400)
+        made = []
+        for _ in range(cnt):
+            k = _new_key("AD" if kind == "sub" else "SV", d["keys"])
+            d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": now + days * 86400,
+                            "days": days, "note": note, "owner": None}
+            made.append(k)
+        try:
+            _kv_save(d)
+        except OSError as e:
+            return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
+    return _json({"ok": True, "keys": made, "het_han": now + days * 86400})
+
+
+@app.route("/api/admin/keys/delete", methods=["POST"])
+def api_admin_keys_delete():
+    s, err = _need_admin()
+    if err:
+        return err
+    b = request.get_json(silent=True) or {}
+    now = time.time()
+    with _kv_lock:
+        d = _kv_load()
+        keys = d["keys"]
+        if b.get("expired") and s["r"] == "main":        # dọn mọi key hết hạn
+            dead = [k for k, r in keys.items() if r["exp"] <= now]
+        else:
+            k = _norm_key(b.get("key"))
+            r = keys.get(k)
+            if not r:
+                return _json({"ok": False, "loi": "khong thay key"}, 404)
+            if s["r"] != "main" and not (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"]):
+                return _json({"ok": False, "loi": "chi xoa duoc key do ban tao"}, 403)
+            dead = [k]
+        for k in dead:
+            keys.pop(k, None)
+        try:
+            _kv_save(d)
+        except OSError as e:
+            return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
+    return _json({"ok": True, "da_xoa": len(dead)})
+
+
+@app.route("/api/admin/keys/reset-ip", methods=["POST"])
+def api_admin_keys_reset_ip():
+    """CHỈ admin chính: gỡ IP đang gắn của 1 key admin phụ (giữ nguyên username). Lần đăng nhập kế tiếp (từ bất kỳ IP nào) sẽ gắn IP mới;
+    phiên admin phụ đang mở ở IP cũ chết ngay vì _tok_check đòi key phải đang gắn đúng IP của phiên."""
+    s, err = _need_admin()
+    if err:
+        return err
+    if s["r"] != "main":
+        return _json({"ok": False, "loi": "chi admin chinh moi reset duoc IP"}, 403)
+    k = _norm_key((request.get_json(silent=True) or {}).get("key"))
+    with _kv_lock:
+        d = _kv_load()
+        rec = d["keys"].get(k)
+        if not rec or rec.get("type") != "sub":
+            return _json({"ok": False, "loi": "khong thay key admin phu"}, 404)
+        rec["ip"], rec["ip_at"], rec["ip_reset"] = None, None, int(time.time())
+        try:
+            _kv_save(d)
+        except OSError as e:
+            return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
+    return _json({"ok": True})
+
+
+ADMIN_HTML = r"""<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#0c1022">
+<title>Quản trị SUNVIW</title>
+<style>
+:root{--bg:#0c1022;--pn:#151b35;--pn2:#1c2344;--ln:#273056;--tx:#eef0fb;--mu:#8f98bd;--au:#f2b33d;--au2:#ffd98a;--ok:#35d6a0;--no:#ff6b7d;--vi:#a395ff;color-scheme:dark}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;min-height:100vh;color:var(--tx);font:15px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif;background:radial-gradient(800px 380px at 8% -8%,rgba(242,179,61,.11),transparent 60%),radial-gradient(700px 420px at 100% 0,rgba(163,149,255,.12),transparent 58%),var(--bg) fixed}
+button,input,select{font:inherit;color:inherit}button{cursor:pointer}
+:focus-visible{outline:2px solid var(--au);outline-offset:2px}
+.w{max-width:980px;margin:0 auto;padding:22px 16px 70px}
+.mu{color:var(--mu)}.s{font-size:13px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+svg{flex:none;vertical-align:middle}
+/* cổng đăng nhập */
+.gate{max-width:440px;margin:9vh auto 0}
+.mark{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(145deg,var(--au2),var(--au));color:#2a1c00;box-shadow:0 10px 30px -8px rgba(242,179,61,.55)}
+.gate h1{font-size:30px;line-height:1.15;letter-spacing:-.02em;margin:22px 0 8px;font-weight:800}
+.gate>p{margin:0 0 22px;color:var(--mu)}
+.kf{position:relative;margin-bottom:0}
+.kf>svg{position:absolute;left:16px;top:17px;color:var(--mu)}
+.kf input{width:100%;height:56px;padding:0 82px 0 48px;background:var(--pn);border:1.5px solid var(--ln);border-radius:14px;font-size:17px;letter-spacing:.04em;transition:border-color .15s,box-shadow .15s}
+.kf input:focus{outline:0;border-color:var(--au);box-shadow:0 0 0 4px rgba(242,179,61,.16)}
+.kf button{position:absolute;right:8px;top:8px;height:40px;padding:0 12px;border-radius:10px;border:0;background:transparent;color:var(--mu)}
+.kf button:hover{color:var(--tx)}
+.go{width:100%;height:52px;margin-top:14px;border:0;border-radius:14px;background:linear-gradient(145deg,var(--au2),var(--au));color:#2a1c00;font-weight:800;font-size:16px;transition:transform .12s,filter .12s}
+.go:hover{filter:brightness(1.06)}.go:active{transform:scale(.99)}.go:disabled{opacity:.6;cursor:wait}
+.res{margin-top:16px;display:flex;gap:12px;align-items:flex-start;padding:13px 14px;border-radius:12px;border:1px solid var(--ln);background:var(--pn);font-size:14px;animation:pop .22s ease-out}
+.res b{display:block;font-size:15px}.res .ic{margin-top:1px}
+.res.bad{border-color:rgba(255,107,125,.55)}.res.bad .ic{color:var(--no)}
+.res.warn{border-color:rgba(242,179,61,.55)}.res.warn .ic{color:var(--au)}
+.res.good{border-color:rgba(53,214,160,.55)}.res.good .ic{color:var(--ok)}
+@keyframes pop{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+/* bảng điều khiển */
+.top{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.top .mark{width:42px;height:42px;border-radius:12px}
+.top h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.01em}
+.top .sp{flex:1}
+.role{display:inline-block;margin-top:2px;font-size:12.5px;font-weight:700;padding:1px 9px;border-radius:99px;border:1px solid}
+.role.m{color:var(--au);border-color:rgba(242,179,61,.5);background:rgba(242,179,61,.1)}
+.role.s{color:var(--vi);border-color:rgba(163,149,255,.5);background:rgba(163,149,255,.1)}
+.gh{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--ln);background:transparent;color:var(--mu);font-size:13.5px;transition:color .12s,border-color .12s}
+.gh:hover{color:var(--tx);border-color:var(--mu)}.gh.dg:hover{color:var(--no);border-color:var(--no)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:18px;border-top:1px solid var(--ln);border-bottom:1px solid var(--ln)}
+.stats div{padding:14px 16px;border-left:1px solid var(--ln)}.stats div:first-child{border-left:0;padding-left:2px}
+.stats b{display:block;font-size:30px;line-height:1.1;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stats span{color:var(--mu);font-size:13px}
+.pn{background:var(--pn);border:1px solid var(--ln);border-radius:16px;padding:18px;margin-bottom:16px}
+.hd{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.hd h2,.pn>h2{margin:0;font-size:16px;font-weight:800}.hd .act{display:flex;gap:8px;flex-wrap:wrap}
+.lb{color:var(--mu);font-size:13px;margin:14px 0 6px}
+.seg{display:inline-flex;padding:3px;border-radius:12px;background:var(--bg);border:1px solid var(--ln);margin-top:12px}
+.seg button{border:0;background:none;color:var(--mu);padding:7px 14px;border-radius:9px;font-size:14px}
+.seg button.on{background:var(--pn2);color:var(--tx);box-shadow:0 0 0 1px var(--ln)}
+.pills{display:flex;flex-wrap:wrap;gap:8px}
+.pills button{height:36px;padding:0 14px;border-radius:99px;border:1px solid var(--ln);background:var(--bg);color:var(--mu);font-size:14px;transition:all .12s}
+.pills button:hover{color:var(--tx)}.pills button.on{border-color:var(--au);color:var(--au2);background:rgba(242,179,61,.1)}
+.fr{display:flex;gap:16px;flex-wrap:wrap}.fr .gr{flex:1 1 220px}
+.step{display:inline-flex;align-items:center;border:1px solid var(--ln);border-radius:10px;background:var(--bg);height:40px}
+.step button{width:38px;height:100%;border:0;background:none;color:var(--mu);font-size:18px}.step button:hover{color:var(--tx)}
+.step b{min-width:30px;text-align:center;font-variant-numeric:tabular-nums}
+input.f{width:100%;height:40px;padding:0 12px;border-radius:10px;border:1px solid var(--ln);background:var(--bg)}
+input.f:focus{outline:0;border-color:var(--au)}
+.mk{width:auto;padding:0 26px;height:44px;margin-top:18px;font-size:15px}
+.newk{margin-top:16px;border:1px dashed rgba(53,214,160,.6);border-radius:12px;padding:6px 12px;background:rgba(53,214,160,.05);animation:pop .22s ease-out}
+.newk div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0}.newk div+div{border-top:1px solid var(--ln)}
+.tb{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}.tb .f{flex:1 1 220px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chips button{height:40px;padding:0 13px;border-radius:10px;border:1px solid var(--ln);background:none;color:var(--mu);font-size:13.5px}
+.chips button.on{color:var(--tx);background:var(--pn2);border-color:var(--mu)}
+.rw{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.25fr) auto;gap:8px 18px;align-items:center;padding:14px 2px;border-top:1px solid var(--ln)}
+.rw:first-child{border-top:0}
+.kk{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.kk .mono{font-size:13.5px;font-weight:600;letter-spacing:.02em;user-select:all;word-break:break-all}
+.bd{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:99px;border:1px solid var(--ln);color:var(--mu)}
+.bd.sb{color:var(--vi);border-color:rgba(163,149,255,.5)}.bd.us{color:var(--ok);border-color:rgba(53,214,160,.45)}.bd.ex{color:var(--no);border-color:rgba(255,107,125,.5)}
+.bar{height:4px;border-radius:4px;background:var(--bg);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;border-radius:4px;background:var(--ok)}.bar i.lo{background:var(--au)}.bar i.xx{background:var(--no)}
+.ipb{display:inline-flex;align-items:center;gap:6px;margin-top:3px;padding:2px 8px;border-radius:8px;background:var(--bg);border:1px solid var(--ln);font-size:12.5px}
+.ra{display:flex;gap:6px;justify-content:flex-end}
+.ib{width:36px;height:36px;padding:0;justify-content:center}
+.emp{padding:34px 0 20px;text-align:center;color:var(--mu)}
+dialog{border:1px solid var(--ln);border-radius:16px;background:var(--pn);color:var(--tx);padding:20px;max-width:380px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(5,8,20,.7);backdrop-filter:blur(2px)}
+dialog p{margin:0 0 18px}dialog form{margin:0}.da{display:flex;gap:8px;justify-content:flex-end}
+.da .go{width:auto;height:40px;margin:0;padding:0 18px;font-size:14px}.da .go.dgb{background:var(--no);color:#2b0710}
+#ts{position:fixed;left:0;right:0;bottom:22px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;z-index:9}
+#ts div{background:var(--pn2);border:1px solid var(--ln);border-radius:12px;padding:9px 16px;font-size:14px;box-shadow:0 10px 30px -10px #000;animation:pop .2s ease-out}#ts div.e{border-color:var(--no)}
+@media(max-width:720px){.rw{grid-template-columns:1fr auto}.rw>:nth-child(2),.rw>:nth-child(3){grid-column:1/-1}.rw>:nth-child(4){grid-column:2;grid-row:1}.gate{margin-top:5vh}.stats b{font-size:26px}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<div class="w" id="app"></div>
+<dialog id="dlg"><form method="dialog"><p id="dm"></p><div class="da"><button class="gh" value="no">Hủy</button><button class="go dgb" value="ok" id="dok">Xác nhận</button></div></form></dialog>
+<div id="ts"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=t=>t?new Date(t*1000).toLocaleString('vi-VN'):'';
+const left=s=>{if(s<=0)return 'đã hết hạn';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return 'còn '+(d?d+' ngày '+h+' giờ':h?h+' giờ '+m+' phút':m+' phút')};
+const DAYLBL={1:'1 ngày',2:'2 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
+const ic=p=>'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
+const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/>'),lock:ic('<path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="10" rx="2"/>'),
+ copy:ic('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),del:ic('<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+ rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
+ rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
+let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
+let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
+function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}
+async function api(p,body){
+  const o={headers:{'Content-Type':'application/json'}};
+  if(S)o.headers['X-Admin-Token']=S.token;
+  if(body!==undefined){o.method='POST';o.body=JSON.stringify(body)}
+  let r,j={};
+  try{r=await fetch(p,o);j=await r.json()}catch(e){j={ok:false,loi:'Không kết nối được server'}}
+  if(r&&r.status===401&&S){S=null;sessionStorage.removeItem('as');renderLogin('Phiên đã hết hạn hoặc IP đã thay đổi — nhập key lại để vào.')}
+  return j;
+}
+/* ── ĐĂNG NHẬP: 1 ô key, server tự nhận diện ── */
+function showRes(c,t,d){$('#res').innerHTML=t?`<div class="res ${c}"><span class="ic">${I[c==='good'?'ok':c==='warn'?'info':'x']}</span><div><b>${esc(t)}</b>${d?`<span class="mu">${esc(d)}</span>`:''}</div></div>`:''}
+function renderLogin(msg){
+  need=false;
+  $('#app').innerHTML=`<div class="gate"><div class="mark">${I.key.replace(/18/g,'26')}</div><h1>Nhập key để vào quản trị</h1>
+  <p>Chỉ cần một ô. Hệ thống tự nhận ra đây là admin chính, admin phụ hay key không dùng được ở trang này.</p>
+  <div class="kf">${I.key}<input id="k" type="password" autocomplete="off" spellcheck="false" placeholder="Dán key hoặc mật khẩu admin" autofocus><button type="button" id="eye">Hiện</button></div>
+  <div id="unw" hidden><div class="lb">Key này chưa ai dùng — chọn username của bạn (gắn vĩnh viễn với key)</div><div class="kf"><input id="un" maxlength="20" autocomplete="off" placeholder="Ví dụ: Dark" style="padding:0 16px"></div></div>
+  <button class="go" id="go">Vào</button><div id="res"></div></div>`;
+  if(msg)showRes('warn',msg);
+}
+async function login(){
+  if(busy)return;const k=$('#k').value.trim();
+  if(!k){showRes('bad','Chưa nhập key','Dán key vào ô phía trên rồi bấm Vào.');return}
+  busy=true;const b=$('#go');b.disabled=true;b.textContent='Đang kiểm tra…';
+  const body={key:k};if(need&&$('#un'))body.username=$('#un').value.trim();
+  const j=await api('/api/admin/login',body);
+  busy=false;b.disabled=false;b.textContent='Vào';
+  if(j.ok){
+    showRes('good',j.role==='main'?'Nhận diện: Admin chính':'Nhận diện: Admin phụ · '+j.name,j.role==='sub'?'Key này được gắn với IP hiện tại của bạn.':'Đang mở bảng quản trị…');
+    await sleep(650);S={token:j.token,role:j.role,name:j.name};sessionStorage.setItem('as',JSON.stringify(S));need=false;await loadKeys();return}
+  if(j.need_username){need=true;$('#unw').hidden=false;showRes('warn','Nhận diện: key admin phụ mới',j.loi||'');$('#un').focus();return}
+  if(j.ip_locked)return showRes('bad','Key đã gắn với IP khác',j.loi);
+  const t={user:['warn','Đây là key người dùng'],none:['bad','Không tìm thấy key này'],locked:['bad','Tạm khóa vì nhập sai nhiều lần']}[j.kind]||['bad','Không vào được'];
+  showRes(t[0],t[1],j.loi||'');
+}
+/* ── BẢNG ĐIỀU KHIỂN ── */
+async function loadKeys(){
+  const j=await api('/api/admin/keys');if(!S)return;
+  if(j.ok){KEYS=j.keys;DAYS=j.ngay||DAYS}
+  paint();
+}
+const isMain=()=>S&&S.role==='main';
+function stats(){
+  const live=KEYS.filter(r=>!r.het).length,a=[[KEYS.length,isMain()?'Tổng key':'Key của bạn'],[live,'Còn hạn'],[KEYS.length-live,'Hết hạn']];
+  if(isMain()){const sb=KEYS.filter(r=>r.loai==='sub');a.push([sb.length,'Key admin phụ'],[sb.filter(r=>r.ip).length,'Đã gắn IP'])}
+  return a.map(([n,l])=>`<div><b>${n}</b><span>${l}</span></div>`).join('');
+}
+function renderDash(){
+  const m=isMain();
+  $('#app').innerHTML=`<div class="top"><div class="mark">${I.key.replace(/18/g,'22')}</div><div><h1>SUNVIW · Quản trị</h1><span class="role ${m?'m':'s'}">${m?'Admin chính':'Admin phụ · '+esc(S.name)}</span></div><div class="sp"></div><button class="gh" id="out">${I.out} Đăng xuất</button></div>
+  <div class="stats" id="stats"></div>
+  <section class="pn"><h2>Tạo key mới</h2>
+  ${m?`<div class="seg" id="ct"><button data-t="user" class="on">Key người dùng</button><button data-t="sub">Key admin phụ</button></div>`:''}
+  <div class="lb">Thời hạn</div><div class="pills" id="cd">${DAYS.map(d=>`<button data-d="${d}" class="${d===CF.days?'on':''}">${DAYLBL[d]||d+' ngày'}</button>`).join('')}</div>
+  <div class="fr"><div><div class="lb">Số lượng</div><div class="step"><button data-n="-1" aria-label="Giảm">−</button><b id="cn">${CF.n}</b><button data-n="1" aria-label="Tăng">+</button></div></div>
+  <div class="gr"><div class="lb">Ghi chú (không bắt buộc)</div><input class="f" id="cnote" maxlength="40" placeholder="Ví dụ: khách A"></div></div>
+  <button class="go mk" id="mk">Tạo key</button><div id="newk"></div></section>
+  <section class="pn"><div class="hd"><h2>Danh sách key <span class="mu s" id="cnt"></span></h2><div class="act"><button class="gh" id="rf">${I.rf} Làm mới</button>${m?`<button class="gh dg" id="clean">${I.del} Dọn key hết hạn</button>`:''}</div></div>
+  <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
+  <div id="tbl"></div></section>`;
+}
+function paint(){
+  if(!$('#tbl'))renderDash();
+  $('#stats').innerHTML=stats();renderNew();renderTable();
+}
+function renderNew(){
+  const el=$('#newk');if(!el)return;
+  el.innerHTML=NEW.length?`<div class="newk">${NEW.map(k=>`<div><span class="mono">${esc(k)}</span><button class="gh" data-copy="${esc(k)}">${I.copy} Sao chép</button></div>`).join('')}${NEW.length>1?`<div><span class="mu">Cả ${NEW.length} key</span><button class="gh" data-copy="${esc(NEW.join('\n'))}">${I.copy} Sao chép hết</button></div>`:''}</div>`:'';
+}
+function row(r){
+  const m=isMain(),sub=r.loai==='sub',pct=r.ngay?Math.max(0,Math.min(100,r.con_lai/(r.ngay*86400)*100)):0;
+  let who;
+  if(sub&&m){who=r.dung_boi?`<div><b>${esc(r.dung_boi)}</b> <span class="mu s">· đã tạo ${r.da_tao} key</span></div>`+(r.ip?`<div class="ipb mono">${I.lock}${esc(r.ip)}</div><div class="mu s">gắn lúc ${esc(fmt(r.ip_luc))}</div>`:`<div class="mu s">Chưa gắn IP — gắn ở lần đăng nhập tới</div>`):`<span class="mu">Chưa ai dùng</span>`}
+  else who=`<div class="mu s">${m?'Tạo bởi '+esc(r.nguoi_tao||''):''}</div><div>${esc(r.ghi_chu||'')}</div>`;
+  return `<div class="rw"><div><div class="kk"><span class="mono">${esc(r.key)}</span><span class="bd ${sub?'sb':'us'}">${sub?'admin phụ':'người dùng'}</span>${r.het?'<span class="bd ex">hết hạn</span>':''}</div></div>
+  <div><div class="s">${esc(fmt(r.het_han))}</div><div class="s ${r.het?'':'mu'}" style="${r.het?'color:var(--no)':''}">${esc(left(r.con_lai))}${r.ngay?' · gói '+esc(DAYLBL[r.ngay]||r.ngay+' ngày'):''}</div><div class="bar"><i class="${r.het?'xx':pct<20?'lo':''}" style="width:${pct}%"></i></div></div>
+  <div>${who}</div>
+  <div class="ra"><button class="gh ib" data-copy="${esc(r.key)}" title="Sao chép" aria-label="Sao chép">${I.copy}</button>${m&&sub&&r.ip?`<button class="gh ib" data-rs="${esc(r.key)}" data-nm="${esc(r.dung_boi)}" title="Reset IP" aria-label="Reset IP">${I.rs}</button>`:''}<button class="gh dg ib" data-del="${esc(r.key)}" title="Xóa" aria-label="Xóa">${I.del}</button></div></div>`;
+}
+function renderTable(){
+  const q=(F.q||'').toLowerCase();
+  const rows=KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip].join(' ').toLowerCase().includes(q)));
+  $('#cnt').textContent='('+rows.length+')';
+  $('#tbl').innerHTML=rows.length?rows.map(row).join(''):'<div class="emp">'+(KEYS.length?'Không có key nào khớp bộ lọc.':'Chưa có key nào. Tạo key đầu tiên ở khung phía trên.')+'</div>';
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button');if(!b)return;const d=b.dataset;
+  if(b.id==='go')return login();
+  if(b.id==='eye'){const k=$('#k');k.type=k.type==='password'?'text':'password';b.textContent=k.type==='password'?'Hiện':'Ẩn';return}
+  if(b.id==='out'){S=null;sessionStorage.removeItem('as');NEW=[];return renderLogin()}
+  if(b.id==='rf'){await loadKeys();return toast('Đã làm mới')}
+  if(d.copy!==undefined){try{await navigator.clipboard.writeText(d.copy);toast('Đã sao chép')}catch(x){prompt('Sao chép:',d.copy)}return}
+  if(d.t&&b.parentNode.id==='ct'){CF.type=d.t;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));return}
+  if(d.d){CF.days=+d.d;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));return}
+  if(d.n){CF.n=Math.max(1,Math.min(20,CF.n+(+d.n)));$('#cn').textContent=CF.n;return}
+  if(d.f){F.t=d.f;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderTable();return}
+  if(b.id==='mk'){
+    const j=await api('/api/admin/keys/create',{type:isMain()?CF.type:'user',days:CF.days,count:CF.n,note:$('#cnote').value});
+    if(j.ok){NEW=j.keys;await loadKeys();toast('Đã tạo '+j.keys.length+' key')}else toast(j.loi||'Lỗi',1);return}
+  if(d.del){if(!await ask('Xóa key '+d.del+'? Người đang dùng key này sẽ bị đăng xuất ngay.','Xóa key'))return;const j=await api('/api/admin/keys/delete',{key:d.del});if(j.ok){NEW=NEW.filter(k=>k!==d.del);await loadKeys();toast('Đã xóa key')}else toast(j.loi||'Lỗi',1);return}
+  if(d.rs){if(!await ask('Reset IP của '+d.nm+'? Key sẽ gắn lại với IP của lần đăng nhập kế tiếp, và phiên đang mở ở IP cũ bị đăng xuất.','Reset IP'))return;const j=await api('/api/admin/keys/reset-ip',{key:d.rs});if(j.ok){await loadKeys();toast('Đã reset IP')}else toast(j.loi||'Lỗi',1);return}
+  if(b.id==='clean'){if(!await ask('Xóa toàn bộ key đã hết hạn?','Xóa hết'))return;const j=await api('/api/admin/keys/delete',{expired:true});if(j.ok){await loadKeys();toast('Đã xóa '+j.da_xoa+' key')}else toast(j.loi||'Lỗi',1)}
+});
+document.addEventListener('input',e=>{if(e.target.id==='fq'){F.q=e.target.value;renderTable()}});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['k','un'].includes(e.target.id))login()});
+setInterval(()=>{if(S&&$('#tbl'))loadKeys()},60000);
+if(S)loadKeys();else renderLogin();
+</script></body></html>
+"""
+
+
 @app.route("/api/ips")
 def api_ips():
     """Danh sách IP đang dùng + đã từng dùng (tab IP của panel). Có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=."""
@@ -2562,54 +2785,6 @@ def api_predict_lc79():
     if request.args.get("detail") in ("1", "true", "yes"):
         out["chi_tiet"] = detail
     return _json(out)
-
-
-@app.route("/api/predictnx")
-def api_predict_nx():
-    """[NX · BETVIP] dự đoán phiên mới nhất + 1 (đã LƯU), lịch sử đúng/sai do API trả kết quả. Config riêng: xem CONFIG NX."""
-    ensure_poller()
-    with _nx_lock:
-        have = _nx_state["base"] is not None
-    if not have:                                  # request đầu tiên, poller chưa kịp quét xong
-        try:
-            nx_refresh()
-        except Exception as e:  # noqa: BLE001
-            with _nx_lock:
-                _nx_state["error"] = _nx_mask(f"{type(e).__name__}: {e}")
-    with _nx_lock:
-        base, detail, err, upd = _nx_state["base"], _nx_state["detail"], _nx_state["error"], _nx_state["updated"]
-    if base is None:
-        return _json({"ok": False, "game": "nx", "loi": err or "chua co du lieu"}, 503)
-    real = nx_history(False)                      # CHỈ ván thật (đã lưu dự đoán trước khi có kết quả)
-    out = dict(base)
-    out["game"] = "nx"
-    out["tool_dung_sai_10_van"] = _acc_rows(real, 10)
-    out["van_da_cham"] = nx_counts()              # that = ván tool đã lưu dự đoán rồi chờ API trả · mo_phong = ván tự tính lại để WR có dữ liệu
-    out["stale"] = bool(err)
-    if err:
-        out["loi"] = err
-    out["cap_nhat"] = upd
-    n = _hist_n()
-    if n:
-        out["lich_su"] = (nx_history(True) if request.args.get("mo_phong") in ("1", "true", "yes") else real)[:n]
-    if request.args.get("detail") in ("1", "true", "yes"):
-        w = real[:NX_WR_WINDOW]
-        chi = dict(detail)
-        chi["tool_dung_sai_15_van"] = {"dung": sum(1 for r in w if r["dung"]), "tong": len(w)}   # đúng/sai THẬT ở NX_WR_WINDOW ván gần nhất
-        out["chi_tiet"] = chi
-    return _json(out)
-
-
-@app.route("/api/nx")
-def api_nx_status():
-    """Trạng thái quét API NX + nhật ký (URL đã che token)."""
-    ensure_poller()
-    with _nx_lock:
-        s = {k: _nx_state[k] for k in ("target", "latest", "error", "updated", "checked", "polls", "fetched")}
-        log = list(_nx_log)
-    s.update(ok=s["error"] is None and s["target"] is not None, url=nx_masked_url(), poll_sec=NX_POLL_SEC,
-             backfill=NX_BACKFILL, van_da_cham=nx_counts(), log=log)
-    return _json(s)
 
 
 @app.route("/api/lc79/ws")
@@ -2696,21 +2871,12 @@ def health():
     lc.update(ok=lc["error"] is None and lc["latest"] is not None, wr_window=LC_WR_WINDOW,
               be_final=LC_FLIP_FINAL, wr_flip=LC_WR_FLIP_WEIGHT, wr_decay=LC_WR_DECAY, wr_floor=LC_WR_FLOOR, wr_newest=LC_WR_WEIGHT_NEWEST)
     s["lc79"] = lc
-    with _nx_lock:
-        nx = {k: _nx_state[k] for k in ("target", "latest", "error", "updated", "checked", "polls", "fetched")}
-    nx.update(ok=nx["error"] is None and nx["target"] is not None, upstream=nx_masked_url(), poll_sec=NX_POLL_SEC, backfill=NX_BACKFILL,
-              van_da_cham=nx_counts(), pred_path=NX_PRED_PATH, pred_keep=NX_PRED_KEEP,
-              wr_window=NX_WR_WINDOW, be_final=NX_FLIP_FINAL, wr_flip=NX_WR_FLIP_WEIGHT, wr_decay=NX_WR_DECAY, wr_floor=NX_WR_FLOOR, wr_newest=NX_WR_WEIGHT_NEWEST,
-              zf=dict(bat=NX_ZF_ENABLED, window=NX_ZF_WINDOW, z=NX_ZF_Z, min_games=NX_ZF_MIN_GAMES, be_final_zf=NX_ZF_FLIP_FINAL, loai=list(NX_ZF_EXCLUDE)),
-              af=dict(bat=NX_AF_ENABLED, flip_low=NX_AF_FLIP_LOW, flip_high=NX_AF_FLIP_HIGH, min_games=NX_AF_MIN_GAMES, mode_window=NX_AF_MODE_WINDOW,
-                      mode_min=NX_AF_MODE_MIN, mode_below=NX_AF_MODE_BELOW, be_final_af=NX_AF_FLIP_FINAL))
-    s["nx"] = nx
     return _json(s)
 
 
 @app.route("/")
 def index():
-    return _json({"api": f"SUNVIW {len(LOGIC_NAMES)} logics (dedup={DEDUP_MODE})", "endpoints": ["/api/predictsun", "/api/predictlc79", "/api/predictnx", "/api/predictsun?detail=1", "/api/predictlc79?detail=1", "/api/predictnx?detail=1", "/api/nx", "/api/lc79/ws", "POST /api/lc79/ws/start", "POST /api/lc79/ws/stop", "/api/html", "/api/ips", "/health"]})
+    return _json({"ok": True, "api": "SUNVIW"})          # cố ý KHÔNG liệt kê endpoint (/api/html, /api/admin ...)
 
 
 # Chạy dưới gunicorn (Railway) thì main() không được gọi -> bật poller ngay khi import.
@@ -2722,8 +2888,6 @@ def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, LC_FLIP_FINAL, WR_FLIP_WEIGHT, LC_WR_FLIP_WEIGHT
     global ZF_ENABLED, ZF_WINDOW, ZF_Z, ZF_MIN_GAMES, ZF_FLIP_FINAL
     global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL
-    global NX_UPSTREAM_URL, NX_POLL_SEC, NX_BACKFILL, NX_FLIP_FINAL, NX_WR_FLIP_WEIGHT, NX_ZF_ENABLED, NX_ZF_WINDOW, NX_ZF_Z, NX_ZF_MIN_GAMES, NX_ZF_FLIP_FINAL
-    global NX_AF_ENABLED, NX_AF_FLIP_LOW, NX_AF_FLIP_HIGH, NX_AF_MIN_GAMES, NX_AF_MODE_WINDOW, NX_AF_MODE_BELOW, NX_AF_FLIP_FINAL
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -2765,88 +2929,7 @@ def main():
     afg = ap.add_mutually_exclusive_group()
     afg.add_argument("--af-flip", action="store_true", help="BẺ riêng kết quả AF (đảo TÀI<->XỈU)")
     afg.add_argument("--af-no-flip", action="store_true", help="TẮT bẻ riêng kết quả AF")
-    # ── NX (BETVIP) · config RIÊNG, không dính Sun / LC79 ──
-    ap.add_argument("--nx-url", default=None, help="NX: URL API list phiên (mặc định NX_UPSTREAM_URL / env NX_UPSTREAM)")
-    ap.add_argument("--nx-poll", type=float, default=None, help="NX: chu kỳ quét API (giây)")
-    nbg = ap.add_mutually_exclusive_group()
-    nbg.add_argument("--nx-backfill", action="store_true", help="NX: BẬT nạp ván mô phỏng từ list để WR có dữ liệu ngay")
-    nbg.add_argument("--nx-no-backfill", action="store_true", help="NX: TẮT ván mô phỏng (WR chỉ tính từ ván thật tool đã lưu dự đoán)")
-    nfg = ap.add_mutually_exclusive_group()
-    nfg.add_argument("--nx-flip", action="store_true", help="NX: BẬT bẻ final (chỉ ván quay về cách cũ)")
-    nfg.add_argument("--nx-no-flip", action="store_true", help="NX: TẮT bẻ final")
-    nwg = ap.add_mutually_exclusive_group()
-    nwg.add_argument("--nx-wr-flip", action="store_true", help="NX: BẬT flip trọng số WR (ván CŨ nhất nặng nhất)")
-    nwg.add_argument("--nx-no-wr-flip", action="store_true", help="NX: TẮT flip trọng số WR (ván mới nhất nặng nhất)")
-    nzg = ap.add_mutually_exclusive_group()
-    nzg.add_argument("--nx-zf", action="store_true", help="NX: BẬT ZF (z-filter động)")
-    nzg.add_argument("--nx-no-zf", action="store_true", help="NX: TẮT ZF")
-    ap.add_argument("--nx-zf-window", type=int, default=None, help="NX ZF: số ván gần nhất xét WR từng logic")
-    ap.add_argument("--nx-zf-z", type=float, default=None, help="NX ZF: ngưỡng |z|")
-    ap.add_argument("--nx-zf-min", type=int, default=None, help="NX ZF: số ván tối thiểu mới bật ZF")
-    nzf = ap.add_mutually_exclusive_group()
-    nzf.add_argument("--nx-zf-flip", action="store_true", help="NX: BẺ riêng kết quả ZF")
-    nzf.add_argument("--nx-zf-no-flip", action="store_true", help="NX: TẮT bẻ riêng kết quả ZF")
-    nag = ap.add_mutually_exclusive_group()
-    nag.add_argument("--nx-af", action="store_true", help="NX: BẬT AF (auto-flip + CAO/THẤP + bẻ chế độ)")
-    nag.add_argument("--nx-no-af", action="store_true", help="NX: TẮT AF, quay về cách chốt cũ")
-    ap.add_argument("--nx-af-low", type=float, default=None, help="NX AF: WR logic dưới mức này (%%) -> bẻ logic")
-    ap.add_argument("--nx-af-high", type=float, default=None, help="NX AF: WR logic trên mức này (%%) -> bẻ logic")
-    ap.add_argument("--nx-af-min", type=int, default=None, help="NX AF: số ván tối thiểu mới bẻ logic / chia nhóm")
-    ap.add_argument("--nx-af-mode-window", type=int, default=None, help="NX AF: số ván gần nhất của mỗi chế độ để tính WR chế độ")
-    ap.add_argument("--nx-af-mode-below", type=float, default=None, help="NX AF: WR chế độ dưới mức này (%%) -> bẻ final")
-    naf = ap.add_mutually_exclusive_group()
-    naf.add_argument("--nx-af-flip", action="store_true", help="NX: BẺ riêng kết quả AF")
-    naf.add_argument("--nx-af-no-flip", action="store_true", help="NX: TẮT bẻ riêng kết quả AF")
     a = ap.parse_args()
-    if a.nx_url:
-        NX_UPSTREAM_URL = a.nx_url
-    if a.nx_poll is not None:
-        NX_POLL_SEC = a.nx_poll
-    if a.nx_backfill:
-        NX_BACKFILL = True
-    elif a.nx_no_backfill:
-        NX_BACKFILL = False
-    if a.nx_flip:
-        NX_FLIP_FINAL = True
-    elif a.nx_no_flip:
-        NX_FLIP_FINAL = False
-    if a.nx_wr_flip:
-        NX_WR_FLIP_WEIGHT = True
-    elif a.nx_no_wr_flip:
-        NX_WR_FLIP_WEIGHT = False
-    if a.nx_zf:
-        NX_ZF_ENABLED = True
-    elif a.nx_no_zf:
-        NX_ZF_ENABLED = False
-    if a.nx_zf_window is not None:
-        NX_ZF_WINDOW = a.nx_zf_window
-    if a.nx_zf_z is not None:
-        NX_ZF_Z = a.nx_zf_z
-    if a.nx_zf_min is not None:
-        NX_ZF_MIN_GAMES = a.nx_zf_min
-    if a.nx_zf_flip:
-        NX_ZF_FLIP_FINAL = True
-    elif a.nx_zf_no_flip:
-        NX_ZF_FLIP_FINAL = False
-    if a.nx_af:
-        NX_AF_ENABLED = True
-    elif a.nx_no_af:
-        NX_AF_ENABLED = False
-    if a.nx_af_low is not None:
-        NX_AF_FLIP_LOW = a.nx_af_low
-    if a.nx_af_high is not None:
-        NX_AF_FLIP_HIGH = a.nx_af_high
-    if a.nx_af_min is not None:
-        NX_AF_MIN_GAMES = a.nx_af_min
-    if a.nx_af_mode_window is not None:
-        NX_AF_MODE_WINDOW = a.nx_af_mode_window
-    if a.nx_af_mode_below is not None:
-        NX_AF_MODE_BELOW = a.nx_af_mode_below
-    if a.nx_af_flip:
-        NX_AF_FLIP_FINAL = True
-    elif a.nx_af_no_flip:
-        NX_AF_FLIP_FINAL = False
-    nx_apply_limits()                              # chuẩn hoá tham số NX + nới NX_PRED_KEEP theo NX_ZF_WINDOW
     UPSTREAM_URL, POLL_SEC = a.upstream, a.poll
     if a.af:
         AF_ENABLED = True
@@ -2910,9 +2993,7 @@ def main():
     print(f"ZF SUN      ->  {'BAT' if ZF_ENABLED else 'TAT'} · xet {ZF_WINDOW} van gan nhat · |z| >= {ZF_Z} · toi thieu {ZF_MIN_GAMES} van · be rieng ZF {'BAT' if ZF_FLIP_FINAL else 'TAT'} · loai {list(ZF_EXCLUDE) or 'khong'} · giu lich su {HIST_KEEP} phien")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))
-    print(f"NX BETVIP   ->  http://{a.host}:{a.port}/api/predictnx · API {nx_masked_url()} · quet moi {NX_POLL_SEC:g}s · van mo phong {'BAT' if NX_BACKFILL else 'TAT'} · file {NX_PRED_PATH}")
-    print(f"NX WR       ->  xet {NX_WR_WINDOW} van gan nhat, trong so cao nhat x{NX_WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if NX_WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'} · be final {'BAT' if NX_FLIP_FINAL else 'TAT'} (chi van quay ve cach cu)")
-    print(f"NX ZF / AF  ->  ZF {'BAT' if NX_ZF_ENABLED else 'TAT'} (xet {NX_ZF_WINDOW} van · |z| >= {NX_ZF_Z} · toi thieu {NX_ZF_MIN_GAMES} · be rieng {'BAT' if NX_ZF_FLIP_FINAL else 'TAT'}) · AF {'BAT' if NX_AF_ENABLED else 'TAT'} (be logic WR < {NX_AF_FLIP_LOW:g}% hoac > {NX_AF_FLIP_HIGH:g}% · toi thieu {NX_AF_MIN_GAMES} van · be che do khi WR {NX_AF_MODE_WINDOW} van < {NX_AF_MODE_BELOW:g}% · be rieng AF {'BAT' if NX_AF_FLIP_FINAL else 'TAT'})")
+    print(f"KEY/ADMIN   ->  trang admin /api/admin (1 o nhap key, tu nhan dien · key admin phu gan IP, admin chinh reset IP) · mat khau admin chinh {'tu env SUNVIW_MAIN_PASS' if _ENV_MAIN_PASS else 'tu hash mac dinh trong code (nen dat SUNVIW_MAIN_PASS)'} · bat key cho API {'BAT' if KEY_GATE_API else 'TAT'} · file key {KEYS_PATH}")
     app.run(host=a.host, port=a.port, threaded=True)
 
 

@@ -25,8 +25,8 @@ Endpoint:
     ...?hist=N                   -> (cả 2 game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
     GET /api/html                -> panel HTML theo dõi cả 2 game, đổi qua lại, chọn số ván lịch sử
     GET /health                  -> trạng thái nền của cả 2 game
-    GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa / xem key, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
-    POST /api/key/check          -> tool xác thực key người dùng: {"key":"..."} -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
+    GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa (tích chọn nhiều key) / xem key, MỌI key gắn HWID thiết bị (1 key dùng được N thiết bị), hiện lần dùng gần nhất, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
+    POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
     GET /api/ips                 -> DANH SÁCH IP đang dùng + đã từng dùng API / ws (tab "IP" của panel đọc từ đây; có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=)
 
 JSON /api/predict:
@@ -97,6 +97,14 @@ Logic giữ nguyên 100% so với file HTML (kể cả hành vi NaN của L1/L2/
     Mỗi request tới /api/predictsun · /api/predictlc79 · /api/lc79/ws* · /api/html được ghi lại IP của client (sau proxy Railway đọc X-Forwarded-For / X-Real-IP).
     Tab "IP" hiện: IP ĐANG DÙNG (có request trong IP_ACTIVE_SEC giây gần nhất) + IP ĐÃ TỪNG DÙNG (lưu file, còn sau khi restart) · lần đầu / gần nhất · số request · chia theo loại (sun · lc79 · ws · panel) · User-Agent.
     Khối "CONFIG IP" ở gần đầu file. Nên đặt SUNVIW_ADMIN_KEY để chỉ bạn xem được danh sách IP (panel là trang công khai).
+
+🔐 HWID (gắn key theo THIẾT BỊ, thay cho gắn theo IP mạng) — khối "CONFIG KEY / ADMIN":
+    Mọi key (người dùng + admin phụ) đều gắn HWID. Mỗi key có số thiết bị tối đa (max_dev, chọn lúc tạo: 1-2-3-5-10-20-50): máy mới dùng key lần đầu tự được gắn nếu còn chỗ,
+    đủ chỗ rồi thì máy khác bị chặn tới khi admin reset / gỡ thiết bị. Panel (/api/html, /api/admin) tự tạo HWID; tool tự viết gửi header X-HWID (hoặc ?hwid= / body {"hwid"}) cùng X-User-Key.
+    Admin chính + admin phụ đều chọn được số thiết bị khi tạo key; admin phụ chỉ tạo được key người dùng. Trang admin hiện: số thiết bị đang gắn / tối đa · lần dùng gần nhất · từng thiết bị (có nút Gỡ)
+    · tích chọn nhiều key để xóa một lượt.
+    ⚑ KHÔNG BAO GIỜ chặn theo IP: đổi mạng / đổi IP không ảnh hưởng key, chỉ máy khác mới bị chặn. Mã thiết bị được giữ ổn định (lưu localStorage + cookie, dấu vân tay phần cứng không đổi theo UA / zoom / xoay màn hình),
+    server học thêm mã phụ cho từng thiết bị (header X-HWID-ALT) để máy xoá dữ liệu trình duyệt vẫn được nhận lại thay vì chiếm thêm chỗ — chi tiết ở khối "CONFIG KEY / ADMIN".
 
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
 """
@@ -1785,6 +1793,45 @@ def _acc_rows(rows, n=10):
 
 
 # ─── PANEL HTML (/api/html) ──────────────────────────────────────────────
+HWID_JS = r"""
+function _hw128(s){let a=1779033703,b=3144134277,c=1013904242,d=2773480762;for(let i=0,k;i<s.length;i++){k=s.charCodeAt(i);a=b^Math.imul(a^k,597399067);b=c^Math.imul(b^k,2869860233);c=d^Math.imul(c^k,951274213);d=a^Math.imul(d^k,2716044179)}
+  a=Math.imul(c^(a>>>18),597399067);b=Math.imul(d^(b>>>19),2869860233);c=Math.imul(a^(c>>>17),951274213);d=Math.imul(b^(d>>>19),2716044179);a^=(b^c^d);b^=a;c^=a;d^=a;
+  return[a,b,c,d].map(x=>(x>>>0).toString(16).padStart(8,'0')).join('')}
+/* HWID = mã thiết bị, KHÔNG liên quan IP / mạng. Cách làm (đổi Wi-Fi <-> 4G <-> VPN không đổi mã):
+   1) Mã đã lưu (localStorage + cookie dự phòng, lưu 2 năm; mất 1 trong 2 thì tự phục hồi từ cái còn lại) được dùng TRƯỚC.
+   2) Chưa có mã -> tính từ dấu vân tay PHẦN CỨNG ổn định (bỏ UA / ngôn ngữ / múi giờ / zoom / xoay màn hình / canvas là các thứ hay đổi) -> cùng máy xoá dữ liệu trình duyệt vẫn ra đúng mã cũ.
+   3) HWID_ALT = mã phụ của CHÍNH máy này để server nhận ra máy khi công thức / bộ nhớ thay đổi: bình thường là mã phần cứng ổn định; máy vừa mất bộ nhớ (HWID_FRESH) thì là mã theo công thức cũ. */
+const HWID_ALT=[];
+let HWID_FRESH=false;
+const HWID=(function(){
+  const RX=/^[0-9a-f]{32}$/,n=navigator,s=screen;
+  const rdLS=()=>{try{return localStorage.getItem('hwid')||''}catch(e){return ''}};
+  const rdCK=()=>{try{const m=document.cookie.match(/(?:^|;\s*)hwid=([0-9a-f]{32})(?:;|$)/);return m?m[1]:''}catch(e){return ''}};
+  const save=h=>{
+    try{localStorage.setItem('hwid',h)}catch(e){}
+    try{document.cookie='hwid='+h+'; max-age=63072000; path=/; SameSite=Lax'+(location.protocol==='https:'?'; Secure':'')}catch(e){}};
+  let gpu='';
+  try{const g=document.createElement('canvas').getContext('webgl');if(g){const x=g.getExtension('WEBGL_debug_renderer_info');gpu=String(x?g.getParameter(x.UNMASKED_VENDOR_WEBGL)+'|'+g.getParameter(x.UNMASKED_RENDERER_WEBGL):g.getParameter(g.RENDERER))}}catch(e){}
+  let stable='';
+  try{const sp=[n.platform,n.hardwareConcurrency,n.deviceMemory,n.maxTouchPoints,Math.max(s.width,s.height)+'x'+Math.min(s.width,s.height),s.colorDepth,gpu];
+    if(sp.join('').length>=12)stable=_hw128('v2||'+sp.join('||'))}catch(e){}
+  let legacy='';
+  try{const p=[];
+    try{p.push(n.userAgent,n.platform,n.hardwareConcurrency,n.deviceMemory,n.language,n.maxTouchPoints,s.width+'x'+s.height,s.colorDepth,devicePixelRatio,Intl.DateTimeFormat().resolvedOptions().timeZone)}catch(e){}
+    if(gpu)p.push(gpu);
+    try{const cv=document.createElement('canvas');cv.width=220;cv.height=40;const x=cv.getContext('2d');x.textBaseline='top';x.font='14px Arial';x.fillStyle='#f60';x.fillRect(100,1,60,20);x.fillStyle='#069';x.fillText('SUNVIW hwid Cwm fjord',2,10);p.push(cv.toDataURL())}catch(e){}
+    if(p.join('').length>=40)legacy=_hw128(p.join('||'))}catch(e){}
+  let id=rdLS();if(!RX.test(id))id=rdCK();if(!RX.test(id))id='';
+  HWID_FRESH=!id;
+  if(!id)id=stable||legacy||_hw128('r'+Math.random()+Date.now()+String(n.userAgent||''));
+  save(id);
+  const alt=HWID_FRESH?legacy:stable;
+  if(alt&&alt!==id)HWID_ALT.push(alt);
+  return id})();
+const HWID_HDR=Object.assign({'X-HWID':HWID},HWID_ALT.length?{'X-HWID-ALT':HWID_ALT.join(',')}:{},HWID_FRESH?{'X-HWID-FRESH':'1'}:{});
+""".strip()
+
+
 PANEL_HTML = r"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1872,13 +1919,14 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 </div>
 <div id="hist"></div>
 <script>
+/*__HWID_JS__*/
 (function(){
 const f0=window.fetch.bind(window),ov=document.getElementById('kov'),inp=document.getElementById('kin'),mg=document.getElementById('kmsg');
 function show(t){mg.textContent=t||'';ov.style.display='flex';inp.focus()}
-window.fetch=function(u,o){o=Object.assign({},o||{});const k=localStorage.getItem('uk')||'';if(k)o.headers=Object.assign({},o.headers||{},{'X-User-Key':k});
-  return f0(u,o).then(r=>{if(r.status===401&&String(u).indexOf('/api/')===0&&String(u).indexOf('/api/key/')!==0)show(k?'Key không hợp lệ hoặc đã hết hạn':'');return r})};
+window.fetch=function(u,o){o=Object.assign({},o||{});const k=localStorage.getItem('uk')||'';o.headers=Object.assign({},o.headers||{},HWID_HDR,k?{'X-User-Key':k}:{});
+  return f0(u,o).then(r=>{if(r.status===401&&String(u).indexOf('/api/')===0&&String(u).indexOf('/api/key/')!==0){const dm=k?'Key không hợp lệ hoặc đã hết hạn':'';r.clone().json().then(j=>show(j&&j.can_key&&(j.dev_locked||/HWID/.test(j.loi||''))?j.loi:dm)).catch(()=>show(dm))}return r})};
 async function go(){const v=inp.value.trim();if(!v)return;mg.textContent='';
-  try{const r=await f0('/api/key/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v})});const j=await r.json();
+  try{const r=await f0('/api/key/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v,hwid:HWID,hwid_alt:HWID_ALT,hwid_fresh:HWID_FRESH})});const j=await r.json();
     if(j.ok){localStorage.setItem('uk',v.toUpperCase());location.reload()}else mg.textContent=j.loi||'Key không hợp lệ'}catch(e){mg.textContent='Không kết nối được server'}}
 document.getElementById('kgo').onclick=go;inp.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
 if(!localStorage.getItem('uk'))show('');
@@ -2141,19 +2189,27 @@ def _track_ip():
 #  🔑  CONFIG KEY / ADMIN  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
 #   Trang quản trị: GET /api/admin  (KHÔNG hiện ở trang chủ "/").  CHỈ MỘT Ô NHẬP KEY — server tự phân loại:
-#     · Admin chính : nhập MẬT KHẨU admin chính vào chính ô đó (kiểm tra Ở SERVER, trình duyệt / view-source KHÔNG chứa mật khẩu). Tạo key admin phụ + key người dùng,
-#                     xóa key, xem mọi key (ai tạo, hạn, ai đang dùng, IP đang gắn) và RESET IP cho key admin phụ.
-#     · Admin phụ   : nhập key admin phụ (do admin chính tạo). Key chưa ai dùng -> nhập username (vd. Dark) -> key gắn với username đó VÀ gắn với IP lúc đăng nhập đầu tiên.
-#                     Key đã gắn IP thì KHÔNG đăng nhập được từ IP khác (phiên đang mở cũng chỉ chạy ở đúng IP đó) cho tới khi admin chính bấm Reset IP.
-#                     Admin phụ tạo / xóa KEY NGƯỜI DÙNG (chỉ key mình tạo) với hạn 1-2-7-14-30-60-90-180-365 ngày.
+#     · Admin chính : nhập MẬT KHẨU admin chính vào chính ô đó (kiểm tra Ở SERVER, trình duyệt / view-source KHÔNG chứa mật khẩu). Tạo key admin phụ + key người dùng (chọn số thiết bị tối đa cho từng key),
+#                     xóa key (tích chọn nhiều key rồi xóa một lượt), xem mọi key (ai tạo, hạn, số thiết bị đang gắn, LẦN DÙNG GẦN NHẤT, từng thiết bị) và RESET / GỠ THIẾT BỊ.
+#     · Admin phụ   : nhập key admin phụ (do admin chính tạo). Key chưa ai dùng -> nhập username (vd. Dark) -> key gắn với username đó VÀ gắn với HWID của thiết bị đăng nhập đầu tiên.
+#                     Key dùng được tối đa N thiết bị (N do admin chính chọn lúc tạo key): máy thứ N+1 bị chặn cho tới khi admin chính reset / gỡ thiết bị.
+#                     Admin phụ tạo / xóa KEY NGƯỜI DÙNG (chỉ key mình tạo; cũng chọn được số thiết bị tối đa, tích chọn xóa nhiều key, reset thiết bị key của mình) với hạn 1-2-7-14-30-60-90-180-365 ngày.
 #     · Key người dùng / key không tồn tại -> trang admin báo rõ là key người dùng (không phải admin) hoặc không tìm thấy key.
-#   Người dùng nhập KEY NGƯỜI DÙNG ở panel /api/html (hoặc tool gọi POST /api/key/check {"key": "..."}).
+#   Người dùng nhập KEY NGƯỜI DÙNG ở panel /api/html (hoặc tool gọi POST /api/key/check {"key": "...", "hwid": "..."}).
+#   HWID = mã thiết bị. KHÔNG dùng IP / mạng để chặn: đổi Wi-Fi <-> 4G <-> VPN, đổi IP thoải mái, cùng máy vẫn dùng bình thường (server chỉ GHI IP để admin xem). Chỉ MÁY KHÁC mới bị chặn khi key đã đủ thiết bị.
+#   Panel tự tạo mã: ưu tiên mã đã lưu (localStorage + cookie dự phòng 2 năm, mất 1 trong 2 thì tự phục hồi từ cái còn lại); chưa có thì tính từ dấu vân tay PHẦN CỨNG ổn định (nền tảng, số nhân CPU, RAM,
+#   cảm ứng, kích thước màn hình không phân biệt xoay ngang/dọc, GPU) — không dùng UA / ngôn ngữ / múi giờ / zoom / canvas vì các thứ này tự đổi, nên xoá dữ liệu trình duyệt rồi vào lại vẫn ra ĐÚNG mã cũ.
+#   Panel còn gửi mã phụ của chính máy đó (header X-HWID-ALT; X-HWID-FRESH: 1 khi máy vừa mất bộ nhớ) -> server nhớ mã phụ cho từng thiết bị (_dev_learn) và tự nhận lại máy cũ khi công thức / bộ nhớ đổi.
+#   Giới hạn không tránh được: trình duyệt không đọc được số serial phần cứng, nên 2 máy CÙNG ĐỜI y hệt nhau (vd. 2 iPhone cùng model) mà đều mới xoá sạch dữ liệu có thể ra cùng mã. Chặn chia sẻ key thông thường, không chống được người cố tình giả mạo.
+#   Tool tự viết: gửi header X-HWID (hoặc ?hwid= / body {"hwid"}) = mã MÁY THẬT của tool (8-64 ký tự A-Z a-z 0-9 _ -), nên băm từ mã cài đặt hệ điều hành (Windows: HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid ·
+#   Linux: /etc/machine-id · macOS: IOPlatformUUID) và TUYỆT ĐỐI KHÔNG dùng MAC / IP / tên mạng / SSID (các thứ này đổi khi đổi mạng hoặc cắm card mới -> chính là lỗi "đổi mạng là mất key").
 #   Khi KEY_GATE_API bật: /api/predictsun · /api/predictlc79 · /api/lc79/ws* · /api/ips đòi key hợp lệ (header X-User-Key hoặc ?key=; riêng /api/ips chỉ nhận header).
 #
 #   SUNVIW_MAIN_PASS   (KHUYẾN NGHỊ) mật khẩu admin chính đặt ở biến môi trường Railway -> trong code không còn dấu vết mật khẩu nào. Không đặt = dùng hash mặc định trong code.
 #   SUNVIW_KEYS_PATH   file lưu key (mặc định <DATA_DIR>/sunviw_keys.json; DATA_DIR = Volume Railway nếu có, không thì /tmp). Railway: PHẢI gắn Volume, không thì MẤT KEY mỗi lần deploy.
 #   SUNVIW_SECRET      (tuỳ chọn) khoá ký phiên đăng nhập admin; không đặt = tự sinh và lưu chung file key.
 #   SUNVIW_GATE_API    1 = bắt buộc key cho các endpoint ở trên (mặc định) · 0 = tắt (ai gọi API cũng được như trước)
+#   SUNVIW_HWID_REQUIRED  1 = request dùng key người dùng mà KHÔNG kèm HWID bị từ chối (mặc định) · 0 = cho qua (không gắn thiết bị). Có gửi HWID thì luôn được kiểm tra + gắn thiết bị.
 ADMIN_MAIN_NAME = "admin chính"
 _ADMIN_SALT = b"sunviw-admin-v1:93eacb1bcbb59252"
 ADMIN_PASS_HASH_DEFAULT = "69eb8d5a0692dade93234908118f99d1b8990e3484dc3fca7bb3847d8b6578eb"         # PBKDF2-SHA256 (200.000 vòng) — không đảo ngược được thành mật khẩu, nhưng mật khẩu toàn số ngắn vẫn dò được nếu lộ hash -> nên đặt SUNVIW_MAIN_PASS
@@ -2164,6 +2220,10 @@ KEY_MAX_TOTAL = 5000                                  # trần số key lưu tro
 ADMIN_SESSION_SEC = 12 * 3600                         # phiên đăng nhập admin sống bao lâu
 LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong LOGIN_LOCK_SEC -> khóa IP đó LOGIN_LOCK_SEC giây
 LOGIN_LOCK_SEC = 900
+KEY_DEV_OPTIONS = (1, 2, 3, 5, 10, 20, 50)            # số thiết bị tối đa chọn được khi tạo key (1 key dùng được trên N thiết bị)
+KEY_DEV_DEFAULT = 1                                   # mặc định (cũng là số thiết bị của key cũ tạo trước bản này)
+HWID_REQUIRED = _env_bool("SUNVIW_HWID_REQUIRED", True)
+HWID_TOUCH_SEC = 60                                   # ghi "lần dùng gần nhất" tối đa 1 lần / phút / thiết bị (đỡ ghi file mỗi lần panel poll)
 
 
 def _pw_hash(pw):
@@ -2231,17 +2291,134 @@ def _clean_username(s):
     return s
 
 
+def _norm_hwid(s):
+    """HWID hợp lệ = 8-64 ký tự [A-Za-z0-9_-] (panel gửi 32 hex). Sai định dạng -> "". Luôn chữ thường để so khớp."""
+    s = str(s or "").strip()
+    return s.lower() if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", s) else ""
+
+
+DEV_ALIAS_MAX = 6                                     # số mã phụ tối đa nhớ cho 1 thiết bị (mã cũ nhất bị bỏ khi đầy)
+
+
+def req_hw_ids(body=None):
+    """Mã thiết bị của request -> (hw, alts, fresh).
+       hw    : mã CHÍNH = header X-HWID · ?hwid= · body {"hwid"} · cookie "hwid" (cookie để mở thẳng link API trên trình duyệt vẫn nhận ra máy).
+       alts  : mã PHỤ của CHÍNH máy đó (header X-HWID-ALT, cách nhau dấu phẩy · ?hwid_alt= · body {"hwid_alt": [...]}): dấu vân tay phần cứng ổn định / công thức cũ.
+       fresh : client báo "vừa mất bộ nhớ, không còn mã cũ" (header X-HWID-FRESH: 1 · ?hwid_fresh=1 · body {"hwid_fresh": true}) -> alts được dùng để NHẬN LẠI máy cũ.
+       Tool tự viết chỉ cần gửi X-HWID như trước (không cần alts / fresh)."""
+    b = body if isinstance(body, dict) else {}
+    hw = ""
+    for c in (request.headers.get("X-HWID"), request.args.get("hwid"), b.get("hwid"), request.cookies.get("hwid")):
+        hw = _norm_hwid(c)
+        if hw:
+            break
+    alts = []
+    for raw in (request.headers.get("X-HWID-ALT"), request.args.get("hwid_alt"), b.get("hwid_alt")):
+        parts = raw if isinstance(raw, (list, tuple)) else re.split(r"[,\s]+", str(raw or ""))
+        for x in parts[:6]:
+            n = _norm_hwid(x)
+            if n and n != hw and n not in alts:
+                alts.append(n)
+    fresh = str(request.headers.get("X-HWID-FRESH") or request.args.get("hwid_fresh") or b.get("hwid_fresh") or "").strip().lower() in ("1", "true", "yes")
+    return hw, tuple(alts[:4]), fresh
+
+
+def req_hwid(body=None):
+    """HWID chính của thiết bị gọi request (giữ để tool cũ không hỏng) — xem req_hw_ids."""
+    return req_hw_ids(body)[0]
+
+
+def _max_dev(rec):
+    """Số thiết bị tối đa của key (key cũ chưa có max_dev = KEY_DEV_DEFAULT)."""
+    try:
+        return max(1, int(rec.get("max_dev") or KEY_DEV_DEFAULT))
+    except (TypeError, ValueError):
+        return KEY_DEV_DEFAULT
+
+
+def _dev_find(devs, hw, alts=(), fresh=False):
+    """Khoá của thiết bị ĐÃ GẮN ứng với request, không có -> None. KHÔNG dùng IP.
+       1) mã chính hw trùng khoá thiết bị, hoặc trùng 1 mã phụ máy đó đã được học  -> đúng máy.
+       2) chỉ khi client báo fresh (máy vừa mất bộ nhớ nên không còn mã cũ): mã dự phòng alts trùng khoá / mã phụ -> nhận lại máy cũ.
+          Máy KHÁC (còn mã riêng của nó) không bao giờ được nhận nhầm bằng alts."""
+    if hw in devs:
+        return hw
+    for k, v in devs.items():
+        if hw in (v.get("alt") or ()):
+            return k
+    if fresh:
+        for a in alts:
+            if a in devs:
+                return a
+        for k, v in devs.items():
+            al = v.get("alt") or ()
+            if any(a in al for a in alts):
+                return k
+    return None
+
+
+def _dev_learn(dv, key, ids):
+    """Nhớ thêm mã phụ cho thiết bị đã khớp (để lần sau mất bộ nhớ / đổi công thức vẫn nhận ra máy). Trả True nếu có thay đổi."""
+    al = dv.get("alt")
+    if not isinstance(al, list):
+        al = dv["alt"] = []
+    ch = False
+    for i in ids:
+        if i and i != key and i not in al:
+            al.append(i)
+            ch = True
+    if len(al) > DEV_ALIAS_MAX:
+        del al[:-DEV_ALIAS_MAX]
+        ch = True
+    return ch
+
+
+def _dev_use(rec, hw, ip, ua, now, alts=(), fresh=False, bind=True):
+    """Dùng key trên thiết bị hw: đã gắn -> cập nhật "lần dùng gần nhất" (tối đa 1 lần / HWID_TOUCH_SEC) + học mã phụ;
+    chưa gắn -> gắn thêm nếu key còn chỗ (số thiết bị < max_dev) và bind=True. Gọi trong _kv_lock với rec lấy từ _kv_load().
+    IP chỉ được GHI LẠI cho admin xem, KHÔNG bao giờ dùng để chặn -> đổi mạng / đổi IP không ảnh hưởng.
+    Trả (ok, lỗi, changed): changed=True -> nơi gọi phải _kv_save."""
+    devs = rec.get("devs")
+    if not isinstance(devs, dict):
+        devs = rec["devs"] = {}
+    k = _dev_find(devs, hw, alts, fresh)
+    if k is not None:
+        dv = devs[k]
+        ch = _dev_learn(dv, k, [hw] if fresh else [hw, *alts])
+        if now - int(dv.get("last") or 0) >= HWID_TOUCH_SEC:
+            dv["last"], dv["ip"] = now, ip
+            rec["last"], rec["last_ip"] = now, ip
+            ch = True
+        return True, "", ch
+    if not bind:
+        return False, "thiet bi chua gan vao key", False
+    cap = _max_dev(rec)
+    if len(devs) >= cap:
+        return False, (f"Key đã đủ {cap} thiết bị — thiết bị này chưa được gắn với key (đổi mạng / đổi IP KHÔNG ảnh hưởng, chỉ máy khác mới bị chặn). "
+                       f"Nhờ admin reset / gỡ thiết bị cũ hoặc xin key có nhiều thiết bị hơn. Mã thiết bị của bạn: {hw[:8]}…{hw[-4:]}"), False
+    dv = devs[hw] = {"first": now, "last": now, "ip": ip, "ua": str(ua or "")[:80]}
+    if not fresh:
+        _dev_learn(dv, hw, alts)
+    rec["last"], rec["last_ip"] = now, ip
+    return True, "", True
+
+
+def _own_user_key(s, r):
+    """Admin phụ chỉ động được vào key NGƯỜI DÙNG do chính mình tạo; admin chính động được mọi key."""
+    return s["r"] == "main" or (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"])
+
+
 # ─ phiên đăng nhập admin: token ký HMAC (không lưu server, chạy được nhiều worker) ─
-def _tok_make(role, name, key="", ip=""):
-    p = {"r": role, "n": name, "k": key, "i": ip, "e": int(time.time()) + ADMIN_SESSION_SEC}
+def _tok_make(role, name, key="", hw=""):
+    p = {"r": role, "n": name, "k": key, "h": hw, "e": int(time.time()) + ADMIN_SESSION_SEC}
     raw = base64.urlsafe_b64encode(json.dumps(p, ensure_ascii=False).encode("utf-8")).decode().rstrip("=")
     return raw + "." + hmac.new(_secret_bytes(), raw.encode(), hashlib.sha256).hexdigest()
 
 
 def _tok_check():
     """Trả {"r","n","k"} nếu header X-Admin-Token hợp lệ, ngược lại None.
-    Admin phụ: key của họ còn tồn tại + còn hạn + key đang gắn ĐÚNG IP của phiên + request đến từ đúng IP đó
-    (admin chính reset IP / xóa key -> phiên cũ chết ngay)."""
+    Admin phụ: key của họ còn tồn tại + còn hạn + request đến từ ĐÚNG thiết bị đã đăng nhập (HWID chính hoặc mã phụ của cùng máy đó) + máy đó vẫn đang được gắn vào key
+    (admin chính reset / gỡ thiết bị / xóa key -> phiên cũ chết ngay). Mỗi request hợp lệ cập nhật "lần dùng gần nhất" (tối đa 1 lần / phút). Không xét IP."""
     t = request.headers.get("X-Admin-Token", "")
     try:
         raw, sig = t.split(".", 1)
@@ -2253,10 +2430,24 @@ def _tok_check():
         if p["r"] == "main":
             return {"r": "main", "n": ADMIN_MAIN_NAME, "k": ""}
         if p["r"] == "sub":
-            rec = _kv_load()["keys"].get(p["k"])
-            if (rec and rec.get("type") == "sub" and rec.get("owner") == p["n"] and rec["exp"] > time.time()
-                    and rec.get("ip") and rec.get("ip") == p.get("i") == client_ip()):
-                return {"r": "sub", "n": p["n"], "k": p["k"]}
+            hw, alts, hfresh = req_hw_ids()
+            if not hw:
+                return None
+            now = int(time.time())
+            with _kv_lock:
+                d = _kv_load()
+                rec = d["keys"].get(p["k"])
+                if rec and rec.get("type") == "sub" and rec.get("owner") == p["n"] and rec["exp"] > now:
+                    devs = rec.get("devs") if isinstance(rec.get("devs"), dict) else {}
+                    kr = _dev_find(devs, hw, alts, hfresh)                  # thiết bị đang gọi
+                    if kr is not None and kr == _dev_find(devs, p.get("h", "")):      # = thiết bị đã đăng nhập tạo ra phiên này
+                        _, _, ch = _dev_use(rec, hw, client_ip(), request.headers.get("User-Agent", ""), now, alts, hfresh, bind=False)
+                        if ch:
+                            try:
+                                _kv_save(d)
+                            except OSError:
+                                pass
+                        return {"r": "sub", "n": p["n"], "k": p["k"]}
     except Exception:  # noqa: BLE001
         pass
     return None
@@ -2291,17 +2482,32 @@ def _rl_reset(ip):
         _rl.pop(ip, None)
 
 
-def _check_user_key(k):
-    """(record, lỗi, đã_tồn_tại). Chỉ key loại 'user' còn hạn mới qua."""
+def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False):
+    """(record, lỗi, đã_tồn_tại). Chỉ key loại 'user' còn hạn mới qua. Có HWID -> kiểm tra / gắn thiết bị (đủ chỗ mới gắn thêm) và ghi "lần dùng gần nhất";
+    không có HWID mà HWID_REQUIRED bật -> từ chối. `ip` chỉ để ghi lại, không dùng để chặn."""
     k = _norm_key(k)
     if not k:
         return None, "thieu key", False
-    r = _kv_load()["keys"].get(k)
-    if not r or r.get("type") != "user":
-        return None, "key khong hop le", False
-    if r["exp"] <= time.time():
-        return None, "key da het han", True
-    return r, "", True
+    with _kv_lock:
+        d = _kv_load()
+        r = d["keys"].get(k)
+        if not r or r.get("type") != "user":
+            return None, "key khong hop le", False
+        now = int(time.time())
+        if r["exp"] <= now:
+            return None, "key da het han", True
+        if hw:
+            ok, err, ch = _dev_use(r, hw, ip, ua, now, alts, fresh)
+            if not ok:
+                return None, err, True
+            if ch:
+                try:
+                    _kv_save(d)
+                except OSError:
+                    pass
+        elif HWID_REQUIRED:
+            return None, "Thiếu mã thiết bị (HWID) — gửi header X-HWID hoặc ?hwid= cùng key.", True
+        return r, "", True
 
 
 _GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predictlc79", "/api/prdictlc79", "/api/ips"}
@@ -2309,35 +2515,39 @@ _GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predictlc79", "/api/prd
 
 @app.before_request
 def _gate_key():
-    """KEY_GATE_API bật -> các endpoint dữ liệu đòi key người dùng hợp lệ."""
+    """KEY_GATE_API bật -> các endpoint dữ liệu đòi key người dùng hợp lệ + HWID thiết bị (còn chỗ thì tự gắn)."""
     p = request.path
     if not KEY_GATE_API or request.method == "OPTIONS" or not (p in _GATED_EXACT or p.startswith("/api/lc79/ws")):
         return None
     k = request.headers.get("X-User-Key", "")
     if not k and p != "/api/ips":                      # /api/ips đã dùng ?key= cho admin key cũ -> chỉ nhận header
         k = request.args.get("key", "")
-    rec, err, _ = _check_user_key(k)
+    hw, alts, hfresh = req_hw_ids()
+    rec, err, _ = _check_user_key(k, hw, client_ip(), request.headers.get("User-Agent", ""), alts, hfresh)
     if rec:
         return None
-    return _json({"ok": False, "can_key": True, "loi": err + " (gui header X-User-Key hoac ?key=)"}, 401)
+    hint = " (gui header X-User-Key hoac ?key=)" if err in ("thieu key", "key khong hop le") else ""
+    return _json({"ok": False, "can_key": True, "dev_locked": err.startswith("Key đã đủ"), "loi": err + hint}, 401)
 
 
 @app.route("/api/key/check", methods=["GET", "POST"])
 def api_key_check():
-    """Tool / panel xác thực key người dùng: POST {"key": "..."} hoặc GET ?key=..."""
+    """Tool / panel xác thực key người dùng + gắn thiết bị: POST {"key": "...", "hwid": "..."} hoặc GET ?key=...&hwid=... (hoặc header X-User-Key / X-HWID)."""
     ip = client_ip()
     w = _rl_wait(ip)
     if w:
         return _json({"ok": False, "loi": f"nhap sai qua nhieu, thu lai sau {w}s"}, 429)
     b = request.get_json(silent=True) or {}
     k = b.get("key") or request.headers.get("X-User-Key") or request.args.get("key", "")
-    rec, err, exists = _check_user_key(k)
+    hw, alts, hfresh = req_hw_ids(b)
+    rec, err, exists = _check_user_key(k, hw, ip, request.headers.get("User-Agent", ""), alts, hfresh)
     if not rec:
         if not exists:
             _rl_fail(ip)
-        return _json({"ok": False, "loi": err}, 401)
+        return _json({"ok": False, "dev_locked": err.startswith("Key đã đủ"), "loi": err}, 401)
     _rl_reset(ip)
-    return _json({"ok": True, "het_han": rec["exp"], "con_lai_giay": max(0, int(rec["exp"] - time.time()))})
+    return _json({"ok": True, "het_han": rec["exp"], "con_lai_giay": max(0, int(rec["exp"] - time.time())),
+                  "so_dev": len(rec.get("devs") or {}), "max_dev": _max_dev(rec)})
 
 
 @app.route("/api/admin")
@@ -2349,9 +2559,10 @@ def api_admin_page():
 
 @app.route("/api/admin/login", methods=["POST"])
 def api_admin_login():
-    """Đăng nhập admin bằng MỘT ô key: {"key": "..."} (+ "username" khi key admin phụ chưa ai dùng). Server tự phân loại:
-       key admin phụ · key người dùng (không vào được trang admin) · mật khẩu admin chính · không tồn tại.
-       Trả luôn "kind": main | sub | user | none | locked. (Còn nhận cả {"password"} cũ cho tool đã viết từ trước.)"""
+    """Đăng nhập admin bằng MỘT ô key: {"key": "..."} (+ "username" khi key admin phụ chưa ai dùng) + HWID thiết bị (header X-HWID hoặc "hwid" trong body).
+       Server tự phân loại: key admin phụ · key người dùng (không vào được trang admin) · mật khẩu admin chính · không tồn tại.
+       Trả luôn "kind": main | sub | user | none | locked. (Còn nhận cả {"password"} cũ cho tool đã viết từ trước.)
+       Admin chính (mật khẩu) không cần HWID. Key admin phụ: gắn thêm thiết bị nếu còn chỗ (max_dev), đủ chỗ rồi -> dev_locked."""
     ip = client_ip()
     w = _rl_wait(ip)
     if w:
@@ -2359,6 +2570,8 @@ def api_admin_login():
     b = request.get_json(silent=True) or {}
     raw = str(b.get("key") or b.get("password") or "")[:128]
     k = _norm_key(raw)
+    hw, alts, hfresh = req_hw_ids(b)
+    ua = request.headers.get("User-Agent", "")
     now = int(time.time())
     with _kv_lock:
         d = _kv_load()
@@ -2368,32 +2581,32 @@ def api_admin_login():
                 return _json({"ok": False, "kind": rec.get("type"), "loi": "Key này đã hết hạn."}, 403)
             if rec.get("type") != "sub":
                 return _json({"ok": False, "kind": "user", "loi": "Key hợp lệ nhưng chỉ dùng để vào tool ở panel /api/html, không phải key admin."}, 403)
-            if not rec.get("owner"):                     # key admin phụ chưa ai dùng -> nhập username, gắn username + IP
+            if not hw:
+                return _json({"ok": False, "kind": "sub", "loi": "Thiếu mã thiết bị (HWID) — hãy mở trang /api/admin bằng trình duyệt, hoặc tool phải gửi header X-HWID."}, 400)
+            fresh = False
+            if not rec.get("owner"):                     # key admin phụ chưa ai dùng -> nhập username, gắn username + thiết bị đầu tiên
                 if not str(b.get("username") or "").strip():
-                    return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Nhập username để kích hoạt. Key sẽ gắn với username này và IP hiện tại của bạn."})
+                    return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Nhập username để kích hoạt. Key sẽ gắn với username này và thiết bị (HWID) bạn đang dùng."})
                 name = _clean_username(b.get("username"))
                 if not name:
                     return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Username 2-20 ký tự (chữ, số, dấu cách . _ -), không dùng 'admin'."}, 400)
                 if any(r.get("type") == "sub" and str(r.get("owner") or "").lower() == name.lower() for r in d["keys"].values()):
                     return _json({"ok": False, "kind": "sub", "need_username": True, "loi": "Username này đã có người dùng, chọn tên khác."}, 400)
-                rec["owner"], rec["bound"], rec["ip"], rec["ip_at"] = name, now, ip, now
-                try:
-                    _kv_save(d)
-                except OSError as e:
-                    return _json({"ok": False, "kind": "sub", "loi": f"Không ghi được file key: {e}"}, 500)
-            elif not rec.get("ip"):                      # key cũ (trước bản này) hoặc vừa bị admin chính reset IP -> gắn IP hiện tại
-                rec["ip"], rec["ip_at"] = ip, now
-                try:
-                    _kv_save(d)
-                except OSError as e:
-                    return _json({"ok": False, "kind": "sub", "loi": f"Không ghi được file key: {e}"}, 500)
-            elif rec["ip"] != ip:                        # đã gắn IP khác -> chặn tới khi admin chính reset
+                rec["owner"], rec["bound"] = name, now
+                fresh = True
+            ok, err, ch = _dev_use(rec, hw, ip, ua, now, alts, hfresh)  # thiết bị đã gắn -> cho vào · chưa gắn mà còn chỗ -> gắn thêm · hết chỗ -> chặn tới khi admin chính reset
+            if not ok:
                 _rl_fail(ip)
-                return _json({"ok": False, "kind": "sub", "ip_locked": True,
-                              "loi": "Key này đã gắn với một IP khác nên không đăng nhập được ở thiết bị này. Nhờ admin chính reset IP rồi đăng nhập lại."}, 403)
+                return _json({"ok": False, "kind": "sub", "dev_locked": True, "loi": err}, 403)
+            if ch or fresh:
+                try:
+                    _kv_save(d)
+                except OSError as e:
+                    return _json({"ok": False, "kind": "sub", "loi": f"Không ghi được file key: {e}"}, 500)
             name = rec["owner"]
             _rl_reset(ip)
-            return _json({"ok": True, "kind": "sub", "role": "sub", "name": name, "token": _tok_make("sub", name, k, ip)})
+            return _json({"ok": True, "kind": "sub", "role": "sub", "name": name, "dev": len(rec.get("devs") or {}), "max_dev": _max_dev(rec),
+                          "token": _tok_make("sub", name, k, hw)})
     if raw and hmac.compare_digest(_pw_hash(raw), ADMIN_PASS_HASH):   # không phải key trong file -> thử mật khẩu admin chính
         _rl_reset(ip)
         return _json({"ok": True, "kind": "main", "role": "main", "name": ADMIN_MAIN_NAME, "token": _tok_make("main", ADMIN_MAIN_NAME)})
@@ -2419,14 +2632,17 @@ def api_admin_keys():
             made[r.get("by_name")] = made.get(r.get("by_name"), 0) + 1
     rows = []
     for k, r in keys.items():
-        if s["r"] != "main" and not (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"]):
+        if s["r"] != "main" and not _own_user_key(s, r):
             continue                                    # admin phụ chỉ thấy key người dùng do chính mình tạo
+        devs = r.get("devs") if isinstance(r.get("devs"), dict) else {}
+        tb = sorted(({"hw": h, "lan_dau": v.get("first"), "gan_nhat": v.get("last"), "ip": v.get("ip"), "ua": v.get("ua", "")} for h, v in devs.items()),
+                    key=lambda x: -(x["gan_nhat"] or 0))
         rows.append({"key": k, "loai": r.get("type"), "nguoi_tao": r.get("by_name"), "tao_luc": r.get("created"), "het_han": r["exp"],
                      "con_lai": max(0, int(r["exp"] - now)), "het": r["exp"] <= now, "ngay": r.get("days"), "ghi_chu": r.get("note", ""),
                      "dung_boi": r.get("owner"), "da_tao": made.get(r.get("owner"), 0) if r.get("type") == "sub" else None,
-                     "ip": r.get("ip") if s["r"] == "main" and r.get("type") == "sub" else None, "ip_luc": r.get("ip_at") if s["r"] == "main" else None})
+                     "max_dev": _max_dev(r), "so_dev": len(devs), "dung_luc": r.get("last"), "ip_cuoi": r.get("last_ip"), "thiet_bi": tb})
     rows.sort(key=lambda x: -(x["tao_luc"] or 0))
-    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "keys": rows})
+    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "so_tb": list(KEY_DEV_OPTIONS), "keys": rows})
 
 
 @app.route("/api/admin/keys/create", methods=["POST"])
@@ -2445,6 +2661,12 @@ def api_admin_keys_create():
     if days not in KEY_DAYS:
         return _json({"ok": False, "loi": "han key khong hop le"}, 400)
     try:
+        mdev = int(b.get("max_dev", KEY_DEV_DEFAULT))
+    except (TypeError, ValueError):
+        mdev = 0
+    if mdev not in KEY_DEV_OPTIONS:
+        return _json({"ok": False, "loi": "so thiet bi khong hop le"}, 400)
+    try:
         cnt = max(1, min(int(b.get("count", 1)), 20))
     except (TypeError, ValueError):
         cnt = 1
@@ -2458,65 +2680,96 @@ def api_admin_keys_create():
         for _ in range(cnt):
             k = _new_key("AD" if kind == "sub" else "SV", d["keys"])
             d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": now + days * 86400,
-                            "days": days, "note": note, "owner": None}
+                            "days": days, "note": note, "owner": None, "max_dev": mdev, "devs": {}}
             made.append(k)
         try:
             _kv_save(d)
         except OSError as e:
             return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
-    return _json({"ok": True, "keys": made, "het_han": now + days * 86400})
+    return _json({"ok": True, "keys": made, "het_han": now + days * 86400, "max_dev": mdev})
 
 
 @app.route("/api/admin/keys/delete", methods=["POST"])
 def api_admin_keys_delete():
+    """Xóa 1 key {"key": "..."} · NHIỀU key {"keys": ["...", ...]} (admin phụ: key không phải của mình bị bỏ qua, đếm ở "bo_qua") · {"expired": true} (admin chính: dọn key hết hạn)."""
     s, err = _need_admin()
     if err:
         return err
     b = request.get_json(silent=True) or {}
     now = time.time()
+    skipped = 0
     with _kv_lock:
         d = _kv_load()
         keys = d["keys"]
         if b.get("expired") and s["r"] == "main":        # dọn mọi key hết hạn
             dead = [k for k, r in keys.items() if r["exp"] <= now]
         else:
-            k = _norm_key(b.get("key"))
-            r = keys.get(k)
-            if not r:
-                return _json({"ok": False, "loi": "khong thay key"}, 404)
-            if s["r"] != "main" and not (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"]):
-                return _json({"ok": False, "loi": "chi xoa duoc key do ban tao"}, 403)
-            dead = [k]
+            lst = b.get("keys") if isinstance(b.get("keys"), list) else [b.get("key")]
+            want = list(dict.fromkeys(x for x in (_norm_key(v) for v in lst[:KEY_MAX_TOTAL]) if x))
+            if not want:
+                return _json({"ok": False, "loi": "chua chon key nao"}, 400)
+            dead, miss, denied = [], 0, 0
+            for k in want:
+                r = keys.get(k)
+                if not r:
+                    miss += 1
+                elif not _own_user_key(s, r):
+                    denied += 1
+                else:
+                    dead.append(k)
+            skipped = miss + denied
+            if not dead:
+                return (_json({"ok": False, "loi": "chi xoa duoc key do ban tao"}, 403) if denied
+                        else _json({"ok": False, "loi": "khong thay key"}, 404))
         for k in dead:
             keys.pop(k, None)
         try:
             _kv_save(d)
         except OSError as e:
             return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
-    return _json({"ok": True, "da_xoa": len(dead)})
+    return _json({"ok": True, "da_xoa": len(dead), "bo_qua": skipped})
 
 
-@app.route("/api/admin/keys/reset-ip", methods=["POST"])
-def api_admin_keys_reset_ip():
-    """CHỈ admin chính: gỡ IP đang gắn của 1 key admin phụ (giữ nguyên username). Lần đăng nhập kế tiếp (từ bất kỳ IP nào) sẽ gắn IP mới;
-    phiên admin phụ đang mở ở IP cũ chết ngay vì _tok_check đòi key phải đang gắn đúng IP của phiên."""
+@app.route("/api/admin/keys/reset-dev", methods=["POST"])
+@app.route("/api/admin/keys/reset-ip", methods=["POST"])    # tên cũ — giữ để tool đã viết từ trước không hỏng
+def api_admin_keys_reset_dev():
+    """Gỡ thiết bị đã gắn của 1 key: {"key": "..."} = gỡ TOÀN BỘ (máy nào dùng key trước sẽ được gắn lại) · thêm "hwid" = chỉ gỡ thiết bị đó.
+    Admin chính: mọi key · admin phụ: key người dùng do mình tạo. Phiên admin phụ chạy trên thiết bị bị gỡ chết ngay vì _tok_check đòi HWID vẫn đang gắn."""
     s, err = _need_admin()
     if err:
         return err
-    if s["r"] != "main":
-        return _json({"ok": False, "loi": "chi admin chinh moi reset duoc IP"}, 403)
-    k = _norm_key((request.get_json(silent=True) or {}).get("key"))
+    b = request.get_json(silent=True) or {}
+    k = _norm_key(b.get("key"))
+    hw = ""
+    if b.get("hwid"):
+        hw = _norm_hwid(b.get("hwid"))
+        if not hw:
+            return _json({"ok": False, "loi": "hwid khong hop le"}, 400)
     with _kv_lock:
         d = _kv_load()
         rec = d["keys"].get(k)
-        if not rec or rec.get("type") != "sub":
-            return _json({"ok": False, "loi": "khong thay key admin phu"}, 404)
-        rec["ip"], rec["ip_at"], rec["ip_reset"] = None, None, int(time.time())
+        if not rec:
+            return _json({"ok": False, "loi": "khong thay key"}, 404)
+        if not _own_user_key(s, rec):
+            return _json({"ok": False, "loi": "chi reset duoc key do ban tao"}, 403)
+        devs = rec.get("devs") if isinstance(rec.get("devs"), dict) else {}
+        if hw:
+            if hw not in devs:
+                return _json({"ok": False, "loi": "khong thay thiet bi nay trong key"}, 404)
+            devs.pop(hw)
+            n = 1
+        else:
+            n = len(devs)
+            devs = {}
+        rec["devs"] = devs
+        rec.pop("ip", None)                              # dọn trường IP của bản cũ (gắn theo IP mạng)
+        rec.pop("ip_at", None)
+        rec["dev_reset"] = int(time.time())
         try:
             _kv_save(d)
         except OSError as e:
             return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
-    return _json({"ok": True})
+    return _json({"ok": True, "da_go": n})
 
 
 ADMIN_HTML = r"""<!doctype html>
@@ -2599,6 +2852,12 @@ input.f:focus{outline:0;border-color:var(--au)}
 .bd.sb{color:var(--vi);border-color:rgba(163,149,255,.5)}.bd.us{color:var(--ok);border-color:rgba(53,214,160,.45)}.bd.ex{color:var(--no);border-color:rgba(255,107,125,.5)}
 .bar{height:4px;border-radius:4px;background:var(--bg);margin-top:6px;overflow:hidden}.bar i{display:block;height:100%;border-radius:4px;background:var(--ok)}.bar i.lo{background:var(--au)}.bar i.xx{background:var(--no)}
 .ipb{display:inline-flex;align-items:center;gap:6px;margin-top:3px;padding:2px 8px;border-radius:8px;background:var(--bg);border:1px solid var(--ln);font-size:12.5px}
+.sel{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 2px;border-bottom:1px solid var(--ln);font-size:13.5px}.sel .sp{flex:1}
+.ck{display:inline-flex;align-items:center;cursor:pointer;gap:8px}.ck input{width:18px;height:18px;margin:0;accent-color:var(--au);cursor:pointer}
+.dvb{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:99px;border:1px solid var(--ln);font-size:12.5px;color:var(--mu)}.dvb.full{color:var(--au);border-color:rgba(242,179,61,.5)}
+.dv{grid-column:1/-1;margin-top:-2px}.dv summary{cursor:pointer;width:max-content}.dv summary:hover{color:var(--tx)}
+.dvr{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;padding:7px 10px;margin-top:6px;border-radius:10px;background:var(--bg);border:1px solid var(--ln)}.dvr .mono{font-size:13px}.dvr .mu{flex:1 1 220px}
+.dvr .gh{height:30px;padding:0 10px}
 .ra{display:flex;gap:6px;justify-content:flex-end}
 .ib{width:36px;height:36px;padding:0;justify-content:center}
 .emp{padding:34px 0 20px;text-align:center;color:var(--mu)}
@@ -2615,28 +2874,31 @@ dialog p{margin:0 0 18px}dialog form{margin:0}.da{display:flex;gap:8px;justify-c
 <dialog id="dlg"><form method="dialog"><p id="dm"></p><div class="da"><button class="gh" value="no">Hủy</button><button class="go dgb" value="ok" id="dok">Xác nhận</button></div></form></dialog>
 <div id="ts"></div>
 <script>
+/*__HWID_JS__*/
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=t=>t?new Date(t*1000).toLocaleString('vi-VN'):'';
 const left=s=>{if(s<=0)return 'đã hết hạn';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return 'còn '+(d?d+' ngày '+h+' giờ':h?h+' giờ '+m+' phút':m+' phút')};
+const ago=t=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));return s<60?'vừa xong':s<3600?Math.floor(s/60)+' phút trước':s<86400?Math.floor(s/3600)+' giờ trước':Math.floor(s/86400)+' ngày trước'};
+const shortHw=h=>String(h).length>14?String(h).slice(0,8)+'…'+String(h).slice(-4):String(h);
 const DAYLBL={1:'1 ngày',2:'2 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
 const ic=p=>'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
 const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/>'),lock:ic('<path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="10" rx="2"/>'),
  copy:ic('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),del:ic('<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
  rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
- rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
+ rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),dev:ic('<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
 let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
-let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1};
+let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1},DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
 function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}
 async function api(p,body){
-  const o={headers:{'Content-Type':'application/json'}};
+  const o={headers:Object.assign({'Content-Type':'application/json'},HWID_HDR)};
   if(S)o.headers['X-Admin-Token']=S.token;
   if(body!==undefined){o.method='POST';o.body=JSON.stringify(body)}
   let r,j={};
   try{r=await fetch(p,o);j=await r.json()}catch(e){j={ok:false,loi:'Không kết nối được server'}}
-  if(r&&r.status===401&&S){S=null;sessionStorage.removeItem('as');renderLogin('Phiên đã hết hạn hoặc IP đã thay đổi — nhập key lại để vào.')}
+  if(r&&r.status===401&&S){S=null;sessionStorage.removeItem('as');renderLogin('Phiên đã hết hạn hoặc thiết bị này đã bị gỡ khỏi key — nhập key lại để vào.')}
   return j;
 }
 /* ── ĐĂNG NHẬP: 1 ô key, server tự nhận diện ── */
@@ -2658,23 +2920,23 @@ async function login(){
   const j=await api('/api/admin/login',body);
   busy=false;b.disabled=false;b.textContent='Vào';
   if(j.ok){
-    showRes('good',j.role==='main'?'Nhận diện: Admin chính':'Nhận diện: Admin phụ · '+j.name,j.role==='sub'?'Key này được gắn với IP hiện tại của bạn.':'Đang mở bảng quản trị…');
+    showRes('good',j.role==='main'?'Nhận diện: Admin chính':'Nhận diện: Admin phụ · '+j.name,j.role==='sub'?'Thiết bị này đã gắn với key ('+j.dev+'/'+j.max_dev+' thiết bị).':'Đang mở bảng quản trị…');
     await sleep(650);S={token:j.token,role:j.role,name:j.name};sessionStorage.setItem('as',JSON.stringify(S));need=false;await loadKeys();return}
   if(j.need_username){need=true;$('#unw').hidden=false;showRes('warn','Nhận diện: key admin phụ mới',j.loi||'');$('#un').focus();return}
-  if(j.ip_locked)return showRes('bad','Key đã gắn với IP khác',j.loi);
+  if(j.dev_locked)return showRes('bad','Key đã đủ số thiết bị',j.loi);
   const t={user:['warn','Đây là key người dùng'],none:['bad','Không tìm thấy key này'],locked:['bad','Tạm khóa vì nhập sai nhiều lần']}[j.kind]||['bad','Không vào được'];
   showRes(t[0],t[1],j.loi||'');
 }
 /* ── BẢNG ĐIỀU KHIỂN ── */
 async function loadKeys(){
   const j=await api('/api/admin/keys');if(!S)return;
-  if(j.ok){KEYS=j.keys;DAYS=j.ngay||DAYS}
+  if(j.ok){KEYS=j.keys;DAYS=j.ngay||DAYS;DEVO=j.so_tb||DEVO;const have=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>have.has(k)))}
   paint();
 }
 const isMain=()=>S&&S.role==='main';
 function stats(){
   const live=KEYS.filter(r=>!r.het).length,a=[[KEYS.length,isMain()?'Tổng key':'Key của bạn'],[live,'Còn hạn'],[KEYS.length-live,'Hết hạn']];
-  if(isMain()){const sb=KEYS.filter(r=>r.loai==='sub');a.push([sb.length,'Key admin phụ'],[sb.filter(r=>r.ip).length,'Đã gắn IP'])}
+  if(isMain()){const sb=KEYS.filter(r=>r.loai==='sub');a.push([sb.length,'Key admin phụ'],[KEYS.reduce((n,r)=>n+r.so_dev,0),'Thiết bị đang gắn'])}
   return a.map(([n,l])=>`<div><b>${n}</b><span>${l}</span></div>`).join('');
 }
 function renderDash(){
@@ -2684,12 +2946,13 @@ function renderDash(){
   <section class="pn"><h2>Tạo key mới</h2>
   ${m?`<div class="seg" id="ct"><button data-t="user" class="on">Key người dùng</button><button data-t="sub">Key admin phụ</button></div>`:''}
   <div class="lb">Thời hạn</div><div class="pills" id="cd">${DAYS.map(d=>`<button data-d="${d}" class="${d===CF.days?'on':''}">${DAYLBL[d]||d+' ngày'}</button>`).join('')}</div>
+  <div class="lb">Số thiết bị tối đa mỗi key <span class="mu s">(1 key dùng được trên bấy nhiêu máy)</span></div><div class="pills" id="cv">${DEVO.map(v=>`<button data-v="${v}" class="${v===CF.dev?'on':''}">${v} thiết bị</button>`).join('')}</div>
   <div class="fr"><div><div class="lb">Số lượng</div><div class="step"><button data-n="-1" aria-label="Giảm">−</button><b id="cn">${CF.n}</b><button data-n="1" aria-label="Tăng">+</button></div></div>
   <div class="gr"><div class="lb">Ghi chú (không bắt buộc)</div><input class="f" id="cnote" maxlength="40" placeholder="Ví dụ: khách A"></div></div>
   <button class="go mk" id="mk">Tạo key</button><div id="newk"></div></section>
   <section class="pn"><div class="hd"><h2>Danh sách key <span class="mu s" id="cnt"></span></h2><div class="act"><button class="gh" id="rf">${I.rf} Làm mới</button>${m?`<button class="gh dg" id="clean">${I.del} Dọn key hết hạn</button>`:''}</div></div>
   <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
-  <div id="tbl"></div></section>`;
+  <div class="sel" id="selbar"></div><div id="tbl"></div></section>`;
 }
 function paint(){
   if(!$('#tbl'))renderDash();
@@ -2699,21 +2962,37 @@ function renderNew(){
   const el=$('#newk');if(!el)return;
   el.innerHTML=NEW.length?`<div class="newk">${NEW.map(k=>`<div><span class="mono">${esc(k)}</span><button class="gh" data-copy="${esc(k)}">${I.copy} Sao chép</button></div>`).join('')}${NEW.length>1?`<div><span class="mu">Cả ${NEW.length} key</span><button class="gh" data-copy="${esc(NEW.join('\n'))}">${I.copy} Sao chép hết</button></div>`:''}</div>`:'';
 }
+function useBox(r,noLast){
+  return `<div class="s" style="margin-top:4px"><span class="dvb ${r.so_dev>=r.max_dev?'full':''}">${I.dev.replace(/18/g,'14')} ${r.so_dev}/${r.max_dev} thiết bị</span></div>`+(noLast?'':(r.dung_luc?`<div class="s">Dùng gần nhất: ${esc(fmt(r.dung_luc))} <span class="mu">· ${esc(ago(r.dung_luc))}${r.ip_cuoi?' · IP '+esc(r.ip_cuoi):''}</span></div>`:`<div class="s mu">Chưa dùng lần nào</div>`));
+}
+function devList(r){
+  if(!r.thiet_bi||!r.thiet_bi.length)return '';
+  return `<details class="dv" data-k="${esc(r.key)}"${OPEN.has(r.key)?' open':''}><summary class="s mu">Xem ${r.thiet_bi.length} thiết bị đã gắn</summary>${r.thiet_bi.map(t=>`<div class="dvr"><span class="mono" title="${esc(t.hw)}">${esc(shortHw(t.hw))}</span><span class="mu s">IP ${esc(t.ip||'?')} · gắn ${esc(fmt(t.lan_dau))} · dùng gần nhất ${esc(fmt(t.gan_nhat))} (${esc(ago(t.gan_nhat))})</span><button class="gh dg" data-rd="${esc(r.key)}" data-hw="${esc(t.hw)}" title="Gỡ thiết bị này khỏi key">Gỡ</button></div>`).join('')}</details>`;
+}
 function row(r){
   const m=isMain(),sub=r.loai==='sub',pct=r.ngay?Math.max(0,Math.min(100,r.con_lai/(r.ngay*86400)*100)):0;
   let who;
-  if(sub&&m){who=r.dung_boi?`<div><b>${esc(r.dung_boi)}</b> <span class="mu s">· đã tạo ${r.da_tao} key</span></div>`+(r.ip?`<div class="ipb mono">${I.lock}${esc(r.ip)}</div><div class="mu s">gắn lúc ${esc(fmt(r.ip_luc))}</div>`:`<div class="mu s">Chưa gắn IP — gắn ở lần đăng nhập tới</div>`):`<span class="mu">Chưa ai dùng</span>`}
-  else who=`<div class="mu s">${m?'Tạo bởi '+esc(r.nguoi_tao||''):''}</div><div>${esc(r.ghi_chu||'')}</div>`;
-  return `<div class="rw"><div><div class="kk"><span class="mono">${esc(r.key)}</span><span class="bd ${sub?'sb':'us'}">${sub?'admin phụ':'người dùng'}</span>${r.het?'<span class="bd ex">hết hạn</span>':''}</div></div>
+  if(sub&&m)who=(r.dung_boi?`<div><b>${esc(r.dung_boi)}</b> <span class="mu s">· đã tạo ${r.da_tao} key</span></div>`:`<span class="mu">Chưa ai kích hoạt</span>`)+useBox(r,!r.dung_boi);
+  else who=`<div class="mu s">${m?'Tạo bởi '+esc(r.nguoi_tao||''):''}</div><div>${esc(r.ghi_chu||'')}</div>`+useBox(r);
+  return `<div class="rw"><div><div class="kk"><label class="ck" title="Chọn để xóa nhiều key"><input type="checkbox" data-sel="${esc(r.key)}"${SEL.has(r.key)?' checked':''}></label><span class="mono">${esc(r.key)}</span><span class="bd ${sub?'sb':'us'}">${sub?'admin phụ':'người dùng'}</span>${r.het?'<span class="bd ex">hết hạn</span>':''}</div></div>
   <div><div class="s">${esc(fmt(r.het_han))}</div><div class="s ${r.het?'':'mu'}" style="${r.het?'color:var(--no)':''}">${esc(left(r.con_lai))}${r.ngay?' · gói '+esc(DAYLBL[r.ngay]||r.ngay+' ngày'):''}</div><div class="bar"><i class="${r.het?'xx':pct<20?'lo':''}" style="width:${pct}%"></i></div></div>
   <div>${who}</div>
-  <div class="ra"><button class="gh ib" data-copy="${esc(r.key)}" title="Sao chép" aria-label="Sao chép">${I.copy}</button>${m&&sub&&r.ip?`<button class="gh ib" data-rs="${esc(r.key)}" data-nm="${esc(r.dung_boi)}" title="Reset IP" aria-label="Reset IP">${I.rs}</button>`:''}<button class="gh dg ib" data-del="${esc(r.key)}" title="Xóa" aria-label="Xóa">${I.del}</button></div></div>`;
+  <div class="ra"><button class="gh ib" data-copy="${esc(r.key)}" title="Sao chép" aria-label="Sao chép">${I.copy}</button>${r.so_dev?`<button class="gh ib" data-rs="${esc(r.key)}" title="Reset thiết bị" aria-label="Reset thiết bị">${I.rs}</button>`:''}<button class="gh dg ib" data-del="${esc(r.key)}" title="Xóa" aria-label="Xóa">${I.del}</button></div>${devList(r)}</div>`;
+}
+function visible(){
+  const q=(F.q||'').toLowerCase();
+  return KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip_cuoi].join(' ').toLowerCase().includes(q)));
+}
+function renderSel(){
+  const el=$('#selbar');if(!el)return;
+  const vis=visible(),n=SEL.size,all=vis.length>0&&vis.every(r=>SEL.has(r.key));
+  el.innerHTML=`<label class="ck"><input type="checkbox" id="selall"${all?' checked':''}${vis.length?'':' disabled'}><span>Chọn tất cả (${vis.length})</span></label><span class="mu">${n?'Đã chọn <b style="color:var(--tx)">'+n+'</b> key':'Tích ô vuông ở từng key để chọn nhiều key rồi xóa một lượt'}</span><div class="sp"></div>${n?`<button class="gh" id="selclr">${I.x} Bỏ chọn</button><button class="gh dg" id="bulk" style="color:var(--no);border-color:var(--no)">${I.del} Xóa ${n} key đã chọn</button>`:''}`;
 }
 function renderTable(){
-  const q=(F.q||'').toLowerCase();
-  const rows=KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip].join(' ').toLowerCase().includes(q)));
+  const rows=visible();
   $('#cnt').textContent='('+rows.length+')';
   $('#tbl').innerHTML=rows.length?rows.map(row).join(''):'<div class="emp">'+(KEYS.length?'Không có key nào khớp bộ lọc.':'Chưa có key nào. Tạo key đầu tiên ở khung phía trên.')+'</div>';
+  renderSel();
 }
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;const d=b.dataset;
@@ -2724,21 +3003,36 @@ document.addEventListener('click',async e=>{
   if(d.copy!==undefined){try{await navigator.clipboard.writeText(d.copy);toast('Đã sao chép')}catch(x){prompt('Sao chép:',d.copy)}return}
   if(d.t&&b.parentNode.id==='ct'){CF.type=d.t;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));return}
   if(d.d){CF.days=+d.d;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));return}
+  if(d.v){CF.dev=+d.v;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));return}
+  if(b.id==='selclr'){SEL.clear();renderTable();return}
+  if(b.id==='bulk'){
+    const ks=[...SEL];if(!ks.length)return;
+    if(!await ask('Xóa '+ks.length+' key đã chọn ('+ks.slice(0,3).join(', ')+(ks.length>3?'…':'')+')? Người đang dùng các key này sẽ bị đăng xuất ngay.','Xóa '+ks.length+' key'))return;
+    const j=await api('/api/admin/keys/delete',{keys:ks});
+    if(j.ok){SEL.clear();NEW=NEW.filter(k=>!ks.includes(k));await loadKeys();toast('Đã xóa '+j.da_xoa+' key'+(j.bo_qua?' (bỏ qua '+j.bo_qua+')':''))}else toast(j.loi||'Lỗi',1);return}
   if(d.n){CF.n=Math.max(1,Math.min(20,CF.n+(+d.n)));$('#cn').textContent=CF.n;return}
   if(d.f){F.t=d.f;b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderTable();return}
   if(b.id==='mk'){
-    const j=await api('/api/admin/keys/create',{type:isMain()?CF.type:'user',days:CF.days,count:CF.n,note:$('#cnote').value});
+    const j=await api('/api/admin/keys/create',{type:isMain()?CF.type:'user',days:CF.days,count:CF.n,max_dev:CF.dev,note:$('#cnote').value});
     if(j.ok){NEW=j.keys;await loadKeys();toast('Đã tạo '+j.keys.length+' key')}else toast(j.loi||'Lỗi',1);return}
   if(d.del){if(!await ask('Xóa key '+d.del+'? Người đang dùng key này sẽ bị đăng xuất ngay.','Xóa key'))return;const j=await api('/api/admin/keys/delete',{key:d.del});if(j.ok){NEW=NEW.filter(k=>k!==d.del);await loadKeys();toast('Đã xóa key')}else toast(j.loi||'Lỗi',1);return}
-  if(d.rs){if(!await ask('Reset IP của '+d.nm+'? Key sẽ gắn lại với IP của lần đăng nhập kế tiếp, và phiên đang mở ở IP cũ bị đăng xuất.','Reset IP'))return;const j=await api('/api/admin/keys/reset-ip',{key:d.rs});if(j.ok){await loadKeys();toast('Đã reset IP')}else toast(j.loi||'Lỗi',1);return}
+  if(d.rs){if(!await ask('Reset TOÀN BỘ thiết bị đang gắn của key '+d.rs+'? Máy nào dùng key trước sẽ được gắn lại; phiên admin phụ đang mở trên các máy cũ bị đăng xuất.','Reset thiết bị'))return;const j=await api('/api/admin/keys/reset-dev',{key:d.rs});if(j.ok){await loadKeys();toast('Đã gỡ '+j.da_go+' thiết bị')}else toast(j.loi||'Lỗi',1);return}
+  if(d.rd){if(!await ask('Gỡ thiết bị '+shortHw(d.hw)+' khỏi key '+d.rd+'?','Gỡ thiết bị'))return;const j=await api('/api/admin/keys/reset-dev',{key:d.rd,hwid:d.hw});if(j.ok){await loadKeys();toast('Đã gỡ thiết bị')}else toast(j.loi||'Lỗi',1);return}
   if(b.id==='clean'){if(!await ask('Xóa toàn bộ key đã hết hạn?','Xóa hết'))return;const j=await api('/api/admin/keys/delete',{expired:true});if(j.ok){await loadKeys();toast('Đã xóa '+j.da_xoa+' key')}else toast(j.loi||'Lỗi',1)}
 });
 document.addEventListener('input',e=>{if(e.target.id==='fq'){F.q=e.target.value;renderTable()}});
+document.addEventListener('change',e=>{
+  const t=e.target;
+  if(t.dataset&&t.dataset.sel){t.checked?SEL.add(t.dataset.sel):SEL.delete(t.dataset.sel);renderSel();return}
+  if(t.id==='selall'){visible().forEach(r=>t.checked?SEL.add(r.key):SEL.delete(r.key));renderTable()}
+});
+document.addEventListener('toggle',e=>{const t=e.target;if(t.classList&&t.classList.contains('dv')){t.open?OPEN.add(t.dataset.k):OPEN.delete(t.dataset.k)}},true);
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['k','un'].includes(e.target.id))login()});
 setInterval(()=>{if(S&&$('#tbl'))loadKeys()},60000);
 if(S)loadKeys();else renderLogin();
 </script></body></html>
 """
+ADMIN_HTML = ADMIN_HTML.replace("/*__HWID_JS__*/", HWID_JS)
 
 
 @app.route("/api/ips")
@@ -2816,7 +3110,7 @@ def api_lc_ws_stop():
 
 @app.route("/api/html")
 def api_html():
-    page = PANEL_HTML.replace("__SHOW__", str(PANEL_DEFAULT_SHOW)).replace("__MAX__", str(HIST_MAX))
+    page = PANEL_HTML.replace("__SHOW__", str(PANEL_DEFAULT_SHOW)).replace("__MAX__", str(HIST_MAX)).replace("/*__HWID_JS__*/", HWID_JS)
     return Response(page, content_type="text/html; charset=utf-8")
 
 
@@ -2993,7 +3287,7 @@ def main():
     print(f"ZF SUN      ->  {'BAT' if ZF_ENABLED else 'TAT'} · xet {ZF_WINDOW} van gan nhat · |z| >= {ZF_Z} · toi thieu {ZF_MIN_GAMES} van · be rieng ZF {'BAT' if ZF_FLIP_FINAL else 'TAT'} · loai {list(ZF_EXCLUDE) or 'khong'} · giu lich su {HIST_KEEP} phien")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))
-    print(f"KEY/ADMIN   ->  trang admin /api/admin (1 o nhap key, tu nhan dien · key admin phu gan IP, admin chinh reset IP) · mat khau admin chinh {'tu env SUNVIW_MAIN_PASS' if _ENV_MAIN_PASS else 'tu hash mac dinh trong code (nen dat SUNVIW_MAIN_PASS)'} · bat key cho API {'BAT' if KEY_GATE_API else 'TAT'} · file key {KEYS_PATH}")
+    print(f"KEY/ADMIN   ->  trang admin /api/admin (1 o nhap key, tu nhan dien · moi key gan HWID thiet bi (nhieu thiet bi / key, admin chinh + admin phu deu chon duoc) · bat buoc HWID {'BAT' if HWID_REQUIRED else 'TAT'}) · mat khau admin chinh {'tu env SUNVIW_MAIN_PASS' if _ENV_MAIN_PASS else 'tu hash mac dinh trong code (nen dat SUNVIW_MAIN_PASS)'} · bat key cho API {'BAT' if KEY_GATE_API else 'TAT'} · file key {KEYS_PATH}")
     app.run(host=a.host, port=a.port, threaded=True)
 
 

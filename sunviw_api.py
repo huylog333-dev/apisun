@@ -11,6 +11,9 @@ Chạy:
     python sunviw_api.py --no-af              # TẮT AF của SUN (--af = bật · --af-low 37 / --af-high 63 = ngưỡng bẻ logic · --af-min 13 = số ván tối thiểu · --af-mode-window 7 / --af-mode-below 45 = bẻ theo WR chế độ · --af-flip / --af-no-flip = bẻ riêng AF)
                                               #           hoặc env SUNVIW_AF / SUNVIW_AF_LOW / SUNVIW_AF_HIGH / SUNVIW_AF_MIN / SUNVIW_AF_MODE_WINDOW / SUNVIW_AF_MODE_MIN / SUNVIW_AF_MODE_BELOW / SUNVIW_AF_MODE_FLIP (bước 3 bẻ chế độ, mặc định TẮT · --af-mode-flip / --af-no-mode-flip) / SUNVIW_AF_FLIP, hoặc sửa AF_*_DEFAULT ở khối "CONFIG AF"
     python sunviw_api.py --af-flip-ct         # CHỈ bẻ final của AF khi chế độ CAO/THẤP (chế độ ALL giữ nguyên; --af-no-flip-ct = tắt; hoặc SUNVIW_AF_FLIP_CT=1|0, hoặc sửa AF_FLIP_FINAL_CT_DEFAULT)
+    python sunviw_api.py --af-flip-cao        # CHỈ bẻ final của AF khi chế độ CAO (THẤP + ALL giữ nguyên; --af-no-flip-cao = tắt; hoặc SUNVIW_AF_FLIP_CAO=1|0, hoặc sửa AF_FLIP_FINAL_CAO_DEFAULT)
+    python sunviw_api.py --af-flip-thap       # CHỈ bẻ final của AF khi chế độ THẤP (CAO + ALL giữ nguyên; --af-no-flip-thap = tắt; hoặc SUNVIW_AF_FLIP_THAP=1|0, hoặc sửa AF_FLIP_FINAL_THAP_DEFAULT)
+                                              #   ⇒ TÁCH RIÊNG: vd theo final CAO nhưng bẻ final THẤP  =  --af-flip-thap (không bật --af-flip-cao). --af-flip-ct = bật CẢ CAO + THẤP (giữ như cũ)
     python sunviw_api.py --af-flip-all        # CHỈ bẻ final của AF khi chế độ ALL (CAO/THẤP giữ nguyên; --af-no-flip-all = tắt; hoặc SUNVIW_AF_FLIP_ALL=1|0, hoặc sửa AF_FLIP_FINAL_ALL_DEFAULT)
 
 Endpoint:
@@ -178,11 +181,14 @@ def _env_num(name, default, cast):
 #   AF_FLIP_FINAL_DEFAULT bẻ riêng kết quả AF (TÀI<->XỈU) ở MỌI chế độ (CAO · THẤP · ALL). Mặc định False vì AF đã tự bẻ; FLIP_FINAL chung KHÔNG áp lên ván do AF chốt.
 #   AF_FLIP_FINAL_CT_DEFAULT  True = CHỈ bẻ final khi AF đang ở chế độ CAO / THẤP · final của chế độ ALL GIỮ NGUYÊN (không bẻ).
 #   AF_FLIP_FINAL_ALL_DEFAULT True = CHỈ bẻ final khi AF đang ở chế độ ALL · final của chế độ CAO / THẤP GIỮ NGUYÊN (không bẻ).
+#   AF_FLIP_FINAL_CAO_DEFAULT  True = CHỈ bẻ final khi AF đang ở chế độ CAO  · THẤP + ALL GIỮ NGUYÊN.   ┐ TÁCH RIÊNG CAO / THẤP: vd muốn THEO final CAO nhưng BẺ final THẤP
+#   AF_FLIP_FINAL_THAP_DEFAULT True = CHỈ bẻ final khi AF đang ở chế độ THẤP · CAO + ALL GIỮ NGUYÊN.   ┘ -> CAO = False · THẤP = True (và _CT = False).
+#       AF_FLIP_FINAL_CT (cũ) = công tắc GỘP: True = bẻ cả CAO lẫn THẤP (tương đương bật _CAO + _THAP). Tất cả công tắc là phép HOẶC.
 #       Cả 3 công tắc (AF_FLIP_FINAL · _CT · _ALL) là phép HOẶC: ván thuộc chế độ nào có ÍT NHẤT 1 công tắc áp dụng thì bẻ ĐÚNG 1 lần (không bẻ đôi). Bật AF_FLIP_FINAL = bẻ hết, 2 công tắc kia khỏi cần.
 #       Chọn 1 trong 2 (_CT hoặc _ALL) để bẻ có chọn lọc; bật cả 2 = giống bật AF_FLIP_FINAL. Bẻ này nằm SAU 'bẻ chế độ' (bước 3) nên chỉ là lớp bẻ thêm của riêng bạn.
 #   Đổi mà không sửa file (ưu tiên: cờ dòng lệnh > biến môi trường > *_DEFAULT):
-#       env  : SUNVIW_AF=1|0 · SUNVIW_AF_LOW · SUNVIW_AF_HIGH · SUNVIW_AF_MIN · SUNVIW_AF_MODE_WINDOW · SUNVIW_AF_MODE_MIN · SUNVIW_AF_MODE_BELOW · SUNVIW_AF_MODE_FLIP=1|0 · SUNVIW_AF_FLIP=1|0 · SUNVIW_AF_FLIP_CT=1|0 · SUNVIW_AF_FLIP_ALL=1|0
-#       lệnh : --af / --no-af · --af-low X · --af-high X · --af-min N · --af-mode-window N · --af-mode-below X · --af-mode-flip / --af-no-mode-flip · --af-flip / --af-no-flip · --af-flip-ct / --af-no-flip-ct · --af-flip-all / --af-no-flip-all
+#       env  : SUNVIW_AF=1|0 · SUNVIW_AF_LOW · SUNVIW_AF_HIGH · SUNVIW_AF_MIN · SUNVIW_AF_MODE_WINDOW · SUNVIW_AF_MODE_MIN · SUNVIW_AF_MODE_BELOW · SUNVIW_AF_MODE_FLIP=1|0 · SUNVIW_AF_FLIP=1|0 · SUNVIW_AF_FLIP_CT=1|0 · SUNVIW_AF_FLIP_CAO=1|0 · SUNVIW_AF_FLIP_THAP=1|0 · SUNVIW_AF_FLIP_ALL=1|0
+#       lệnh : --af / --no-af · --af-low X · --af-high X · --af-min N · --af-mode-window N · --af-mode-below X · --af-mode-flip / --af-no-mode-flip · --af-flip / --af-no-flip · --af-flip-ct / --af-no-flip-ct · --af-flip-cao / --af-no-flip-cao · --af-flip-thap / --af-no-flip-thap · --af-flip-all / --af-no-flip-all
 AF_ENABLED_DEFAULT = True
 AF_FLIP_LOW_DEFAULT = 37
 AF_FLIP_HIGH_DEFAULT = 63
@@ -196,8 +202,8 @@ AF_FLIP_HIGH_DEFAULT = 63
 #                          lệnh --af-band / --af-no-band · --af-low-min X · --af-low-max X · --af-high-min X · --af-high-max X
 AF_FLIP_BAND_DEFAULT = True
 AF_FLIP_LOW_MIN_DEFAULT = 20
-AF_FLIP_LOW_MAX_DEFAULT = 37
-AF_FLIP_HIGH_MIN_DEFAULT = 65
+AF_FLIP_LOW_MAX_DEFAULT = 45
+AF_FLIP_HIGH_MIN_DEFAULT = 57
 AF_FLIP_HIGH_MAX_DEFAULT = 75
 # ── CHỈ LOGIC BỊ BẺ MỚI VÀO NHÓM CAO / THẤP (Bước 2) — AF_GROUP_FLIPPED_ONLY + AF_GROUP_NEED_MAJORITY ─────────────
 #   AF_GROUP_FLIPPED_ONLY_DEFAULT  BẬT (mặc định): CHỈ logic ĐÃ BỊ BẺ (WR nằm TRONG vùng bẻ ở khối trên) mới được xếp vào nhóm CAO / THẤP
@@ -218,6 +224,8 @@ AF_MODE_BELOW_DEFAULT = 45
 AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế độ): False = TẮT · True = BẬT
 AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
+AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
+AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
 AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
@@ -237,6 +245,8 @@ AF_MODE_BELOW = _env_num("SUNVIW_AF_MODE_BELOW", AF_MODE_BELOW_DEFAULT, float)
 AF_MODE_FLIP = _env_bool("SUNVIW_AF_MODE_FLIP", AF_MODE_FLIP_DEFAULT)            # bước 3: bẻ final theo WR chế độ
 AF_FLIP_FINAL = _env_bool("SUNVIW_AF_FLIP", AF_FLIP_FINAL_DEFAULT)
 AF_FLIP_FINAL_CT = _env_bool("SUNVIW_AF_FLIP_CT", AF_FLIP_FINAL_CT_DEFAULT)      # chỉ bẻ final khi chế độ CAO / THẤP
+AF_FLIP_FINAL_CAO = _env_bool("SUNVIW_AF_FLIP_CAO", AF_FLIP_FINAL_CAO_DEFAULT)    # chỉ bẻ final khi chế độ CAO
+AF_FLIP_FINAL_THAP = _env_bool("SUNVIW_AF_FLIP_THAP", AF_FLIP_FINAL_THAP_DEFAULT)  # chỉ bẻ final khi chế độ THẤP
 AF_FLIP_FINAL_ALL = _env_bool("SUNVIW_AF_FLIP_ALL", AF_FLIP_FINAL_ALL_DEFAULT)   # chỉ bẻ final khi chế độ ALL
 
 
@@ -385,6 +395,8 @@ class TableCfg:
     def __init__(self, name, values):
         self.name = name
         self.__dict__.update(values)
+        self.__dict__.setdefault("AF_FLIP_FINAL_CAO", False)    # công tắc bẻ final RIÊNG chế độ CAO (thiếu -> không bẻ)
+        self.__dict__.setdefault("AF_FLIP_FINAL_THAP", False)   # công tắc bẻ final RIÊNG chế độ THẤP (thiếu -> không bẻ)
         self.normalize()
 
     def normalize(self):
@@ -490,7 +502,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))
@@ -516,7 +528,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))
@@ -1129,14 +1141,16 @@ def decide_final(votes, graded, dec_wr=None, cfg=SUN):
 
 def af_flip_applies(mode, cfg=SUN):
     """Final của ván AF ở chế độ `mode` (CAO | THAP | ALL) có bị bẻ thêm không.
-    AF_FLIP_FINAL = bẻ mọi chế độ · AF_FLIP_FINAL_CT = chỉ CAO/THẤP (ALL giữ nguyên) · AF_FLIP_FINAL_ALL = chỉ ALL (CAO/THẤP giữ nguyên).
+    AF_FLIP_FINAL = bẻ mọi chế độ · AF_FLIP_FINAL_CAO = chỉ CAO · AF_FLIP_FINAL_THAP = chỉ THẤP · AF_FLIP_FINAL_CT = gộp CAO + THẤP (ALL giữ nguyên) · AF_FLIP_FINAL_ALL = chỉ ALL (CAO/THẤP giữ nguyên).
     Phép HOẶC: có ít nhất 1 công tắc áp dụng cho chế độ đó thì bẻ ĐÚNG 1 lần."""
     if cfg.AF_FLIP_FINAL:
         return True
     if mode == "ALL":
         return bool(cfg.AF_FLIP_FINAL_ALL)
-    if mode in ("CAO", "THAP"):
-        return bool(cfg.AF_FLIP_FINAL_CT)
+    if mode == "CAO":
+        return bool(cfg.AF_FLIP_FINAL_CAO or cfg.AF_FLIP_FINAL_CT)
+    if mode == "THAP":
+        return bool(cfg.AF_FLIP_FINAL_THAP or cfg.AF_FLIP_FINAL_CT)
     return False
 
 
@@ -1371,7 +1385,9 @@ def build_result(hist, cfg=SUN, persist=None):
             "van_toi_thieu_che_do": max(1, min(cfg.AF_MODE_MIN, cfg.AF_MODE_WINDOW)),
             "nguong_be_che_do": cfg.AF_MODE_BELOW,
             "be_final_af": cfg.AF_FLIP_FINAL,                          # bẻ final của AF ở MỌI chế độ
-            "be_final_cao_thap": cfg.AF_FLIP_FINAL_CT,                 # CHỈ bẻ final khi chế độ CAO / THẤP (ALL giữ nguyên)
+            "be_final_cao_thap": cfg.AF_FLIP_FINAL_CT,                 # công tắc GỘP: bẻ final cả CAO lẫn THẤP (ALL giữ nguyên)
+            "be_final_cao": cfg.AF_FLIP_FINAL_CAO,                     # CHỈ bẻ final khi chế độ CAO (THẤP / ALL giữ nguyên)
+            "be_final_thap": cfg.AF_FLIP_FINAL_THAP,                   # CHỈ bẻ final khi chế độ THẤP (CAO / ALL giữ nguyên)
             "be_final_all": cfg.AF_FLIP_FINAL_ALL,                     # CHỈ bẻ final khi chế độ ALL (CAO / THẤP giữ nguyên)
         },
         "trong_so_wr": {                                          # cơ chế WR có trọng số (cách cũ / dự phòng)
@@ -3460,7 +3476,7 @@ def health():
              af=dict(bat=AF_ENABLED, chi_be_vao_nhom=AF_GROUP_FLIPPED_ONLY, can_da_so_nhom=AF_GROUP_NEED_MAJORITY, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
                      vung_be=dict(bat=AF_FLIP_BAND, thap=[AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX], cao=[AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX]),
                      mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_che_do=AF_MODE_FLIP, be_final_af=AF_FLIP_FINAL,
-                     be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_all=AF_FLIP_FINAL_ALL),
+                     be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_cao=AF_FLIP_FINAL_CAO, be_final_thap=AF_FLIP_FINAL_THAP, be_final_all=AF_FLIP_FINAL_ALL),
              xoa_lich_su=dict(bat=HIST_CLEAR_ENABLED, sun_an_den_phien=hist_hidden_upto("sun")),
              ips=ip_health(), panel_duyet=panel_health())
     s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items()}}
@@ -3479,7 +3495,7 @@ if __name__ != "__main__":
 
 def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, WR_FLIP_WEIGHT, HIT_ENABLED
-    global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL, AF_FLIP_FINAL_CT, AF_FLIP_FINAL_ALL, AF_MODE_FLIP
+    global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL, AF_FLIP_FINAL_CT, AF_FLIP_FINAL_CAO, AF_FLIP_FINAL_THAP, AF_FLIP_FINAL_ALL, AF_MODE_FLIP
     global AF_FLIP_BAND, AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX
     global AF_GROUP_FLIPPED_ONLY, AF_GROUP_NEED_MAJORITY
     try:
@@ -3528,6 +3544,12 @@ def main():
     afc = ap.add_mutually_exclusive_group()
     afc.add_argument("--af-flip-ct", action="store_true", help="CHỈ bẻ final của AF khi chế độ CAO/THẤP (chế độ ALL giữ nguyên)")
     afc.add_argument("--af-no-flip-ct", action="store_true", help="TẮT bẻ final riêng cho chế độ CAO/THẤP")
+    afcao = ap.add_mutually_exclusive_group()
+    afcao.add_argument("--af-flip-cao", action="store_true", help="CHỈ bẻ final của AF khi chế độ CAO (THẤP + ALL giữ nguyên)")
+    afcao.add_argument("--af-no-flip-cao", action="store_true", help="TẮT bẻ final riêng cho chế độ CAO")
+    afthap = ap.add_mutually_exclusive_group()
+    afthap.add_argument("--af-flip-thap", action="store_true", help="CHỈ bẻ final của AF khi chế độ THẤP (CAO + ALL giữ nguyên)")
+    afthap.add_argument("--af-no-flip-thap", action="store_true", help="TẮT bẻ final riêng cho chế độ THẤP")
     afa = ap.add_mutually_exclusive_group()
     afa.add_argument("--af-flip-all", action="store_true", help="CHỈ bẻ final của AF khi chế độ ALL (CAO/THẤP giữ nguyên)")
     afa.add_argument("--af-no-flip-all", action="store_true", help="TẮT bẻ final riêng cho chế độ ALL")
@@ -3581,6 +3603,14 @@ def main():
         AF_FLIP_FINAL_CT = True
     elif a.af_no_flip_ct:
         AF_FLIP_FINAL_CT = False
+    if a.af_flip_cao:
+        AF_FLIP_FINAL_CAO = True
+    elif a.af_no_flip_cao:
+        AF_FLIP_FINAL_CAO = False
+    if a.af_flip_thap:
+        AF_FLIP_FINAL_THAP = True
+    elif a.af_no_flip_thap:
+        AF_FLIP_FINAL_THAP = False
     if a.af_flip_all:
         AF_FLIP_FINAL_ALL = True
     elif a.af_no_flip_all:
@@ -3603,7 +3633,7 @@ def main():
                  else f"be logic WR < {AF_FLIP_LOW:g}% hoac > {AF_FLIP_HIGH:g}%")
     print(f"AF SUN      ->  {'BAT' if AF_ENABLED else 'TAT'} · {_be_logic} (toi thieu {AF_MIN_GAMES} van) · be che do {('BAT (CAO/THAP khi WR ' + str(AF_MODE_WINDOW) + ' van gan nhat cua che do < ' + format(AF_MODE_BELOW, 'g') + '%, can ' + str(AF_MODE_MIN) + ' van)') if AF_MODE_FLIP else 'TAT'} · be rieng AF {'BAT' if AF_FLIP_FINAL else 'TAT'}")
     print(f"AF nhom     ->  chi logic bi be vao nhom CAO/THAP {'BAT (logic khong be = ALL)' if AF_GROUP_FLIPPED_ONLY else 'TAT'} · nhom phai >= da so toan bo logic (n//2+1) {'BAT (ít hon -> dung ALL)' if AF_GROUP_NEED_MAJORITY else 'TAT'}")
-    print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · chi CAO/THAP {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
+    print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · CAO+THAP gop {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi CAO {'BAT' if AF_FLIP_FINAL_CAO else 'TAT'} · chi THAP {'BAT' if AF_FLIP_FINAL_THAP else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
     print(f"xoa lich su ->  nut o panel {'BAT' if HIST_CLEAR_ENABLED else 'TAT'} · chi an lich su hien thi (khong dung toi logic / WR / AF) · file moc {HIST_CLEAR_PATH}")
     print(f"PANEL HTML  ->  thiet bi phai duoc admin chinh duyet (khong can key, vao ca Sun + Hit) · file {PANEL_DEV_PATH} · toi da {PANEL_MAX_PENDING_PER_IP} yeu cau cho duyet / IP")
     print(f"WR 100 phien ->  luu toi da {PERSIST_KEEP} van da cham · WR dung/sai xet {EVAL_WINDOW} van gan nhat")

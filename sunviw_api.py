@@ -490,7 +490,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))

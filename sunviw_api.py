@@ -20,7 +20,9 @@ Endpoint:
     GET /api/predicthittxthuong  -> [HITCLUB · bàn TX THƯỜNG] JSON dự đoán, cùng cấu trúc /api/predictsun (game="hitclub", ban="hittxthuong"); cũng có ?hist=N · ?detail=1
     GET /api/predicthittxmd5     -> [HITCLUB · bàn TX MD5] như trên (ban="hittxmd5")
     ...?hist=N                   -> (mọi game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
-    GET /api/html                -> panel HTML theo dõi Sun + Hit, đổi qua lại, chọn số ván lịch sử
+    GET /api/html                -> panel HTML theo dõi Sun + Hit, đổi qua lại, chọn số ván lịch sử. CHỈ MỞ KHI ADMIN CHÍNH DUYỆT THIẾT BỊ (HWID): máy lạ thấy bảng "Đang chờ admin duyệt", được duyệt thì tự mở, KHÔNG cần key, vào cả Sun + Hit
+    GET /api/panel/status        -> panel hỏi trạng thái duyệt của thiết bị này (gửi yêu cầu lần đầu): {"status": "approved" | "pending" | "denied" | "limit"} (xem khối "DUYỆT THIẾT BỊ VÀO PANEL")
+    GET /api/admin/panel (+ POST /approve · /deny · /remove) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
     GET /health                  -> trạng thái nền của Sun + Hit
     GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa (tích chọn nhiều key) / xem key, MỌI key gắn HWID thiết bị (1 key dùng được N thiết bị), hiện lần dùng gần nhất, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
     POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
@@ -511,7 +513,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": True, "AF_FLIP_FINAL_ALL": False,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": True, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))
@@ -539,7 +541,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))
@@ -1064,7 +1066,7 @@ def af_decision(votes, graded, cfg=SUN):
     out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False, "demoted": False,
            "need_maj": (top_n if top_on else nl) // 2 + 1, "top_on": top_on, "top": [],
            "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
-           "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None,
+           "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None, "pool": list(range(nl)),     # pool = logic THỰC SỰ tham gia vote ván này (chưa đủ ván -> vote tất cả)
            "gT": sum(1 for v in votes if v == TAI), "gX": sum(1 for v in votes if v == XIU), "avg": None, "mw": mw}
     if n < need:                                          # chưa đủ ván -> không bẻ, vote tất cả (như file HTML)
         return out
@@ -1136,7 +1138,10 @@ def af_decision(votes, graded, cfg=SUN):
     if cfg.AF_MODE_FLIP and mode != "ALL" and not tie and mw[mode]["flip"]:    # Bước 3: bẻ theo WR của chế độ đang chạy (chỉ khi AF_MODE_FLIP bật)
         mflip, final = True, flip_pred(base)
     pv = [preds[i] for i in pool]
-    out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, demoted=demoted, need_maj=need_maj, top_on=top_on, top=top, preds=preds, flips=flips,
+    vpool = list(all_pool) if tie else list(pool)         # logic THAM GIA vote ván này (nhóm hoà phiếu -> thực tế dùng pool ALL) — panel hiện "logic đang dự đoán"
+    if top_on:
+        vpool.sort(key=top.index)                         # TOP bật: pool luôn nằm trong top -> xếp theo hạng (WR xa 50% nhất trước)
+    out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, demoted=demoted, need_maj=need_maj, top_on=top_on, top=top, pool=vpool, preds=preds, flips=flips,
                wins=[float(w) for w in wins], wsum=float(wsum), weights=[float(w) for w in weights],
                eff=[float(e / wsum * 100) for e in effw], group=group, hi=hi, lo=lo,
                hv=hv if hv in (TAI, XIU) else None, lv=lv if lv in (TAI, XIU) else None,
@@ -1393,6 +1398,7 @@ def build_result(hist, cfg=SUN, persist=None):
                 "thap": [cfg.AF_FLIP_LOW_MIN, cfg.AF_FLIP_LOW_MAX],
                 "cao": [cfg.AF_FLIP_HIGH_MIN, cfg.AF_FLIP_HIGH_MAX]},
             "so_logic_nhom": {"CAO": len(af["hi"]), "THAP": len(af["lo"])} if used_af else None,
+            "logic_du_doan": [SUN_NAMES[i] for i in af["pool"]] if used_af else [],      # logic THAM GIA vote ván này (TOP bật: xếp theo hạng trong top)
             "top": {                                               # TOP N logic có WR dùng cực trị (CAO nhất + THẤP nhất) — chỉ xét CAO / THẤP trong top này (bat=False -> cách cũ, xét toàn bộ logic)
                 "bat": bool(getattr(cfg, "AF_TOP", False)),
                 "n": max(1, int(getattr(cfg, "AF_TOP_N", 9))),
@@ -1430,7 +1436,8 @@ def build_result(hist, cfg=SUN, persist=None):
              "af_du_doan": (af["preds"][i] if used_af else None),                                    # phiếu SAU khi bẻ logic
              "af_wr": (round(af["eff"][i], 1) if used_af and af["eff"][i] is not None else None),    # WR dùng (100 − WR gốc nếu bị bẻ)
              "af_nhom": (af["group"][i] if used_af else None),                                       # CAO | THAP | None (TOP bật: logic ngoài top -> None)
-             "af_top": ((i in af["top"]) if used_af and af.get("top_on") else None),                 # True = logic nằm trong top N WR cực trị · False = ngoài top · None = TOP tắt / AF không chốt
+             "af_vote": ((i in af["pool"]) if used_af else None),                                    # True = logic THAM GIA vote ván này (nằm trong nhóm / pool được chọn)
+             "af_top": ((i in af["top"]) if used_af and af.get("top_on") and af["top"] else None),                 # True = logic nằm trong top N WR cực trị · False = ngoài top · None = TOP tắt / AF không chốt
              "af_hang": ((af["top"].index(i) + 1) if used_af and af.get("top_on") and i in af["top"] else None)}   # thứ hạng trong top (1 = WR xa 50% nhất)
             for i in range(len(votes))
         ],
@@ -1869,8 +1876,20 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 .lg-b table{margin-top:6px}
 .lg-b td,.lg-b th{padding:6px 6px;font-size:13.5px}
 .lg-b .band{font-size:12px;color:var(--mu);margin:2px 0 4px}
+.lg-b h3{margin:14px 0 6px;font-size:14px;font-weight:800}
+.lg-b tr.dim td{opacity:.5}
+.pl{display:inline-block;margin:2px 5px 2px 0;padding:2px 10px;border-radius:999px;border:1px solid var(--ln);font-size:12.5px;white-space:nowrap}
+.pl.tai{border-color:var(--tai)}.pl.xiu{border-color:var(--xiu)}
+.sb2{margin-top:10px}.sb2>summary{cursor:pointer;color:var(--mu);font-size:13px;padding:4px 0}
+.kbox{text-align:center}.kbox p{margin:6px 0 4px}.kbox b{font-size:16px}
+.gi{font-size:34px;line-height:1;margin-bottom:8px}
+.spin{width:34px;height:34px;border:3px solid var(--ln);border-top-color:var(--tai);border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 14px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.gcode{margin:14px 0;padding:8px 10px;border-radius:9px;background:var(--bg);border:1px solid var(--ln);font-size:12.5px;color:var(--mu)}
+.gcode b{display:block;color:var(--tx);font:700 14px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.04em}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
 </style></head><body>
-<div class="kov" id="kov"><div class="kbox"><b>Nhập key để dùng tool</b><input id="kin" placeholder="Dán key của bạn" spellcheck="false" autocomplete="off"><button id="kgo">Xác nhận</button><p id="kmsg" class="noc" style="margin:10px 0 0;font-size:13px"></p></div></div>
+<div class="kov" id="kov" style="display:flex"><div class="kbox" id="kbox"><div class="spin"></div><b>Đang kiểm tra quyền truy cập…</b></div></div>
 <header><h1>SUNVIW · Tài Xỉu</h1><div id="st"></div></header>
 <nav class="tabs" id="tabs"></nav>
 <main id="main"></main>
@@ -1883,22 +1902,32 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 <div id="hist"></div>
 <script>
 /*__HWID_JS__*/
-(function(){
-const f0=window.fetch.bind(window),ov=document.getElementById('kov'),inp=document.getElementById('kin'),mg=document.getElementById('kmsg');
-function show(t){mg.textContent=t||'';ov.style.display='flex';inp.focus()}
-window.fetch=function(u,o){o=Object.assign({},o||{});const k=localStorage.getItem('uk')||'';o.headers=Object.assign({},o.headers||{},HWID_HDR,k?{'X-User-Key':k}:{});
-  return f0(u,o).then(r=>{if(r.status===401&&String(u).indexOf('/api/')===0&&String(u).indexOf('/api/key/')!==0){const dm=k?'Key không hợp lệ hoặc đã hết hạn':'';r.clone().json().then(j=>show(j&&j.can_key&&(j.dev_locked||/HWID/.test(j.loi||''))?j.loi:dm)).catch(()=>show(dm))}return r})};
-async function go(){const v=inp.value.trim();if(!v)return;mg.textContent='';
-  try{const r=await f0('/api/key/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v,hwid:HWID,hwid_alt:HWID_ALT,hwid_fresh:HWID_FRESH})});const j=await r.json();
-    if(j.ok){localStorage.setItem('uk',v.toUpperCase());localStorage.setItem('kg',j.game||'all');location.reload()}else mg.textContent=j.loi||'Key không hợp lệ'}catch(e){mg.textContent='Không kết nối được server'}}
-document.getElementById('kgo').onclick=go;inp.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
-if(!localStorage.getItem('uk'))show('');
-})();
+/* ── CỔNG DUYỆT THIẾT BỊ: panel chỉ mở khi admin chính đã duyệt HWID này (KHÔNG cần key, vào cả Sun + Hit). Mọi lời gọi /api/... tự kèm HWID. ── */
+let ACC=false,GV='';
+const KOV=document.getElementById('kov'),KB=document.getElementById('kbox'),f0=window.fetch.bind(window);
+window.fetch=function(u,o){o=Object.assign({},o||{});o.headers=Object.assign({},o.headers||{},HWID_HDR);
+  return f0(u,o).then(r=>{if(r.status===401&&ACC&&String(u).indexOf('/api/')===0&&String(u).indexOf('/api/panel/')!==0){ACC=false;access()}return r})};   /* bị gỡ quyền giữa chừng -> khóa lại ngay */
+function gateView(st,msg){
+  const key=st+'|'+(msg||'');if(GV===key&&KOV.style.display==='flex')return;GV=key;
+  const T={pending:['<div class="spin"></div>','Đang chờ admin duyệt','Yêu cầu truy cập của thiết bị này đã được gửi tới admin chính. Trang sẽ tự mở ngay khi được duyệt — không cần nhập key, không cần tải lại.'],
+    denied:['<div class="gi">⛔</div>','Thiết bị bị từ chối','Admin chính đã từ chối thiết bị này. Hãy liên hệ admin nếu cần được cấp quyền.'],
+    limit:['<div class="gi">⚠️</div>','Quá nhiều yêu cầu chờ duyệt','Mạng này đã gửi quá nhiều yêu cầu. Hãy nhờ admin xử lý bớt rồi bấm kiểm tra lại.'],
+    error:['<div class="gi">⚠️</div>','Chưa kết nối được',msg||'Đang thử lại…']}[st]||['<div class="gi">⚠️</div>','Chưa vào được',msg||''];
+  KB.innerHTML=T[0]+'<b>'+T[1]+'</b><p class="mu">'+T[2]+'</p><div class="gcode">Mã thiết bị<b>'+HWID.slice(0,8)+'…'+HWID.slice(-4)+'</b></div><button id="gre" type="button">Kiểm tra lại</button>';
+  KOV.style.display='flex';
+}
+async function access(){
+  try{
+    const r=await fetch('/api/panel/status',{cache:'no-store'}),j=await r.json().catch(()=>({}));
+    if(j.status==='approved'){if(!ACC){ACC=true;GV='';KOV.style.display='none';load()}return}
+    ACC=false;gateView(['pending','denied','limit'].includes(j.status)?j.status:'error',j.loi);
+  }catch(e){ACC=false;gateView('error','Mất kết nối tới server — đang thử lại…')}
+}
+document.addEventListener('click',e=>{if(e.target&&e.target.id==='gre')access()});
 </script>
 <script>
 const G={sun:{n:'Sun',u:'/api/predictsun',g:'sun'},hitt:{n:'Hit Thường',u:'/api/predicthittxthuong',g:'hittxthuong'},hitm:{n:'Hit MD5',u:'/api/predicthittxmd5',g:'hittxmd5'}};
-let KG=localStorage.getItem('kg')||'all';
-const okG=k=>KG==='all'||(KG==='sun'?k==='sun':k!=='sun');   /* key game Sun -> chỉ tab Sun · key game Hit -> chỉ 2 tab Hit · key cũ (all) -> tất cả */
+const okG=()=>true;   /* thiết bị đã duyệt vào được cả Sun lẫn 2 bàn Hit -> hiện đủ mọi tab */
 let cur=(localStorage.getItem('g') in G||localStorage.getItem('g')==='ip')?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__,IPD=null;
 if(cur!=='ip'&&!okG(cur))cur=Object.keys(G).find(okG)||'ip';
 const D={},$=s=>document.querySelector(s),cl=v=>v==='TÀI'?'tai':v==='XỈU'?'xiu':'';
@@ -1928,8 +1957,33 @@ function modeStats(d,h){
   const a=acc(d);
   return `<div class="mst"><button class="${MF===''?'on':''}" data-m=""><span class="nm">Tất cả</span> <b>${a.k}/${a.t}</b> <span class="mu">${a.p===null?'–':a.p+'%'}</span></button>${MS.map(m=>{const s=modeAcc(h,m);return `<button class="${m}${MF===m?' on':''}" data-m="${m}" title="${esc(MTIP[m])}"><span class="nm">${MN[m]}</span> <b>${s.k}/${s.t}</b> <span class="mu">${s.p==null?'–':s.p+'%'}</span>${d.che_do===m?' <i class="now">● hiện tại</i>':''}</button>`}).join('')}</div><div class="mhint">Đúng/sai tính lại theo cấu hình bẻ hiện tại · bấm một chế độ để lọc lịch sử</div>`;
 }
-let LO=localStorage.getItem('lo')==='1';
+let LO=localStorage.getItem('lo')!=='0',LO2=localStorage.getItem('lo2')==='1';
+/* TOP N logic (WR cao nhất / thấp nhất) + nhóm logic ĐANG DỰ ĐOÁN ván này. AF tắt / TOP tắt / chưa đủ ván -> dùng bảng đầy đủ cũ (logicHtmlOld). */
 function logicHtml(d){
+  const ct=d.chi_tiet,L=ct&&ct.logic,A=ct&&ct.af;
+  if(!L||!L.length||!A||!A.dang_dung||!A.top||!A.top.bat||!L.some(x=>x.af_top===true))return logicHtmlOld(d);
+  const top=L.filter(x=>x.af_top).sort((a,b)=>(a.af_hang||99)-(b.af_hang||99)),rest=L.filter(x=>!x.af_top),pool=top.filter(x=>x.af_vote);
+  const nT=pool.filter(x=>x.af_du_doan==='TÀI').length,nX=pool.filter(x=>x.af_du_doan==='XỈU').length,m=A.che_do;
+  const base=d.du_doan_truoc_be_che_do||d.du_doan_goc||d.du_doan;
+  const why=m==='CAO'?'nhóm CAO (WR cao) đông hơn trong top → chỉ nhóm này vote':m==='THAP'?'nhóm THẤP (WR thấp) đông hơn trong top → chỉ nhóm này vote'
+    :(A.ha_xuong_all?'nhóm CAO/THẤP chưa đủ đa số ('+A.da_so_toi_thieu+' logic) → hạ về ALL, vote cả top':'hai nhóm bằng nhau → vote cả top')+(A.hoa_phieu_nhom?' · nhóm hoà phiếu → dùng đa số cả top':'');
+  const v=A.gioi_han_vung_be,band=(v&&v.bat?'Chỉ bẻ logic khi WR trong vùng THẤP '+v.thap[0]+'–'+v.thap[1]+'% hoặc CAO '+v.cao[0]+'–'+v.cao[1]+'% · ngoài vùng không bẻ':'')+' · TOP '+A.top.n+' = logic có WR dùng xa 50% nhất (gồm cả logic đã bẻ lẫn chưa bẻ)';
+  const wr=x=>(x.wr==null?'–':x.wr+'%')+(x.af_be&&x.af_wr!=null?` <span class="mu">→ ${x.af_wr}%</span>`:'');
+  const fb=x=>x.af_be?bd('flip',x.af_be==='LOW'?'BẺ · WR thấp':'BẺ · WR cao','Phiếu của logic này bị đảo ở bước 1 của AF'):'<span class="mu">–</span>';
+  const nh=x=>x.af_nhom?bd(x.af_nhom,MN[x.af_nhom],x.af_hang?'Hạng '+x.af_hang+' trong top (1 = WR xa 50% nhất)':''):'<span class="mu" title="WR đúng 50% → không thuộc CAO / THẤP">–</span>';
+  const rowT=x=>`<tr${x.af_vote?'':' class="dim"'}><td class="mu">${x.af_hang||''}</td><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${wr(x)}</td><td>${fb(x)}</td><td class="${cl(x.af_du_doan)}"><b>${x.af_du_doan}</b></td><td>${nh(x)}</td><td>${x.af_vote?'<b class="okc" title="Đang tham gia dự đoán ván này">✔ vote</b>':'<span class="mu" title="Nằm trong top nhưng không thuộc nhóm đang được chọn">–</span>'}</td></tr>`;
+  const rowR=x=>`<tr class="dim"><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${wr(x)}</td><td>${fb(x)}</td></tr>`;
+  return `<details class="lg" id="lg"${LO?' open':''}><summary><span>🏆 TOP ${A.top.n} logic · 🎯 ${pool.length} đang dự đoán</span><span class="mu"><span class="tai">TÀI ${nT}</span> · <span class="xiu">XỈU ${nX}</span></span></summary><div class="lg-b">
+<h3>🎯 ${pool.length} logic đang dự đoán · chế độ ${MN[m]||m}</h3>
+<div>${pool.map(x=>`<span class="pl ${cl(x.af_du_doan)}" title="WR dùng ${x.af_wr==null?'–':x.af_wr+'%'}">${esc(x.ten)} <b>${x.af_du_doan}</b></span>`).join('')}</div>
+<div class="band">${esc(why)} · vote <span class="tai">TÀI ${nT}</span> – <span class="xiu">XỈU ${nX}</span> → <b class="${cl(base)}">${base}</b>${d.du_doan!==base?` · API trả <b class="${cl(d.du_doan)}">${d.du_doan}</b> (sau bẻ)`:''}</div>
+<h3>🏆 TOP ${top.length} logic hiện tại (WR cao nhất / thấp nhất)</h3>
+<table><tr><th>#</th><th>Logic</th><th>Phiếu gốc</th><th>WR</th><th>Bẻ</th><th>Phiếu dùng</th><th>Nhóm</th><th>Vote</th></tr>${top.map(rowT).join('')}</table>
+${rest.length?`<details class="sb2" id="lg2"${LO2?' open':''}><summary>Logic ngoài top (${rest.length}) — không tham gia vote</summary><table><tr><th>Logic</th><th>Phiếu gốc</th><th>WR</th><th>Bẻ</th></tr>${rest.map(rowR).join('')}</table></details>`:''}
+<div class="band" style="margin-top:8px">${esc(band)} · WR = tỉ lệ đúng có trọng số trong ${d.so_van_wr||'?'} ván gần nhất · “→ x%” là WR sau bẻ (100 − WR) · Phiếu dùng = phiếu sau khi bẻ logic</div></div></details>`;
+}
+document.addEventListener('toggle',e=>{if(e.target&&e.target.id==='lg2'){LO2=e.target.open;localStorage.setItem('lo2',LO2?'1':'0')}},true);
+function logicHtmlOld(d){
   const ct=d.chi_tiet,L=ct&&ct.logic;
   if(!L||!L.length)return '';
   const A=ct.af,af=!!(A&&A.dang_dung),use=x=>af?x.af_du_doan:x.du_doan;
@@ -1995,12 +2049,12 @@ async function loadIps(){
 document.addEventListener('click',e=>{if(e.target.id==='akb'){const v=$('#ak');localStorage.setItem('ak',v?v.value.trim():'');loadIps().then(render)}});
 async function load(){
   await Promise.all([loadIps(),...Object.entries(G).filter(([k])=>okG(k)).map(async([k,g])=>{
-    try{const r=await fetch(`${g.u}?hist=${N}&detail=1`,{cache:'no-store'});D[k]=await r.json();
-      if(D[k]&&D[k].sai_game&&D[k].game_can){KG=D[k].game_can;localStorage.setItem('kg',KG)}}   /* key không thuộc game này -> server báo game đúng của key, panel tự ẩn tab thừa */
+    try{const r=await fetch(`${g.u}?hist=${N}&detail=1`,{cache:'no-store'});D[k]=await r.json()}
     catch(e){D[k]={ok:false,loi:'Mất kết nối: '+e}}})]);
   render();
 }
-load();setInterval(load,3000);
+setInterval(()=>{if(ACC)load()},3000);
+access();setInterval(access,3000);   /* hỏi trạng thái duyệt 3s/lần: được duyệt -> tự mở · bị gỡ quyền -> tự khóa */
 </script></body></html>
 """
 
@@ -2552,6 +2606,127 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
         return r, "", True, kg
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  🛂  DUYỆT THIẾT BỊ VÀO PANEL /api/html  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Panel /api/html KHÔNG còn ô nhập key. Ai mở trang cũng chỉ thấy bảng "Đang chờ admin duyệt": panel tự gửi yêu cầu (kèm HWID thiết bị) tới
+#   POST/GET /api/panel/status -> thiết bị vào danh sách CHỜ DUYỆT. Admin CHÍNH vào /api/admin -> mục "Duyệt thiết bị vào panel HTML" -> Duyệt / Từ chối / Gỡ quyền.
+#   Được duyệt xong, panel tự mở (không cần tải lại), KHÔNG cần key, và vào được CẢ SUN LẪN HIT (2 bàn).
+#   Thiết bị đã duyệt cũng gọi thẳng được /api/predictsun · /api/predicthittxthuong · /api/predicthittxmd5 · /api/ips · /api/history/clear không cần key
+#   (cổng _gate_key nhận HWID đã duyệt). Key người dùng + tool (X-User-Key + X-HWID) vẫn chạy y như trước, KHÔNG đổi.
+#   Gỡ quyền / xóa thiết bị khỏi danh sách -> panel của máy đó bị khóa lại ngay (trong ~3 giây) và phải xin duyệt lại.
+#   HWID nhận diện y như hệ key (mã đã lưu localStorage + cookie, mã phụ phần cứng): đổi mạng / đổi IP không ảnh hưởng, IP chỉ GHI LẠI để admin xem.
+#   PANEL_DEV_PATH             file lưu danh sách thiết bị (env SUNVIW_PANEL_DEV_PATH; mặc định <DATA_DIR>/sunviw_panel_devices.json). Railway: nằm cùng Volume với file key.
+#   PANEL_MAX_DEVICES          trần số thiết bị lưu (đầy -> bỏ yêu cầu CHỜ DUYỆT cũ nhất; thiết bị đã duyệt / từ chối không bị xóa tự động)
+#   PANEL_MAX_PENDING_PER_IP   mỗi IP chỉ được có tối đa N yêu cầu đang chờ duyệt cùng lúc (chống spam HWID giả) — env SUNVIW_PANEL_PENDING_PER_IP
+PANEL_DEV_PATH = os.environ.get("SUNVIW_PANEL_DEV_PATH", _data_path("sunviw_panel_devices.json"))
+PANEL_MAX_DEVICES = 2000
+PANEL_MAX_PENDING_PER_IP = _env_num("SUNVIW_PANEL_PENDING_PER_IP", 10, int)
+PANEL_TOUCH_SEC = 60                                  # ghi "thấy lần cuối" tối đa 1 lần / phút / thiết bị
+_pv_lock = threading.RLock()
+_pv_cache = {"sig": None, "d": None}                  # cache theo (mtime, size) của file -> panel poll 3s/lần không đọc lại file; vẫn đúng khi nhiều worker cùng ghi
+
+
+def _pv_load():
+    """{"devs": {hwid: {"st": pending|approved|denied, "first", "last", "ip", "ua", "alt": [...], "dec_at", "dec_by"}}}. Gọi trong _pv_lock."""
+    try:
+        stt = os.stat(PANEL_DEV_PATH)
+        sig = (stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        return {"devs": {}}
+    if _pv_cache["sig"] == sig and _pv_cache["d"] is not None:
+        return _pv_cache["d"]
+    try:
+        with open(PANEL_DEV_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get("devs"), dict):
+            _pv_cache.update(sig=sig, d=d)
+            return d
+    except Exception:  # noqa: BLE001
+        pass
+    return {"devs": {}}
+
+
+def _pv_save(d):
+    """Ghi file thiết bị (atomic). Trả True nếu ghi được. Gọi trong _pv_lock."""
+    try:
+        tmp = PANEL_DEV_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, PANEL_DEV_PATH)
+        stt = os.stat(PANEL_DEV_PATH)
+        _pv_cache.update(sig=(stt.st_mtime_ns, stt.st_size), d=d)
+        return True
+    except OSError:
+        _pv_cache.update(sig=None, d=None)             # bỏ cache để lần sau đọc lại file thật (d có thể đã bị sửa dở)
+        return False
+
+
+def _panel_access(hw, alts=(), fresh=False, ip="", ua="", create=True):
+    """Trạng thái của thiết bị với panel: 'approved' | 'pending' | 'denied' | 'limit' (IP này đã có quá nhiều yêu cầu chờ duyệt) | 'none' (chưa có và create=False).
+    create=True: thiết bị lạ -> tạo yêu cầu CHỜ DUYỆT. Nhận lại máy cũ bằng mã chính / mã phụ giống hệ key (_dev_find / _dev_learn). IP chỉ ghi lại, không dùng để chặn."""
+    now = int(time.time())
+    with _pv_lock:
+        d = _pv_load()
+        devs = d["devs"]
+        k = _dev_find(devs, hw, alts, fresh)
+        if k is not None:
+            dv = devs[k]
+            ch = _dev_learn(dv, k, [hw] if fresh else [hw, *alts])
+            if now - int(dv.get("last") or 0) >= PANEL_TOUCH_SEC:
+                dv["last"], dv["ip"], dv["ua"] = now, ip, str(ua or "")[:120]
+                ch = True
+            if ch:
+                _pv_save(d)
+            return dv.get("st") if dv.get("st") in ("approved", "pending", "denied") else "pending"
+        if not create:
+            return "none"
+        if sum(1 for v in devs.values() if v.get("st") == "pending" and v.get("ip") == ip) >= PANEL_MAX_PENDING_PER_IP:
+            return "limit"
+        if len(devs) >= PANEL_MAX_DEVICES:
+            old = [x for x, v in devs.items() if v.get("st") == "pending"]
+            if not old:
+                return "limit"
+            del devs[min(old, key=lambda x: devs[x].get("last") or 0)]
+        dv = devs[hw] = {"st": "pending", "first": now, "last": now, "ip": ip, "ua": str(ua or "")[:120], "alt": []}
+        if not fresh:
+            _dev_learn(dv, hw, alts)
+        _pv_save(d)
+        return "pending"
+
+
+def _panel_approved(hw, alts=(), fresh=False, ip="", ua=""):
+    """Thiết bị này đã được admin chính duyệt vào panel chưa (không tạo yêu cầu mới)."""
+    return bool(hw) and _panel_access(hw, alts, fresh, ip, ua, create=False) == "approved"
+
+
+def panel_health():
+    with _pv_lock:
+        devs = _pv_load()["devs"]
+        c = {"pending": 0, "approved": 0, "denied": 0}
+        for v in devs.values():
+            if v.get("st") in c:
+                c[v["st"]] += 1
+    return dict(tong=len(devs), **c)
+
+
+_PANEL_MSG = {"approved": "Thiết bị đã được duyệt.",
+              "pending": "Đang chờ admin chính duyệt thiết bị này.",
+              "denied": "Admin chính đã từ chối thiết bị này.",
+              "limit": "Mạng này đã gửi quá nhiều yêu cầu chờ duyệt — nhờ admin xử lý bớt rồi thử lại."}
+
+
+@app.route("/api/panel/status", methods=["GET", "POST"])
+def api_panel_status():
+    """Panel /api/html gọi 3 giây / lần: gửi yêu cầu duyệt (lần đầu) và hỏi trạng thái. Trả {"ok": true, "status": "approved"} khi đã được duyệt,
+    còn lại "pending" | "denied" | "limit". Không cần key."""
+    hw, alts, hfresh = req_hw_ids(request.get_json(silent=True) or {})
+    if not hw:
+        return _json({"ok": False, "status": "error", "loi": "Thiếu mã thiết bị (HWID) — hãy mở panel bằng trình duyệt hoặc gửi header X-HWID."}, 400)
+    st = _panel_access(hw, alts, hfresh, client_ip(), request.headers.get("User-Agent", ""))
+    return _json({"ok": st == "approved", "status": st, "loi": _PANEL_MSG.get(st, "")}, 429 if st == "limit" else 200)
+
+
 _GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predicthittxthuong", "/api/predicthittxmd5", "/api/ips", "/api/history/clear"}
 
 
@@ -2565,6 +2740,9 @@ def _gate_key():
     if not k and p != "/api/ips":                      # /api/ips đã dùng ?key= cho admin key cũ -> chỉ nhận header
         k = request.args.get("key", "")
     hw, alts, hfresh = req_hw_ids()
+    if hw and _panel_approved(hw, alts, hfresh, client_ip(), request.headers.get("User-Agent", "")):
+        flask_g.key_game = "all"                        # thiết bị ĐÃ ĐƯỢC ADMIN CHÍNH DUYỆT vào panel -> vào cả SUN + HIT, không cần key
+        return None
     rec, err, _, kg = _check_user_key(k, hw, client_ip(), request.headers.get("User-Agent", ""), alts, hfresh, _path_game(p))
     if rec:
         flask_g.key_game = kg                           # game của key (history/clear dùng để chỉ cho xóa đúng game)
@@ -2830,6 +3008,78 @@ def api_admin_keys_reset_dev():
     return _json({"ok": True, "da_go": n})
 
 
+# ─ DUYỆT THIẾT BỊ VÀO PANEL /api/html — CHỈ ADMIN CHÍNH (xem khối "DUYỆT THIẾT BỊ VÀO PANEL" ở trên) ─
+def _need_main():
+    s, err = _need_admin()
+    if err:
+        return None, err
+    if s["r"] != "main":
+        return None, _json({"ok": False, "loi": "chi admin chinh moi duyet duoc thiet bi vao panel"}, 403)
+    return s, None
+
+
+@app.route("/api/admin/panel")
+def api_admin_panel():
+    """Danh sách thiết bị đã xin vào panel: chờ duyệt (lên đầu) · đã duyệt · từ chối."""
+    s, err = _need_main()
+    if err:
+        return err
+    with _pv_lock:
+        devs = _pv_load()["devs"]
+        rows = [{"hw": h, "trang_thai": v.get("st"), "lan_dau": v.get("first"), "gan_nhat": v.get("last"), "ip": v.get("ip"), "ua": v.get("ua", ""),
+                 "duyet_luc": v.get("dec_at"), "duyet_boi": v.get("dec_by")} for h, v in devs.items()]
+    order = {"pending": 0, "approved": 1, "denied": 2}
+    rows.sort(key=lambda r: (order.get(r["trang_thai"], 9), -(r["gan_nhat"] or 0)))
+    return _json({"ok": True, "devices": rows})
+
+
+def _panel_admin_act(act):
+    """approve / deny / remove cho 1 thiết bị {"hwid": "..."} hoặc nhiều {"hwids": [...]}. remove = xóa khỏi danh sách (đang được duyệt thì mất quyền ngay, phải xin lại)."""
+    s, err = _need_main()
+    if err:
+        return err
+    b = request.get_json(silent=True) or {}
+    lst = b.get("hwids") if isinstance(b.get("hwids"), list) else [b.get("hwid")]
+    want = list(dict.fromkeys(x for x in (_norm_hwid(v) for v in lst[:500]) if x))
+    if not want:
+        return _json({"ok": False, "loi": "hwid khong hop le"}, 400)
+    now = int(time.time())
+    done = 0
+    with _pv_lock:
+        d = _pv_load()
+        devs = d["devs"]
+        for h in want:
+            rec = devs.get(h)
+            if not rec:
+                continue
+            if act == "remove":
+                del devs[h]
+            else:
+                rec["st"] = "approved" if act == "approve" else "denied"
+                rec["dec_at"], rec["dec_by"] = now, s["n"]
+            done += 1
+        if not done:
+            return _json({"ok": False, "loi": "khong thay thiet bi"}, 404)
+        if not _pv_save(d):
+            return _json({"ok": False, "loi": "khong ghi duoc file thiet bi panel"}, 500)
+    return _json({"ok": True, "da_xu_ly": done})
+
+
+@app.route("/api/admin/panel/approve", methods=["POST"])
+def api_admin_panel_approve():
+    return _panel_admin_act("approve")
+
+
+@app.route("/api/admin/panel/deny", methods=["POST"])
+def api_admin_panel_deny():
+    return _panel_admin_act("deny")
+
+
+@app.route("/api/admin/panel/remove", methods=["POST"])
+def api_admin_panel_remove():
+    return _panel_admin_act("remove")
+
+
 ADMIN_HTML = r"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2920,6 +3170,12 @@ input.f:focus{outline:0;border-color:var(--au)}
 .ra{display:flex;gap:6px;justify-content:flex-end}
 .ib{width:36px;height:36px;padding:0;justify-content:center}
 .emp{padding:34px 0 20px;text-align:center;color:var(--mu)}
+.pvb{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 8px;margin-left:10px;border-radius:99px;background:var(--au);color:#2a1c00;font-size:12.5px;font-weight:800;vertical-align:middle}
+.pr{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.2fr) auto;gap:8px 18px;align-items:center;padding:13px 2px;border-top:1px solid var(--ln)}
+.pr:first-child{border-top:0}
+.bd.pd{color:var(--au);border-color:rgba(242,179,61,.55);background:rgba(242,179,61,.08)}.bd.ap{color:var(--ok);border-color:rgba(53,214,160,.45)}.bd.dn{color:var(--no);border-color:rgba(255,107,125,.5)}
+.go.sm{width:auto;height:36px;margin:0;padding:0 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+@media(max-width:720px){.pr{grid-template-columns:1fr}.pr .ra{justify-content:flex-start;flex-wrap:wrap}}
 dialog{border:1px solid var(--ln);border-radius:16px;background:var(--pn);color:var(--tx);padding:20px;max-width:380px;width:calc(100% - 32px)}
 dialog::backdrop{background:rgba(5,8,20,.7);backdrop-filter:blur(2px)}
 dialog p{margin:0 0 18px}dialog form{margin:0}.da{display:flex;gap:8px;justify-content:flex-end}
@@ -3005,6 +3261,7 @@ function renderDash(){
   const m=isMain();
   $('#app').innerHTML=`<div class="top"><div class="mark">${I.key.replace(/18/g,'22')}</div><div><h1>SUNVIW · Quản trị</h1><span class="role ${m?'m':'s'}">${m?'Admin chính':'Admin phụ · '+esc(S.name)}</span></div><div class="sp"></div><button class="gh" id="out">${I.out} Đăng xuất</button></div>
   <div class="stats" id="stats"></div>
+  ${m?'<section class="pn" id="pv"></section>':''}
   <section class="pn"><h2>Tạo key mới</h2>
   ${m?`<div class="seg" id="ct"><button data-t="user" class="on">Key người dùng</button><button data-t="sub">Key admin phụ</button></div>`:''}
   <div id="cgw"${m&&CF.type==='sub'?' hidden':''}><div class="lb">Game của key <span class="mu s">(mỗi key chỉ dùng được cho đúng 1 game — muốn dùng cả 2 game thì tạo 2 key riêng)</span></div><div class="pills" id="cg">${GAMES.map(g=>`<button data-g="${esc(g.id)}" class="${g.id===CF.game?'on':''}">${esc(g.ten)}</button>`).join('')}</div></div>
@@ -3019,7 +3276,7 @@ function renderDash(){
 }
 function paint(){
   if(!$('#tbl'))renderDash();
-  $('#stats').innerHTML=stats();renderNew();renderTable();
+  $('#stats').innerHTML=stats();renderNew();renderTable();renderPv();if(isMain()&&!PVON){PVON=true;loadPanel()}
 }
 function renderNew(){
   const el=$('#newk');if(!el)return;
@@ -3041,6 +3298,31 @@ function row(r){
   <div><div class="s">${esc(fmt(r.het_han))}</div><div class="s ${r.het?'':'mu'}" style="${r.het?'color:var(--no)':''}">${esc(left(r.con_lai))}${r.ngay?' · gói '+esc(DAYLBL[r.ngay]||r.ngay+' ngày'):''}</div><div class="bar"><i class="${r.het?'xx':pct<20?'lo':''}" style="width:${pct}%"></i></div></div>
   <div>${who}</div>
   <div class="ra"><button class="gh ib" data-copy="${esc(r.key)}" title="Sao chép" aria-label="Sao chép">${I.copy}</button>${r.so_dev?`<button class="gh ib" data-rs="${esc(r.key)}" title="Reset thiết bị" aria-label="Reset thiết bị">${I.rs}</button>`:''}<button class="gh dg ib" data-del="${esc(r.key)}" title="Xóa" aria-label="Xóa">${I.del}</button></div>${devList(r)}</div>`;
+}
+/* ── DUYỆT THIẾT BỊ VÀO PANEL HTML (chỉ admin chính) ── */
+let PV=[],PF='pending',PFSET=false,PVON=false;
+const uaLabel=u=>{u=String(u||'');const os=/iPhone|iPad|iPod/.test(u)?'iOS':/Android/.test(u)?'Android':/Windows/.test(u)?'Windows':/Mac OS X|Macintosh/.test(u)?'macOS':/Linux/.test(u)?'Linux':'?';const br=/Edg\//.test(u)?'Edge':/OPR\/|Opera/.test(u)?'Opera':/Firefox\//.test(u)?'Firefox':/Chrome\/|CriOS/.test(u)?'Chrome':/Safari\//.test(u)?'Safari':'';return os+(br?' · '+br:'')};
+async function loadPanel(){
+  if(!isMain())return;
+  const j=await api('/api/admin/panel');if(!S)return;
+  if(j.ok){PV=j.devices;if(!PFSET){PFSET=true;if(!PV.some(x=>x.trang_thai==='pending')&&PV.some(x=>x.trang_thai==='approved'))PF='approved'}}
+  renderPv();
+}
+function pvRow(x){
+  const st=x.trang_thai,bdc={pending:'pd',approved:'ap',denied:'dn'}[st]||'',bl={pending:'chờ duyệt',approved:'đã duyệt',denied:'từ chối'}[st]||st;
+  const act=(st!=='approved'?`<button class="go sm" data-pa="${esc(x.hw)}">${I.ok} Duyệt</button>`:'')+(st==='pending'?`<button class="gh dg" data-pd="${esc(x.hw)}">Từ chối</button>`:'')+(st!=='pending'?`<button class="gh dg" data-pr="${esc(x.hw)}" title="${st==='approved'?'Thu hồi quyền — thiết bị phải xin duyệt lại':'Xóa khỏi danh sách'}">${I.del} ${st==='approved'?'Gỡ quyền':'Xóa'}</button>`:'');
+  return `<div class="pr"><div><div class="kk"><span class="mono" title="${esc(x.hw)}">${esc(shortHw(x.hw))}</span><span class="bd ${bdc}">${bl}</span><span class="mu s">${esc(uaLabel(x.ua))}</span></div><div class="s mu" style="margin-top:3px">IP ${esc(x.ip||'?')}</div></div>
+  <div class="s"><div>Gửi yêu cầu: ${esc(fmt(x.lan_dau))}</div><div class="mu">Thấy lần cuối: ${esc(ago(x.gan_nhat))}${x.duyet_luc?' · '+(st==='approved'?'duyệt':'xử lý')+' '+esc(fmt(x.duyet_luc)):''}</div></div>
+  <div class="ra">${act}</div></div>`;
+}
+function renderPv(){
+  const el=$('#pv');if(!el)return;
+  const cnt={pending:0,approved:0,denied:0};PV.forEach(x=>{if(cnt[x.trang_thai]!==undefined)cnt[x.trang_thai]++});
+  const rows=PV.filter(x=>PF==='all'||x.trang_thai===PF),LB={pending:'Chờ duyệt',approved:'Đã duyệt',denied:'Từ chối'};
+  el.innerHTML=`<div class="hd"><h2>Duyệt thiết bị vào panel HTML${cnt.pending?`<span class="pvb">${cnt.pending} chờ</span>`:''}</h2><div class="act"><button class="gh" id="pvrf">${I.rf} Làm mới</button></div></div>
+  <p class="mu s" style="margin:-6px 0 12px">Ai mở <b>/api/html</b> sẽ thấy bảng chờ duyệt. Thiết bị được duyệt vào được cả Sun lẫn Hit và không cần key. Gỡ quyền → máy đó bị khóa lại trong vài giây.</p>
+  <div class="chips">${['pending','approved','denied','all'].map(f=>`<button data-pf="${f}" class="${PF===f?'on':''}">${f==='all'?'Tất cả ('+PV.length+')':LB[f]+' ('+cnt[f]+')'}</button>`).join('')}</div>
+  <div>${rows.length?rows.map(pvRow).join(''):`<div class="emp">${PF==='pending'?'Không có thiết bị nào đang chờ duyệt.':'Không có thiết bị nào ở mục này.'}</div>`}</div>`;
 }
 function visible(){
   const q=(F.q||'').toLowerCase();
@@ -3082,6 +3364,11 @@ document.addEventListener('click',async e=>{
   if(d.del){if(!await ask('Xóa key '+d.del+'? Người đang dùng key này sẽ bị đăng xuất ngay.','Xóa key'))return;const j=await api('/api/admin/keys/delete',{key:d.del});if(j.ok){NEW=NEW.filter(k=>k!==d.del);await loadKeys();toast('Đã xóa key')}else toast(j.loi||'Lỗi',1);return}
   if(d.rs){if(!await ask('Reset TOÀN BỘ thiết bị đang gắn của key '+d.rs+'? Máy nào dùng key trước sẽ được gắn lại; phiên admin phụ đang mở trên các máy cũ bị đăng xuất.','Reset thiết bị'))return;const j=await api('/api/admin/keys/reset-dev',{key:d.rs});if(j.ok){await loadKeys();toast('Đã gỡ '+j.da_go+' thiết bị')}else toast(j.loi||'Lỗi',1);return}
   if(d.rd){if(!await ask('Gỡ thiết bị '+shortHw(d.hw)+' khỏi key '+d.rd+'?','Gỡ thiết bị'))return;const j=await api('/api/admin/keys/reset-dev',{key:d.rd,hwid:d.hw});if(j.ok){await loadKeys();toast('Đã gỡ thiết bị')}else toast(j.loi||'Lỗi',1);return}
+  if(b.id==='pvrf'){await loadPanel();return toast('Đã làm mới')}
+  if(d.pf){PF=d.pf;renderPv();return}
+  if(d.pa){const j=await api('/api/admin/panel/approve',{hwid:d.pa});if(j.ok){await loadPanel();toast('Đã duyệt — thiết bị vào được panel')}else toast(j.loi||'Lỗi',1);return}
+  if(d.pd){if(!await ask('Từ chối thiết bị '+shortHw(d.pd)+'? Thiết bị sẽ thấy thông báo bị từ chối.','Từ chối'))return;const j=await api('/api/admin/panel/deny',{hwid:d.pd});if(j.ok){await loadPanel();toast('Đã từ chối thiết bị')}else toast(j.loi||'Lỗi',1);return}
+  if(d.pr){if(!await ask('Gỡ thiết bị '+shortHw(d.pr)+' khỏi danh sách? Nếu đang được duyệt, máy này mất quyền vào panel ngay và phải xin duyệt lại.','Gỡ'))return;const j=await api('/api/admin/panel/remove',{hwid:d.pr});if(j.ok){await loadPanel();toast('Đã gỡ thiết bị')}else toast(j.loi||'Lỗi',1);return}
   if(b.id==='clean'){if(!await ask('Xóa toàn bộ key đã hết hạn?','Xóa hết'))return;const j=await api('/api/admin/keys/delete',{expired:true});if(j.ok){await loadKeys();toast('Đã xóa '+j.da_xoa+' key')}else toast(j.loi||'Lỗi',1)}
 });
 document.addEventListener('input',e=>{if(e.target.id==='fq'){F.q=e.target.value;renderTable()}});
@@ -3093,6 +3380,7 @@ document.addEventListener('change',e=>{
 document.addEventListener('toggle',e=>{const t=e.target;if(t.classList&&t.classList.contains('dv')){t.open?OPEN.add(t.dataset.k):OPEN.delete(t.dataset.k)}},true);
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['k','un'].includes(e.target.id))login()});
 setInterval(()=>{if(S&&$('#tbl'))loadKeys()},60000);
+setInterval(()=>{if(S&&isMain()&&$('#pv'))loadPanel()},5000);   /* yêu cầu duyệt mới hiện nhanh (5s) */
 if(S)loadKeys();else renderLogin();
 </script></body></html>
 """
@@ -3253,7 +3541,7 @@ def health():
                      mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_che_do=AF_MODE_FLIP, be_final_af=AF_FLIP_FINAL,
                      be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_all=AF_FLIP_FINAL_ALL),
              xoa_lich_su=dict(bat=HIST_CLEAR_ENABLED, sun_an_den_phien=hist_hidden_upto("sun")),
-             ips=ip_health())
+             ips=ip_health(), panel_duyet=panel_health())
     s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items()}}
     return _json(s)
 
@@ -3407,6 +3695,7 @@ def main():
     print(f"AF nhom     ->  chi logic bi be vao nhom CAO/THAP {'BAT (logic khong be = ALL)' if AF_GROUP_FLIPPED_ONLY else 'TAT'} · nhom phai >= da so toan bo logic (n//2+1) {'BAT (ít hon -> dung ALL)' if AF_GROUP_NEED_MAJORITY else 'TAT'}")
     print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · chi CAO/THAP {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
     print(f"xoa lich su ->  nut o panel {'BAT' if HIST_CLEAR_ENABLED else 'TAT'} · chi an lich su hien thi (khong dung toi logic / WR / AF) · file moc {HIST_CLEAR_PATH}")
+    print(f"PANEL HTML  ->  thiet bi phai duoc admin chinh duyet (khong can key, vao ca Sun + Hit) · file {PANEL_DEV_PATH} · toi da {PANEL_MAX_PENDING_PER_IP} yeu cau cho duyet / IP")
     print(f"WR 100 phien ->  luu toi da {PERSIST_KEEP} van da cham · WR dung/sai xet {EVAL_WINDOW} van gan nhat")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))

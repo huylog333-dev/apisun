@@ -10,7 +10,6 @@ Chạy:
     python sunviw_api.py --wr-flip            # BẬT FLIP TRỌNG SỐ WR của SUN: ván CŨ nhất nặng nhất -> giảm dần tới ván MỚI nhất (--no-wr-flip = tắt; hoặc SUNVIW_WR_FLIP=1|0, hoặc sửa WR_FLIP_WEIGHT_DEFAULT)
     python sunviw_api.py --no-af              # TẮT AF của SUN (--af = bật · --af-low 37 / --af-high 63 = ngưỡng bẻ logic · --af-min 13 = số ván tối thiểu · --af-mode-window 7 / --af-mode-below 45 = bẻ theo WR chế độ · --af-flip / --af-no-flip = bẻ riêng AF)
                                               #           hoặc env SUNVIW_AF / SUNVIW_AF_LOW / SUNVIW_AF_HIGH / SUNVIW_AF_MIN / SUNVIW_AF_MODE_WINDOW / SUNVIW_AF_MODE_MIN / SUNVIW_AF_MODE_BELOW / SUNVIW_AF_MODE_FLIP (bước 3 bẻ chế độ, mặc định TẮT · --af-mode-flip / --af-no-mode-flip) / SUNVIW_AF_FLIP, hoặc sửa AF_*_DEFAULT ở khối "CONFIG AF"
-    python sunviw_api.py --af-top             # (mặc định BẬT) chỉ lấy TOP 9 logic có WR cao nhất / thấp nhất (logic bẻ + không bẻ) rồi mới xét CAO/THẤP trong top (--af-no-top = tắt · --af-top-n 9 = đổi số logic · hoặc env SUNVIW_AF_TOP=1|0 / SUNVIW_AF_TOP_N)
     python sunviw_api.py --af-flip-ct         # CHỈ bẻ final của AF khi chế độ CAO/THẤP (chế độ ALL giữ nguyên; --af-no-flip-ct = tắt; hoặc SUNVIW_AF_FLIP_CT=1|0, hoặc sửa AF_FLIP_FINAL_CT_DEFAULT)
     python sunviw_api.py --af-flip-all        # CHỈ bẻ final của AF khi chế độ ALL (CAO/THẤP giữ nguyên; --af-no-flip-all = tắt; hoặc SUNVIW_AF_FLIP_ALL=1|0, hoặc sửa AF_FLIP_FINAL_ALL_DEFAULT)
 
@@ -164,8 +163,6 @@ def _env_num(name, default, cast):
 #   Port từ SUNVIW_9logics_autoflip_auto.html. WR từng logic = WR CÓ TRỌNG SỐ của SUN (WR_WINDOW / WR_DECAY / WR_FLOOR / WR_WEIGHT_NEWEST / WR_FLIP_WEIGHT).
 #   Bước 1  bẻ logic     : WR < AF_FLIP_LOW -> đảo phiếu logic · WR > AF_FLIP_HIGH -> đảo phiếu logic (WR dùng = 100 − WR). Chưa đủ AF_MIN_GAMES ván -> không bẻ, vote tất cả.
 #   Bước 2  CAO / THẤP   : WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP · nhóm đông hơn được vote (CHẾ ĐỘ CAO / THẤP) · bằng nhau -> vote tất cả (ALL) · pool hoà phiếu -> đa số tất cả logic.
-#   Bước 2a TOP N (MỚI)  : AF_TOP BẬT (mặc định) -> trước khi chia CAO / THẤP, chỉ giữ AF_TOP_N (9) logic có WR dùng CAO NHẤT / THẤP NHẤT (xa 50% nhất), lấy từ TẤT CẢ logic: đã bẻ WR thấp · đã bẻ WR cao · lẫn
-#                          logic KHÔNG bẻ (WR thuần). CAO / THẤP chỉ xét TRONG top này, nhóm đông hơn trong top được vote. Chi tiết ở khối "TOP N LOGIC CÓ WR CỰC TRỊ" bên dưới.
 #   Bước 3  bẻ chế độ    : WR của chế độ đang chạy trong AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ < AF_MODE_BELOW -> đảo final · ≥ AF_MODE_BELOW -> theo bình thường.
 #                          Cần đủ AF_MODE_MIN ván của chế độ đó mới xét bẻ. Cả CAO lẫn THẤP đều có chuỗi ván riêng (hv / lv lưu trong từng ván đã chấm).
 #                          ⛔ MẶC ĐỊNH ĐANG TẮT (AF_MODE_FLIP_DEFAULT = False): bước 3 bị bỏ qua -> final = kết quả sau bước 2 (CAO / THẤP / ALL), không bị đảo theo WR chế độ.
@@ -214,19 +211,6 @@ AF_FLIP_HIGH_MAX_DEFAULT = 75
 #                          lệnh --af-group-flipped / --af-no-group-flipped · --af-group-majority / --af-no-group-majority
 AF_GROUP_FLIPPED_ONLY_DEFAULT = True
 AF_GROUP_NEED_MAJORITY_DEFAULT = True
-# ── TOP N LOGIC CÓ WR CỰC TRỊ (Bước 2 mới) — AF_TOP + AF_TOP_N ───────────────────────────────────────────────────
-#   BẬT (mặc định): SAU bước 1 (bẻ logic), CHỈ giữ lại AF_TOP_N logic (mặc định 9) có WR DÙNG nằm xa mốc 50% nhất — tức các logic có WR CAO NHẤT và THẤP NHẤT
-#       (xếp theo |WR dùng − 50|, lớn nhất trước). Sau đó mới xét CAO / THẤP TRONG riêng top này, nhóm đông hơn (trong top) được vote -> dự đoán.
-#       · Ứng viên vào top = TẤT CẢ logic: logic ĐÃ BẺ WR THẤP (WR dùng = 100 − WR gốc, thành CAO) · logic ĐÃ BẺ WR CAO (thành THẤP) ·
-#         VÀ logic KHÔNG BẺ (WR thuần, chưa bẻ) — logic không bẻ nếu WR nằm ở đoạn cao nhất / thấp nhất thì vẫn vào top bình thường.
-#       · Khi BẬT: AF_GROUP_FLIPPED_ONLY KHÔNG còn tác dụng (logic không bẻ cũng được xét). AF_GROUP_NEED_MAJORITY tính theo số logic TRONG TOP (9 -> cần >= 5), không phải 15.
-#       · Hai logic bằng độ lệch -> logic đứng trước trong bộ SEQ15 được ưu tiên. Logic WR đúng 50% không thuộc CAO cũng không thuộc THẤP.
-#       · Chế độ ALL (hai nhóm trong top bằng nhau / hạ về ALL) = vote cả TOP, không vote cả 15 logic.
-#   TẮT: quay về cách cũ (chia nhóm trên toàn bộ logic, theo AF_GROUP_FLIPPED_ONLY).
-#   Đổi mà không sửa file: env SUNVIW_AF_TOP=1|0 · SUNVIW_AF_TOP_N=9 · lệnh --af-top / --af-no-top · --af-top-n N
-#   (Bàn HITCLUB có công tắc RIÊNG "AF_TOP" / "AF_TOP_N" trong từng khối CONFIG HITCLUB.)
-AF_TOP_DEFAULT = True
-AF_TOP_N_DEFAULT = 9
 AF_MIN_GAMES_DEFAULT = 7
 AF_MODE_WINDOW_DEFAULT = 11
 AF_MODE_MIN_DEFAULT = 7
@@ -246,8 +230,6 @@ AF_FLIP_HIGH_MIN = _env_num("SUNVIW_AF_HIGH_MIN", AF_FLIP_HIGH_MIN_DEFAULT, floa
 AF_FLIP_HIGH_MAX = _env_num("SUNVIW_AF_HIGH_MAX", AF_FLIP_HIGH_MAX_DEFAULT, float)
 AF_GROUP_FLIPPED_ONLY = _env_bool("SUNVIW_AF_GROUP_FLIPPED", AF_GROUP_FLIPPED_ONLY_DEFAULT)      # chỉ logic bị bẻ mới vào nhóm CAO / THẤP
 AF_GROUP_NEED_MAJORITY = _env_bool("SUNVIW_AF_GROUP_MAJORITY", AF_GROUP_NEED_MAJORITY_DEFAULT)   # nhóm chọn < đa số toàn bộ logic -> dùng ALL
-AF_TOP = _env_bool("SUNVIW_AF_TOP", AF_TOP_DEFAULT)                                              # chỉ xét CAO / THẤP trong top N logic có WR cực trị
-AF_TOP_N = _env_num("SUNVIW_AF_TOP_N", AF_TOP_N_DEFAULT, int)                                    # N = số logic trong top (9)
 AF_MIN_GAMES =_env_num("SUNVIW_AF_MIN", AF_MIN_GAMES_DEFAULT, int)
 AF_MODE_WINDOW = _env_num("SUNVIW_AF_MODE_WINDOW", AF_MODE_WINDOW_DEFAULT, int)
 AF_MODE_MIN = _env_num("SUNVIW_AF_MODE_MIN", AF_MODE_MIN_DEFAULT, int)
@@ -261,8 +243,7 @@ AF_FLIP_FINAL_ALL = _env_bool("SUNVIW_AF_FLIP_ALL", AF_FLIP_FINAL_ALL_DEFAULT)  
 def af_apply_limits():
     """Chuẩn hoá tham số AF (gọi lúc import và sau khi đọc cờ dòng lệnh)."""
     global AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_MIN, AF_MODE_BELOW
-    global AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX, AF_TOP_N
-    AF_TOP_N = max(1, int(AF_TOP_N))
+    global AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX
     AF_FLIP_LOW = min(max(0.0, float(AF_FLIP_LOW)), 50.0)
     AF_FLIP_HIGH = min(max(50.0, float(AF_FLIP_HIGH)), 100.0)
     lo_a, lo_b = sorted((min(max(0.0, float(AF_FLIP_LOW_MIN)), 50.0), min(max(0.0, float(AF_FLIP_LOW_MAX)), 50.0)))          # vùng thấp nằm trong 0-50 (tự đổi chỗ nếu gõ ngược)
@@ -415,8 +396,6 @@ class TableCfg:
         self.WR_WINDOW = max(1, int(self.WR_WINDOW))
         self.WR_MIN_GAMES = max(1, int(self.WR_MIN_GAMES))
         self.AF_MIN_GAMES = max(1, int(self.AF_MIN_GAMES))
-        self.AF_TOP = bool(getattr(self, "AF_TOP", False))                 # bàn nào không khai báo -> TẮT (giữ cách cũ)
-        self.AF_TOP_N = max(1, int(getattr(self, "AF_TOP_N", 9)))
         self.AF_MODE_WINDOW = max(1, int(self.AF_MODE_WINDOW))
         self.AF_MODE_MIN = max(1, min(int(self.AF_MODE_MIN), self.AF_MODE_WINDOW))
         self.AF_MODE_BELOW = min(max(0.0, float(self.AF_MODE_BELOW)), 100.0)
@@ -508,8 +487,6 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    # AF: chỉ xét CAO/THẤP trong top N logic có WR cực trị (logic bẻ + logic không bẻ đều được vào top) — xem khối "TOP N LOGIC CÓ WR CỰC TRỊ" ở đầu file
-    "AF_TOP": True, "AF_TOP_N": 9,
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
@@ -536,8 +513,6 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    # AF: chỉ xét CAO/THẤP trong top N logic có WR cực trị (logic bẻ + logic không bẻ đều được vào top) — xem khối "TOP N LOGIC CÓ WR CỰC TRỊ" ở đầu file
-    "AF_TOP": True, "AF_TOP_N": 9,
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
@@ -1051,20 +1026,15 @@ def af_decision(votes, graded, cfg=SUN):
     preds (phiếu sau bẻ logic) · flips[i] (LOW | HIGH | None) · wins / wsum (trọng số) · eff[i] (WR dùng, 0-100) · group[i] (CAO | THAP | None) · hi / lo (chỉ số logic mỗi nhóm)
     hv / lv (vote gốc của nhóm CAO / THẤP — LƯU vào ván đã chấm) · gT / gX (phiếu TÀI / XỈU trong pool) · avg (TB WR dùng của pool, độ tin cậy) · mw (WR 2 chế độ)
     demoted (True = nhóm CAO / THẤP được chọn ít hơn đa số toàn bộ logic -> đã hạ về ALL) · need_maj (số logic tối thiểu để một nhóm được dùng).
-    AF_GROUP_FLIPPED_ONLY: chỉ logic bị bẻ mới có group (CAO | THAP); logic không bẻ -> group None = mặc định ALL.
-    AF_TOP (mặc định BẬT): sau bẻ logic, chỉ giữ AF_TOP_N logic (9) có WR dùng xa 50% nhất (WR CAO nhất + THẤP nhất; logic bẻ lẫn KHÔNG bẻ đều là ứng viên) rồi mới chia CAO / THẤP
-    TRONG top đó và vote nhóm đông hơn. top = chỉ số logic trong top (xếp từ cực trị nhất) · top_on = top có đang dùng không · group[i] chỉ có nghĩa với logic trong top (ngoài top -> None)
-    · hi / lo / hv / lv / need_maj / chế độ ALL đều tính TRONG top (ALL = vote cả top). AF_GROUP_FLIPPED_ONLY không còn tác dụng khi top bật."""
+    AF_GROUP_FLIPPED_ONLY: chỉ logic bị bẻ mới có group (CAO | THAP); logic không bẻ -> group None = mặc định ALL."""
     nl = len(votes)
     all_vote = vote_result(votes)
     win = graded[-cfg.WR_WINDOW:]                             # cũ -> mới (cùng cửa sổ WR với cách cũ của SUN)
     n = len(win)
     need = max(1, min(cfg.AF_MIN_GAMES, cfg.WR_WINDOW))
     mw = af_mode_wr(graded, cfg)
-    top_on = bool(getattr(cfg, "AF_TOP", False))              # cfg không khai báo AF_TOP -> TẮT (cách cũ)
-    top_n = max(1, min(int(getattr(cfg, "AF_TOP_N", 9)), nl))
     out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False, "demoted": False,
-           "need_maj": (top_n if top_on else nl) // 2 + 1, "top_on": top_on, "top": [],
+           "need_maj": nl // 2 + 1,
            "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
            "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None, "pool": list(range(nl)),     # pool = logic THỰC SỰ tham gia vote ván này (chưa đủ ván -> vote tất cả)
            "gT": sum(1 for v in votes if v == TAI), "gX": sum(1 for v in votes if v == XIU), "avg": None, "mw": mw}
@@ -1094,21 +1064,13 @@ def af_decision(votes, graded, cfg=SUN):
         preds.append(flip_pred(votes[i]) if f else votes[i])
         flips.append(f)
         effw.append(e)
-        if top_on:                                                                                    # TOP bật: MỌI logic (bẻ lẫn không bẻ) được chia theo WR dùng; việc giữ lại sau đây mới lọc theo top
-            group.append("CAO" if e * 2 > wsum else ("THAP" if e * 2 < wsum else None))
-        elif cfg.AF_GROUP_FLIPPED_ONLY and not f:                                                         # Bước 2: logic KHÔNG bẻ (WR ngoài vùng bẻ) -> không thuộc nhóm nào = mặc định ALL
+        if cfg.AF_GROUP_FLIPPED_ONLY and not f:                                                         # Bước 2: logic KHÔNG bẻ (WR ngoài vùng bẻ) -> không thuộc nhóm nào = mặc định ALL
             group.append(None)
         else:                                                                                         # nhóm theo WR dùng (sau bẻ)
             group.append("CAO" if e * 2 > wsum else ("THAP" if e * 2 < wsum else None))
-    top = []
-    if top_on:                                                                                        # Bước 2a (mới): chọn top_n logic có WR dùng CAO NHẤT / THẤP NHẤT = xa mốc 50% nhất
-        top = sorted(range(nl), key=lambda i: (-abs(effw[i] * 2 - wsum), i))[:top_n]                  # |WR dùng − 50| giảm dần (Fraction -> chính xác) · bằng nhau -> logic đứng trước
-        keep = set(top)
-        group = [g if i in keep else None for i, g in enumerate(group)]                               # logic ngoài top không thuộc nhóm nào
     hi = [i for i, g in enumerate(group) if g == "CAO"]
     lo = [i for i, g in enumerate(group) if g == "THAP"]
-    all_pool = list(top) if top_on else list(range(nl))   # pool của chế độ ALL: TOP bật -> cả top · tắt -> tất cả logic
-    need_maj = len(all_pool) // 2 + 1                     # đa số của pool ALL (cách cũ: 15 logic -> 8 · top 9 -> 5)
+    need_maj = nl // 2 + 1                                # đa số của TOÀN BỘ logic (15 -> 8)
 
     def _pv(idx):
         return vote_result([preds[i] for i in idx]) if idx else None
@@ -1119,29 +1081,25 @@ def af_decision(votes, graded, cfg=SUN):
     elif len(lo) > len(hi):
         mode, pool, base = "THAP", lo, lv
     else:
-        mode, pool = "ALL", list(all_pool)
-        base = vote_result([preds[i] for i in pool])
+        mode, pool = "ALL", list(range(nl))
+        base = vote_result(preds)
     demoted = False
     if cfg.AF_GROUP_NEED_MAJORITY and mode != "ALL" and len(pool) < need_maj:    # nhóm được chọn ít hơn đa số của pool ALL -> bỏ nhóm, dùng ALL
         demoted = True
-        mode, pool = "ALL", list(all_pool)
-        base = vote_result([preds[i] for i in pool])
+        mode, pool = "ALL", list(range(nl))
+        base = vote_result(preds)
     tie = False
-    if base == "SKIP":                                    # pool hoà phiếu -> đa số pool ALL (top nếu bật, không thì tất cả logic) rồi tới tất cả logic (đã bẻ logic); vẫn hoà -> đa số gốc
+    if base == "SKIP":                                    # pool hoà phiếu -> đa số tất cả logic (đã bẻ logic); vẫn hoà -> đa số gốc (như cách cũ)
         tie = True
-        base = vote_result([preds[i] for i in all_pool])
-        if base == "SKIP":
-            base = vote_result(preds)
+        base = vote_result(preds)
         if base == "SKIP":
             base = all_vote
     mflip, final = False, base
     if cfg.AF_MODE_FLIP and mode != "ALL" and not tie and mw[mode]["flip"]:    # Bước 3: bẻ theo WR của chế độ đang chạy (chỉ khi AF_MODE_FLIP bật)
         mflip, final = True, flip_pred(base)
     pv = [preds[i] for i in pool]
-    vpool = list(all_pool) if tie else list(pool)         # logic THAM GIA vote ván này (nhóm hoà phiếu -> thực tế dùng pool ALL) — panel hiện "logic đang dự đoán"
-    if top_on:
-        vpool.sort(key=top.index)                         # TOP bật: pool luôn nằm trong top -> xếp theo hạng (WR xa 50% nhất trước)
-    out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, demoted=demoted, need_maj=need_maj, top_on=top_on, top=top, pool=vpool, preds=preds, flips=flips,
+    vpool = list(range(nl)) if tie else list(pool)         # logic THAM GIA vote ván này (nhóm hoà phiếu -> thực tế dùng pool ALL) — panel hiện "logic đang dự đoán"
+    out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, demoted=demoted, need_maj=need_maj, pool=vpool, preds=preds, flips=flips,
                wins=[float(w) for w in wins], wsum=float(wsum), weights=[float(w) for w in weights],
                eff=[float(e / wsum * 100) for e in effw], group=group, hi=hi, lo=lo,
                hv=hv if hv in (TAI, XIU) else None, lv=lv if lv in (TAI, XIU) else None,
@@ -1398,14 +1356,10 @@ def build_result(hist, cfg=SUN, persist=None):
                 "thap": [cfg.AF_FLIP_LOW_MIN, cfg.AF_FLIP_LOW_MAX],
                 "cao": [cfg.AF_FLIP_HIGH_MIN, cfg.AF_FLIP_HIGH_MAX]},
             "so_logic_nhom": {"CAO": len(af["hi"]), "THAP": len(af["lo"])} if used_af else None,
-            "logic_du_doan": [SUN_NAMES[i] for i in af["pool"]] if used_af else [],      # logic THAM GIA vote ván này (TOP bật: xếp theo hạng trong top)
-            "top": {                                               # TOP N logic có WR dùng cực trị (CAO nhất + THẤP nhất) — chỉ xét CAO / THẤP trong top này (bat=False -> cách cũ, xét toàn bộ logic)
-                "bat": bool(getattr(cfg, "AF_TOP", False)),
-                "n": max(1, int(getattr(cfg, "AF_TOP_N", 9))),
-                "logic": [SUN_NAMES[i] for i in af["top"]] if used_af else []},   # xếp từ cực trị nhất
-            "chi_be_vao_nhom": cfg.AF_GROUP_FLIPPED_ONLY and not getattr(cfg, "AF_TOP", False),   # True = chỉ logic ĐÃ BỊ BẺ mới vào nhóm CAO / THẤP, logic không bẻ mặc định ALL (không áp dụng khi TOP bật)
+            "logic_du_doan": [SUN_NAMES[i] for i in af["pool"]] if used_af else [],      # logic THAM GIA vote ván này 
+            "chi_be_vao_nhom": cfg.AF_GROUP_FLIPPED_ONLY,              # True = chỉ logic ĐÃ BỊ BẺ mới vào nhóm CAO / THẤP, logic không bẻ mặc định ALL
             "can_da_so_nhom": cfg.AF_GROUP_NEED_MAJORITY,              # True = nhóm CAO / THẤP phải có >= đa số toàn bộ logic, không thì dùng ALL
-            "da_so_toi_thieu": af["need_maj"] if used_af else ((min(int(getattr(cfg, "AF_TOP_N", 9)), len(votes)) if getattr(cfg, "AF_TOP", False) else len(votes)) // 2 + 1),
+            "da_so_toi_thieu": af["need_maj"] if used_af else (len(votes) // 2 + 1),
             "ha_xuong_all": af["demoted"] if used_af else False,   # True = nhóm CAO / THẤP chọn được ít hơn đa số -> đã hạ về ALL ở ván này
             "logic_bi_be": [SUN_NAMES[i] for i, f in enumerate(af["flips"]) if f] if used_af else [],
             "wr_che_do": {                                         # WR của từng chế độ trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ (vote gốc, chưa bẻ chế độ)
@@ -1435,10 +1389,8 @@ def build_result(hist, cfg=SUN, persist=None):
              "af_be": (af["flips"][i] if used_af else None),                                         # LOW | HIGH | None: logic có bị bẻ ở bước 1 của AF không
              "af_du_doan": (af["preds"][i] if used_af else None),                                    # phiếu SAU khi bẻ logic
              "af_wr": (round(af["eff"][i], 1) if used_af and af["eff"][i] is not None else None),    # WR dùng (100 − WR gốc nếu bị bẻ)
-             "af_nhom": (af["group"][i] if used_af else None),                                       # CAO | THAP | None (TOP bật: logic ngoài top -> None)
-             "af_vote": ((i in af["pool"]) if used_af else None),                                    # True = logic THAM GIA vote ván này (nằm trong nhóm / pool được chọn)
-             "af_top": ((i in af["top"]) if used_af and af.get("top_on") and af["top"] else None),                 # True = logic nằm trong top N WR cực trị · False = ngoài top · None = TOP tắt / AF không chốt
-             "af_hang": ((af["top"].index(i) + 1) if used_af and af.get("top_on") and i in af["top"] else None)}   # thứ hạng trong top (1 = WR xa 50% nhất)
+             "af_nhom": (af["group"][i] if used_af else None),                                       # CAO | THAP | None
+             "af_vote": ((i in af["pool"]) if used_af else None)}                                    # True = logic THAM GIA vote ván này (nằm trong nhóm / pool được chọn)
             for i in range(len(votes))
         ],
         "final_goc": final,                                       # final trước khi bẻ chung (của AF nếu AF chốt (đã gồm bẻ logic + bẻ chế độ) · không thì của cách cũ)
@@ -1876,11 +1828,6 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
 .lg-b table{margin-top:6px}
 .lg-b td,.lg-b th{padding:6px 6px;font-size:13.5px}
 .lg-b .band{font-size:12px;color:var(--mu);margin:2px 0 4px}
-.lg-b h3{margin:14px 0 6px;font-size:14px;font-weight:800}
-.lg-b tr.dim td{opacity:.5}
-.pl{display:inline-block;margin:2px 5px 2px 0;padding:2px 10px;border-radius:999px;border:1px solid var(--ln);font-size:12.5px;white-space:nowrap}
-.pl.tai{border-color:var(--tai)}.pl.xiu{border-color:var(--xiu)}
-.sb2{margin-top:10px}.sb2>summary{cursor:pointer;color:var(--mu);font-size:13px;padding:4px 0}
 .kbox{text-align:center}.kbox p{margin:6px 0 4px}.kbox b{font-size:16px}
 .gi{font-size:34px;line-height:1;margin-bottom:8px}
 .spin{width:34px;height:34px;border:3px solid var(--ln);border-top-color:var(--tai);border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 14px}
@@ -1957,33 +1904,8 @@ function modeStats(d,h){
   const a=acc(d);
   return `<div class="mst"><button class="${MF===''?'on':''}" data-m=""><span class="nm">Tất cả</span> <b>${a.k}/${a.t}</b> <span class="mu">${a.p===null?'–':a.p+'%'}</span></button>${MS.map(m=>{const s=modeAcc(h,m);return `<button class="${m}${MF===m?' on':''}" data-m="${m}" title="${esc(MTIP[m])}"><span class="nm">${MN[m]}</span> <b>${s.k}/${s.t}</b> <span class="mu">${s.p==null?'–':s.p+'%'}</span>${d.che_do===m?' <i class="now">● hiện tại</i>':''}</button>`}).join('')}</div><div class="mhint">Đúng/sai tính lại theo cấu hình bẻ hiện tại · bấm một chế độ để lọc lịch sử</div>`;
 }
-let LO=localStorage.getItem('lo')!=='0',LO2=localStorage.getItem('lo2')==='1';
-/* TOP N logic (WR cao nhất / thấp nhất) + nhóm logic ĐANG DỰ ĐOÁN ván này. AF tắt / TOP tắt / chưa đủ ván -> dùng bảng đầy đủ cũ (logicHtmlOld). */
+let LO=localStorage.getItem('lo')!=='0';
 function logicHtml(d){
-  const ct=d.chi_tiet,L=ct&&ct.logic,A=ct&&ct.af;
-  if(!L||!L.length||!A||!A.dang_dung||!A.top||!A.top.bat||!L.some(x=>x.af_top===true))return logicHtmlOld(d);
-  const top=L.filter(x=>x.af_top).sort((a,b)=>(a.af_hang||99)-(b.af_hang||99)),rest=L.filter(x=>!x.af_top),pool=top.filter(x=>x.af_vote);
-  const nT=pool.filter(x=>x.af_du_doan==='TÀI').length,nX=pool.filter(x=>x.af_du_doan==='XỈU').length,m=A.che_do;
-  const base=d.du_doan_truoc_be_che_do||d.du_doan_goc||d.du_doan;
-  const why=m==='CAO'?'nhóm CAO (WR cao) đông hơn trong top → chỉ nhóm này vote':m==='THAP'?'nhóm THẤP (WR thấp) đông hơn trong top → chỉ nhóm này vote'
-    :(A.ha_xuong_all?'nhóm CAO/THẤP chưa đủ đa số ('+A.da_so_toi_thieu+' logic) → hạ về ALL, vote cả top':'hai nhóm bằng nhau → vote cả top')+(A.hoa_phieu_nhom?' · nhóm hoà phiếu → dùng đa số cả top':'');
-  const v=A.gioi_han_vung_be,band=(v&&v.bat?'Chỉ bẻ logic khi WR trong vùng THẤP '+v.thap[0]+'–'+v.thap[1]+'% hoặc CAO '+v.cao[0]+'–'+v.cao[1]+'% · ngoài vùng không bẻ':'')+' · TOP '+A.top.n+' = logic có WR dùng xa 50% nhất (gồm cả logic đã bẻ lẫn chưa bẻ)';
-  const wr=x=>(x.wr==null?'–':x.wr+'%')+(x.af_be&&x.af_wr!=null?` <span class="mu">→ ${x.af_wr}%</span>`:'');
-  const fb=x=>x.af_be?bd('flip',x.af_be==='LOW'?'BẺ · WR thấp':'BẺ · WR cao','Phiếu của logic này bị đảo ở bước 1 của AF'):'<span class="mu">–</span>';
-  const nh=x=>x.af_nhom?bd(x.af_nhom,MN[x.af_nhom],x.af_hang?'Hạng '+x.af_hang+' trong top (1 = WR xa 50% nhất)':''):'<span class="mu" title="WR đúng 50% → không thuộc CAO / THẤP">–</span>';
-  const rowT=x=>`<tr${x.af_vote?'':' class="dim"'}><td class="mu">${x.af_hang||''}</td><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${wr(x)}</td><td>${fb(x)}</td><td class="${cl(x.af_du_doan)}"><b>${x.af_du_doan}</b></td><td>${nh(x)}</td><td>${x.af_vote?'<b class="okc" title="Đang tham gia dự đoán ván này">✔ vote</b>':'<span class="mu" title="Nằm trong top nhưng không thuộc nhóm đang được chọn">–</span>'}</td></tr>`;
-  const rowR=x=>`<tr class="dim"><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${wr(x)}</td><td>${fb(x)}</td></tr>`;
-  return `<details class="lg" id="lg"${LO?' open':''}><summary><span>🏆 TOP ${A.top.n} logic · 🎯 ${pool.length} đang dự đoán</span><span class="mu"><span class="tai">TÀI ${nT}</span> · <span class="xiu">XỈU ${nX}</span></span></summary><div class="lg-b">
-<h3>🎯 ${pool.length} logic đang dự đoán · chế độ ${MN[m]||m}</h3>
-<div>${pool.map(x=>`<span class="pl ${cl(x.af_du_doan)}" title="WR dùng ${x.af_wr==null?'–':x.af_wr+'%'}">${esc(x.ten)} <b>${x.af_du_doan}</b></span>`).join('')}</div>
-<div class="band">${esc(why)} · vote <span class="tai">TÀI ${nT}</span> – <span class="xiu">XỈU ${nX}</span> → <b class="${cl(base)}">${base}</b>${d.du_doan!==base?` · API trả <b class="${cl(d.du_doan)}">${d.du_doan}</b> (sau bẻ)`:''}</div>
-<h3>🏆 TOP ${top.length} logic hiện tại (WR cao nhất / thấp nhất)</h3>
-<table><tr><th>#</th><th>Logic</th><th>Phiếu gốc</th><th>WR</th><th>Bẻ</th><th>Phiếu dùng</th><th>Nhóm</th><th>Vote</th></tr>${top.map(rowT).join('')}</table>
-${rest.length?`<details class="sb2" id="lg2"${LO2?' open':''}><summary>Logic ngoài top (${rest.length}) — không tham gia vote</summary><table><tr><th>Logic</th><th>Phiếu gốc</th><th>WR</th><th>Bẻ</th></tr>${rest.map(rowR).join('')}</table></details>`:''}
-<div class="band" style="margin-top:8px">${esc(band)} · WR = tỉ lệ đúng có trọng số trong ${d.so_van_wr||'?'} ván gần nhất · “→ x%” là WR sau bẻ (100 − WR) · Phiếu dùng = phiếu sau khi bẻ logic</div></div></details>`;
-}
-document.addEventListener('toggle',e=>{if(e.target&&e.target.id==='lg2'){LO2=e.target.open;localStorage.setItem('lo2',LO2?'1':'0')}},true);
-function logicHtmlOld(d){
   const ct=d.chi_tiet,L=ct&&ct.logic;
   if(!L||!L.length)return '';
   const A=ct.af,af=!!(A&&A.dang_dung),use=x=>af?x.af_du_doan:x.du_doan;
@@ -1991,15 +1913,14 @@ function logicHtmlOld(d){
   let band='';
   if(af){const v=A.gioi_han_vung_be,ng=A.nguong_be_logic;
     band=v&&v.bat?`Chỉ bẻ logic khi WR trong vùng THẤP ${v.thap[0]}–${v.thap[1]}% hoặc CAO ${v.cao[0]}–${v.cao[1]}% · ngoài vùng không bẻ`:(ng?`Bẻ logic khi WR < ${ng.thap}% hoặc > ${ng.cao}%`:'');
-    if(A.top&&A.top.bat)band+=' · chỉ xét TOP '+A.top.n+' logic có WR cao nhất / thấp nhất (gồm cả logic đã bẻ lẫn chưa bẻ) rồi mới chia CAO/THẤP trong top'+(A.top.logic&&A.top.logic.length?': '+A.top.logic.join(', '):'');
-    else if(A.chi_be_vao_nhom)band+=' · chỉ logic đã bẻ mới vào nhóm CAO/THẤP, logic không bẻ = ALL';
+    if(A.chi_be_vao_nhom)band+=' · chỉ logic đã bẻ mới vào nhóm CAO/THẤP, logic không bẻ = ALL';
     if(A.can_da_so_nhom)band+=' · nhóm CAO/THẤP cần ≥ '+A.da_so_toi_thieu+' logic (đa số), ít hơn → dùng ALL';
     if(A.ha_xuong_all)band+=' · ván này: nhóm chưa đủ đa số → ĐÃ HẠ VỀ ALL'}
   const rows=L.map(x=>{
     const eff=x.af_be&&x.af_wr!=null?` <span class="mu">→ ${x.af_wr}%</span>`:'';
     const nh=af?x.af_nhom:x.nhom;
     const fb=x.af_be?bd('flip',x.af_be==='LOW'?'BẺ · WR thấp':'BẺ · WR cao','Phiếu của logic này bị đảo ở bước 1 của AF'):'<span class="mu">–</span>';
-    return `<tr><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${x.wr==null?'–':x.wr+'%'}${eff}</td>${af?`<td>${fb}</td><td class="${cl(x.af_du_doan)}"><b>${x.af_du_doan}</b></td>`:''}<td>${x.af_top===false?'<span class="mu" title="Không nằm trong top logic có WR cao nhất / thấp nhất → không được vote">ngoài top</span>':(nh?bd(nh,MN[nh]||nh,x.af_hang?'Hạng '+x.af_hang+' trong top (1 = WR xa 50% nhất)':''):(af?bd('ALL','ALL',x.af_top?'WR đúng 50% → không thuộc CAO / THẤP':'Không bẻ → mặc định chế độ ALL'):'<span class="mu">–</span>'))}</td></tr>`}).join('');
+    return `<tr><td><b>${esc(x.ten)}</b></td><td class="${cl(x.du_doan)}">${x.du_doan}</td><td>${x.wr==null?'–':x.wr+'%'}${eff}</td>${af?`<td>${fb}</td><td class="${cl(x.af_du_doan)}"><b>${x.af_du_doan}</b></td>`:''}<td>${nh?bd(nh,MN[nh]||nh):(af?bd('ALL','ALL','Không bẻ → mặc định chế độ ALL'):'<span class="mu">–</span>')}</td></tr>`}).join('');
   return `<details class="lg" id="lg"${LO?' open':''}><summary><span>🧠 Từng logic · WR &amp; dự đoán hiện tại</span><span class="mu"><span class="tai">TÀI ${nT}</span> · <span class="xiu">XỈU ${nX}</span></span></summary><div class="lg-b">${band?`<div class="band">${esc(band)}</div>`:''}<table><tr><th>Logic</th><th>${af?'Phiếu gốc':'Dự đoán'}</th><th>WR</th>${af?'<th>Bẻ</th><th>Phiếu dùng</th>':''}<th>Nhóm</th></tr>${rows}</table>${af?'<div class="band" style="margin-top:6px">WR = tỉ lệ đúng có trọng số trong '+(d.so_van_wr||'?')+' ván gần nhất · khi bị bẻ, “→ x%” là WR sau bẻ (100 − WR) · Phiếu dùng = phiếu sau khi bẻ logic</div>':''}</div></details>`;
 }
 document.addEventListener('toggle',e=>{if(e.target&&e.target.id==='lg'){LO=e.target.open;localStorage.setItem('lo',LO?'1':'0')}},true);
@@ -3536,7 +3457,7 @@ def health():
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
              wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST,       # trọng số cũ nhất -> mới nhất
              hist_keep=HIST_KEEP, persist_keep=PERSIST_KEEP, bo_logic=SUN_NAMES,
-             af=dict(bat=AF_ENABLED, top=dict(bat=AF_TOP, n=AF_TOP_N), chi_be_vao_nhom=AF_GROUP_FLIPPED_ONLY, can_da_so_nhom=AF_GROUP_NEED_MAJORITY, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
+             af=dict(bat=AF_ENABLED, chi_be_vao_nhom=AF_GROUP_FLIPPED_ONLY, can_da_so_nhom=AF_GROUP_NEED_MAJORITY, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
                      vung_be=dict(bat=AF_FLIP_BAND, thap=[AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX], cao=[AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX]),
                      mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_che_do=AF_MODE_FLIP, be_final_af=AF_FLIP_FINAL,
                      be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_all=AF_FLIP_FINAL_ALL),
@@ -3560,7 +3481,7 @@ def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, WR_FLIP_WEIGHT, HIT_ENABLED
     global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL, AF_FLIP_FINAL_CT, AF_FLIP_FINAL_ALL, AF_MODE_FLIP
     global AF_FLIP_BAND, AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX
-    global AF_GROUP_FLIPPED_ONLY, AF_GROUP_NEED_MAJORITY, AF_TOP, AF_TOP_N
+    global AF_GROUP_FLIPPED_ONLY, AF_GROUP_NEED_MAJORITY
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -3591,10 +3512,6 @@ def main():
     gmg = ap.add_mutually_exclusive_group()
     gmg.add_argument("--af-group-majority", action="store_true", help="BẬT: nhóm CAO/THẤP phải có >= đa số toàn bộ logic, không thì dùng ALL")
     gmg.add_argument("--af-no-group-majority", action="store_true", help="TẮT: nhóm đông hơn luôn được chọn dù ít logic")
-    tg = ap.add_mutually_exclusive_group()
-    tg.add_argument("--af-top", action="store_true", help="BẬT: chỉ xét CAO/THẤP trong top N logic có WR cao nhất / thấp nhất (logic bẻ + không bẻ đều được vào top)")
-    tg.add_argument("--af-no-top", action="store_true", help="TẮT top: chia nhóm CAO/THẤP trên toàn bộ logic như bản trước")
-    ap.add_argument("--af-top-n", type=int, default=None, help="AF: số logic trong top WR cực trị (mặc định AF_TOP_N_DEFAULT = 9)")
     ap.add_argument("--af-low-min", type=float, default=None, help="AF vùng bẻ THẤP: WR tối thiểu (%%) mới bẻ (mặc định 32)")
     ap.add_argument("--af-low-max", type=float, default=None, help="AF vùng bẻ THẤP: WR tối đa (%%) mới bẻ (mặc định 40)")
     ap.add_argument("--af-high-min", type=float, default=None, help="AF vùng bẻ CAO: WR tối thiểu (%%) mới bẻ (mặc định 60)")
@@ -3638,12 +3555,6 @@ def main():
         AF_GROUP_NEED_MAJORITY = True
     elif a.af_no_group_majority:
         AF_GROUP_NEED_MAJORITY = False
-    if a.af_top:
-        AF_TOP = True
-    elif a.af_no_top:
-        AF_TOP = False
-    if a.af_top_n is not None:
-        AF_TOP_N = a.af_top_n
     if a.af_low_min is not None:
         AF_FLIP_LOW_MIN = a.af_low_min
     if a.af_low_max is not None:
@@ -3691,7 +3602,6 @@ def main():
     _be_logic = (f"chi be khi WR trong {AF_FLIP_LOW_MIN:g}-{AF_FLIP_LOW_MAX:g}% hoac {AF_FLIP_HIGH_MIN:g}-{AF_FLIP_HIGH_MAX:g}% (ngoai vung khong be)" if AF_FLIP_BAND
                  else f"be logic WR < {AF_FLIP_LOW:g}% hoac > {AF_FLIP_HIGH:g}%")
     print(f"AF SUN      ->  {'BAT' if AF_ENABLED else 'TAT'} · {_be_logic} (toi thieu {AF_MIN_GAMES} van) · be che do {('BAT (CAO/THAP khi WR ' + str(AF_MODE_WINDOW) + ' van gan nhat cua che do < ' + format(AF_MODE_BELOW, 'g') + '%, can ' + str(AF_MODE_MIN) + ' van)') if AF_MODE_FLIP else 'TAT'} · be rieng AF {'BAT' if AF_FLIP_FINAL else 'TAT'}")
-    print(f"AF top      ->  {('BAT · chi lay ' + str(AF_TOP_N) + ' logic co WR cao nhat / thap nhat (logic be + logic khong be deu duoc vao top) roi moi xet CAO/THAP trong top') if AF_TOP else 'TAT (xet CAO/THAP tren toan bo logic)'}")
     print(f"AF nhom     ->  chi logic bi be vao nhom CAO/THAP {'BAT (logic khong be = ALL)' if AF_GROUP_FLIPPED_ONLY else 'TAT'} · nhom phai >= da so toan bo logic (n//2+1) {'BAT (ít hon -> dung ALL)' if AF_GROUP_NEED_MAJORITY else 'TAT'}")
     print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · chi CAO/THAP {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
     print(f"xoa lich su ->  nut o panel {'BAT' if HIST_CLEAR_ENABLED else 'TAT'} · chi an lich su hien thi (khong dung toi logic / WR / AF) · file moc {HIST_CLEAR_PATH}")

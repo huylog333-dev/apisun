@@ -71,8 +71,8 @@ JSON /api/predict:
         EWMA   trung bình trượt mũ của TỔNG (α=0.1, nhớ ~10 ván) chia 5 nhóm; học online P(Tài | nhóm) trong 250 ván, co về 50% (m=10)
         REGIME nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm (<=35% · 35-50% · 50-65% · >65%); học online P(ván sau ĐẢO | nhóm) trong 250 ván, co về 50% (m=8) -> đảo hoặc bệt theo dữ liệu
         SESS   số phiên: Naive Bayes trên (số phiên mod 2/3/5/7/10), học online P(Tài | phiên mod m) trong 250 ván, làm mượt mạnh (a=4) · logic duy nhất nhìn SỐ PHIÊN thay vì kết quả quá khứ (cần S["p"] từ compute_all)
-        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=500) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
-        PERIOD chu kỳ theo SỐ PHIÊN: thử phiên mod m = 2..32, chọn m có chi-bình-phương lệch mạnh nhất (ngưỡng z >= 3 đã hiệu chỉnh cho 31 phép thử), rồi dùng P(Tài | phiên mod m) co về tỉ lệ chung (m0=8); không m nào đủ ngưỡng -> BỎ PHIẾU TRẮNG · cửa sổ = toàn bộ lịch sử đang giữ, tối đa 2000 ván (⚠ với HIST_KEEP=500 chỉ bắt được ~3-13% số ván có mẫu theo phiên; cần HIST_KEEP >= 2000 mới đủ mạnh — không có mẫu thì vô hại: bỏ phiếu trắng)
+        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=300) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
+        PERIOD chu kỳ theo SỐ PHIÊN: thử phiên mod m = 2..32, chọn m có chi-bình-phương lệch mạnh nhất (ngưỡng z >= 3 đã hiệu chỉnh cho 31 phép thử), rồi dùng P(Tài | phiên mod m) co về tỉ lệ chung (m0=8); không m nào đủ ngưỡng -> BỎ PHIẾU TRẮNG · cửa sổ = toàn bộ lịch sử đang giữ, tối đa 2000 ván (⚠ với HIST_KEEP=300 chỉ bắt được rất ít ván có mẫu theo phiên; cần HIST_KEEP >= 2000 mới đủ mạnh — không có mẫu thì vô hại: bỏ phiếu trắng)
         SGDLR  hồi quy logistic online (12 kết quả gần nhất + 2 tổng gần nhất + độ dài đợt, L2, 2 epoch trên 300 ván gần nhất, huấn luyện lại mỗi ván) · khác họ mô hình: tuyến tính gộp nhiều tín hiệu yếu thay vì đếm theo ngữ cảnh
     ⚙ Đã bỏ FACE · REV40 (hướng đoán đặt cứng; đo trên 11 loại chuỗi giả lập đều <= 50% khi có cấu trúc) và thêm LAGAC · PERIOD · SGDLR -> 15 logic (SỐ LẺ: đa số tất cả logic không bị hoà 7-7; các bước còn lại nếu hoà vẫn được phá bằng phiếu của logic SUN_TIE_LOGIC (mặc định PPM6, env SUNVIW_TIE_LOGIC)).
     ⚑ PHIẾU TRẮNG: LAGAC / PERIOD chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê (chuỗi ngẫu nhiên: LAGAC ~3% số ván, PERIOD ~0.1%). Lúc không kích hoạt, phiếu của chúng = ĐA SỐ của các logic còn lại (SUN_ABSTAIN) thay vì "theo ván trước" như các logic khác -> không biến thành 2 phiếu "copy ván trước".
@@ -292,7 +292,7 @@ def _data_path(name):
 
 
 HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sunviw_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
-HIST_KEEP = 500            # CỬA SỔ TRƯỢT: chỉ lưu 500 phiên GẦN NHẤT (cả trong RAM lẫn file sunviw_hist.json) — có phiên thứ 501 thì phiên cũ nhất (phiên 1) bị bỏ. Các logic cũ dùng <= 250 ván, SGDLR 300, LAGAC tới 500 · riêng PERIOD cần ~2000 ván mới bắt được chu kỳ theo phiên (ở 500 ván gần như luôn bỏ phiếu trắng) -> muốn PERIOD hiệu quả thì nâng số này lên 2000
+HIST_KEEP = 300            # CỬA SỔ TRƯỢT: chỉ lưu 300 phiên GẦN NHẤT (cả trong RAM lẫn file sunviw_hist.json) — có phiên thứ 301 thì phiên cũ nhất (phiên 1) bị bỏ. Các logic cũ dùng <= 250 ván, SGDLR 300 (vừa đủ), LAGAC dùng toàn bộ 300 ván đang giữ · riêng PERIOD cần ~2000 ván mới bắt được chu kỳ theo phiên (ở 300 ván gần như luôn bỏ phiếu trắng, vô hại) -> muốn PERIOD hiệu quả thì nâng số này lên 2000
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
@@ -486,7 +486,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "ENABLED": True,
     "GID": "vgmn_100",
     "POLL_SEC": 3.0,
-    "HIST_KEEP": 500,
+    "HIST_KEEP": 300,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
@@ -512,7 +512,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "ENABLED": True,
     "GID": "vgmn_101",
     "POLL_SEC": 3.0,
-    "HIST_KEEP": 500,
+    "HIST_KEEP": 300,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số

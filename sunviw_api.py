@@ -22,6 +22,7 @@ Endpoint:
     GET /api/predicthittxthuong  -> [HITCLUB · bàn TX THƯỜNG] JSON dự đoán, cùng cấu trúc /api/predictsun (game="hitclub", ban="hittxthuong"); cũng có ?hist=N · ?detail=1
     GET /api/predicthittxmd5     -> [HITCLUB · bàn TX MD5] như trên (ban="hittxmd5")
     ...?hist=N                   -> (mọi game) thêm lich_su: N ván đúng/sai gần nhất, mới -> cũ
+    GET /api/predicttele68txmd5  -> [TELE68 · TX MD5] JSON dự đoán (game="tele68", ban="tele68txmd5"); nguồn trả CẢ DANH SÁCH ~105 phiên, tool chỉ lưu thêm phiên chưa có, dự đoán phiên mới nhất + 1 và giữ tới khi API trả kết quả phiên đó (xem khối "CONFIG TELE68")
     GET /api/html                -> panel HTML theo dõi Sun + Hit, đổi qua lại, chọn số ván lịch sử. CHỈ MỞ KHI ADMIN CHÍNH DUYỆT THIẾT BỊ (HWID): máy lạ thấy bảng "Đang chờ admin duyệt", được duyệt thì tự mở, KHÔNG cần key, vào cả Sun + Hit
     GET /api/panel/status        -> panel hỏi trạng thái duyệt của thiết bị này (gửi yêu cầu lần đầu): {"status": "approved" | "pending" | "denied" | "limit"} (xem khối "DUYỆT THIẾT BỊ VÀO PANEL")
     GET /api/admin/panel (+ POST /approve · /deny · /remove) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
@@ -30,6 +31,8 @@ Endpoint:
     POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
     POST /api/history/clear      -> XÓA LỊCH SỬ DỰ ĐOÁN hiển thị: {"game":"sun"|"hittxthuong"|"hittxmd5"|"hitclub"|"all"} (nút "Xóa lịch sử" ở panel /api/html). CHỈ ẩn lich_su + số liệu đúng/sai đã hiển thị bằng 1 mốc phiên (file riêng),
                                     KHÔNG xóa dữ liệu nào khác và KHÔNG ảnh hưởng các logic / WR / AF dự đoán (xem khối "CONFIG XÓA LỊCH SỬ"; tắt hẳn bằng SUNVIW_HIST_CLEAR=0)
+    POST /api/history/wipe       -> XÓA SẠCH data của game: {"game":"sun"|"hittxthuong"|"hittxmd5"|"hitclub"|"tele68txmd5"|"all","confirm":true} (nút "☠ Xóa data game" ở panel; xóa thật lịch sử xúc xắc + ván đã chấm, không hoàn tác)
+    POST /api/history/regrade    -> TÍNH LẠI đúng/sai TOÀN BỘ ván đã lưu theo CONFIG HIỆN TẠI: {"game":"sun"|"hittxthuong"|"hittxmd5"|"hitclub"|"tele68txmd5"|"all"} (nút "🔄 Tính lại theo config" ở panel /api/html). Giữ nguyên lịch sử, dùng lại votes đã lưu nên không phải đợi ván mới
     GET /api/ips                 -> DANH SÁCH IP đang dùng + đã từng dùng API (tab "IP" của panel đọc từ đây; có SUNVIW_ADMIN_KEY thì cần header X-Admin-Key hoặc ?key=)
 
 JSON /api/predict:
@@ -61,21 +64,22 @@ JSON /api/predict:
     Mỗi logic là một thuật toán tự học ONLINE trên lịch sử các phiên đã quét (không dùng MD5, không dùng số phiên). Mỗi ván tính lại từ lịch sử, KHÔNG nhìn trước kết quả:
         MKT2   Markov bậc 2 (2 kết quả gần nhất) + nhóm tổng ván trước · cửa sổ 250 ván
         PPM6   PPM: trộn có trọng số các bậc 1..6, tin cậy theo số mẫu · cửa sổ 250
-        KNNT   k-NN mẫu 8 TỔNG gần nhất (khoảng cách L1 giữa các tổng) · 15 láng giềng · cửa sổ 150
         CT2    tỉ lệ Tài có điều kiện theo (nhóm tổng ván trước, nhóm tổng ván trước nữa) · co về 50% (m=6) · cửa sổ 250
         CMM    tỉ lệ Tài có điều kiện theo (xúc xắc nhỏ nhất, lớn nhất) của ván trước · cửa sổ 250
         CDT    tỉ lệ Tài có điều kiện theo (tổng tăng/giảm so với ván trước nữa, nhóm tổng ván trước) · cửa sổ 250
         NBMIX  Naive Bayes (3 kết quả gần nhất, nhóm tổng, xúc xắc max/min, số mặt khác nhau) · cửa sổ 250
-        NBY4   Naive Bayes (4 kết quả gần nhất, chẵn/lẻ của tổng, số mặt khác nhau) · cửa sổ 250
-        PAT    nhận diện cầu lặp chu kỳ 2/3/4/6 (1-1, chu kỳ 3, 2-2, 3-3): khớp trọn P+3 bước liên tiếp -> đoán tiếp theo đúng chu kỳ; không có cầu -> bỏ phiếu trắng (theo ván trước)
         EWMA   trung bình trượt mũ của TỔNG (α=0.1, nhớ ~10 ván) chia 5 nhóm; học online P(Tài | nhóm) trong 250 ván, co về 50% (m=10)
         REGIME nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm (<=35% · 35-50% · 50-65% · >65%); học online P(ván sau ĐẢO | nhóm) trong 250 ván, co về 50% (m=8) -> đảo hoặc bệt theo dữ liệu
-        SESS   số phiên: Naive Bayes trên (số phiên mod 2/3/5/7/10), học online P(Tài | phiên mod m) trong 250 ván, làm mượt mạnh (a=4) · logic duy nhất nhìn SỐ PHIÊN thay vì kết quả quá khứ (cần S["p"] từ compute_all)
         LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=300) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
         PERIOD chu kỳ theo SỐ PHIÊN: thử phiên mod m = 2..32, chọn m có chi-bình-phương lệch mạnh nhất (ngưỡng z >= 3 đã hiệu chỉnh cho 31 phép thử), rồi dùng P(Tài | phiên mod m) co về tỉ lệ chung (m0=8); không m nào đủ ngưỡng -> BỎ PHIẾU TRẮNG · cửa sổ = toàn bộ lịch sử đang giữ, tối đa 2000 ván (⚠ với HIST_KEEP=300 chỉ bắt được rất ít ván có mẫu theo phiên; cần HIST_KEEP >= 2000 mới đủ mạnh — không có mẫu thì vô hại: bỏ phiếu trắng)
         SGDLR  hồi quy logistic online (12 kết quả gần nhất + 2 tổng gần nhất + độ dài đợt, L2, 2 epoch trên 300 ván gần nhất, huấn luyện lại mỗi ván) · khác họ mô hình: tuyến tính gộp nhiều tín hiệu yếu thay vì đếm theo ngữ cảnh
-    ⚙ Đã bỏ FACE · REV40 (hướng đoán đặt cứng; đo trên 11 loại chuỗi giả lập đều <= 50% khi có cấu trúc) và thêm LAGAC · PERIOD · SGDLR -> 15 logic (SỐ LẺ: đa số tất cả logic không bị hoà 7-7; các bước còn lại nếu hoà vẫn được phá bằng phiếu của logic SUN_TIE_LOGIC (mặc định PPM6, env SUNVIW_TIE_LOGIC)).
-    ⚑ PHIẾU TRẮNG: LAGAC / PERIOD chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê (chuỗi ngẫu nhiên: LAGAC ~3% số ván, PERIOD ~0.1%). Lúc không kích hoạt, phiếu của chúng = ĐA SỐ của các logic còn lại (SUN_ABSTAIN) thay vì "theo ván trước" như các logic khác -> không biến thành 2 phiếu "copy ván trước".
+        CTW    Context Tree Weighting: trộn Bayes MỌI cây ngữ cảnh độ sâu <= 8 trên chuỗi Tài/Xỉu (ước lượng KT, tự co về 50% khi thiếu mẫu, trọng số do bằng chứng quyết định chứ không đặt tay) · cửa sổ 300 · QUA CỔNG tự chấm (xem ⚑)
+        BOCPD  phát hiện điểm đổi chế độ Bayes online (Beta–Bernoulli, hazard 1/100): P(Tài) trộn theo phân phối độ dài đợt hiện tại -> cửa sổ hiệu dụng tự co khi nguồn đổi mức, giãn khi ổn định · cửa sổ 200 · QUA CỔNG
+        HMM2   HMM 2 trạng thái ẩn "bệt / đảo" trên chuỗi "ván sau GIỐNG ván trước" (Baum–Welch, 2 điểm khởi đầu); tiền kiểm Ljung–Box 3 độ trễ + ΔBIC > 10 so với mô hình 1 trạng thái; tham số học trên phần đầu, 60 ván cuối chỉ dùng để chấm cổng · QUA CỔNG
+        ARSUM  tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker / Levinson–Durbin, chọn p theo BIC) + tiền kiểm Ljung–Box 8 độ trễ; P(Tài) = P(tổng dự đoán + nhiễu > 10.5) · QUA CỔNG
+    ⚙ Bản SEQ15: bỏ NBY4 · PAT · SESS (phiếu nhiễu / hầu như không kích hoạt / trùng họ), thêm CTW · BOCPD · HMM2 · ARSUM, và BỎ KNNT -> 15 logic. SỐ LẺ nên đa số tất cả logic KHÔNG BAO GIỜ hoà 8-7; hoà chỉ còn xảy ra ở nhóm CAO/THẤP của AF (số chẵn) -> phá hoà bằng phiếu của logic SUN_TIE_LOGIC (mặc định PPM6, env SUNVIW_TIE_LOGIC).
+    ⚑ PHIẾU TRẮNG: LAGAC / PERIOD / CTW / BOCPD / HMM2 / ARSUM chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê. Lúc không kích hoạt, phiếu của chúng = ĐA SỐ của 10 logic thường (SUN_ABSTAIN) thay vì "theo ván trước" như các logic khác -> không biến thành 6 phiếu "copy ván trước".
+    ⚑ CỔNG TỰ CHẤM (CTW · BOCPD · HMM2 · ARSUM): mô hình tự dự đoán lại SUN_GATE_N (60) ván gần nhất bằng dữ liệu TRƯỚC từng ván (không nhìn trước đáp án), so log-loss với đồng xu 50/50; chỉ được bỏ phiếu khi trung bình lợi thế đạt z >= SUN_GATE_Z (2.0 · env SUNVIW_GATE_Z). Không đạt -> phiếu trắng. Chuỗi ngẫu nhiên: mỗi logic chỉ kích hoạt vài % số ván (đo ở khối kiểm thử).
     ⚠ Backtest 4 bộ x ~2.940 ván xúc xắc ngẫu nhiên: cả 6 logic mới ≈ 50% (nhiễu) · chỉ bắt được khi dữ liệu CÀI SẴN thiên lệch -> không có lợi thế trên RNG công bằng.
     Chưa đủ lịch sử cho một logic -> logic đó tạm theo kết quả ván trước. WR / AF / CAO-THẤP / bẻ final GIỮ NGUYÊN như bản trước (chỉ bỏ ZF).
     ⚠ Backtest trên data thật (457 ván) + 40 chuỗi ngẫu nhiên đối chứng: KHÔNG tìm thấy logic nào có lợi thế đứng vững ngoài mẫu -> xem báo cáo backtest đi kèm.
@@ -112,7 +116,7 @@ JSON /api/predict:
 🎯 HITCLUB (GAME 3 · 2 BÀN) — port từ hittxthuong.js / hittxmd5.js (khối "CONFIG HITCLUB" + phần "HITCLUB" ở giữa file):
     Bàn TX THƯỜNG (gid vgmn_100, cmd 1008 + 1003) và bàn TX MD5 (gid vgmn_101, cmd 2006): mỗi bàn một poller (mặc định 3s), tự tích lũy lịch sử xúc xắc.
     Dự đoán = bộ 15 logic SEQ15 + AF + WR có trọng số như SUN, nhưng mỗi bàn đọc CONFIG RIÊNG (HIT_TXTHUONG_CFG / HIT_TXMD5_CFG — hiện đang bằng mặc định của SUN) -> chỉnh bàn nào chỉ ảnh hưởng bàn đó.
-    Data lưu RIÊNG: <DATA_DIR>/hittxthuong.json và <DATA_DIR>/hittxmd5.json (mỗi file = lịch sử xúc xắc + các ván đã chấm của bàn đó). Panel /api/html có thêm 2 tab "Hit Thường" · "Hit MD5".
+    Data lưu RIÊNG: <DATA_DIR>/hit15_txthuong.json và <DATA_DIR>/hit15_txmd5.json (mỗi file = lịch sử xúc xắc + các ván đã chấm của bàn đó). Panel /api/html có thêm 2 tab "Hit Thường" · "Hit MD5".
     Tắt: HITCLUB=0 hoặc --no-hit. Đổi config không sửa file: biến môi trường HITTXTHUONG_<TÊN> / HITTXMD5_<TÊN> (vd. HITTXMD5_AF_ENABLED=0).
 
 Server quét upstream nền mỗi POLL_SEC giây, chỉ tính lại khi có phiên mới -> request của HTML trả về tức thì.
@@ -226,7 +230,7 @@ AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
 AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
 AF_FLIP_FINAL_THAP_DEFAULT = True     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
-AF_FLIP_FINAL_ALL_DEFAULT = False      # True = bẻ final của chế độ ALL        (BẬT)
+AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
 AF_FLIP_LOW = _env_num("SUNVIW_AF_LOW", AF_FLIP_LOW_DEFAULT, float)
@@ -291,8 +295,8 @@ def _data_path(name):
     return os.path.join(DATA_DIR, name)
 
 
-HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sunviw_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
-HIST_KEEP = 300            # CỬA SỔ TRƯỢT: chỉ lưu 300 phiên GẦN NHẤT (cả trong RAM lẫn file sunviw_hist.json) — có phiên thứ 301 thì phiên cũ nhất (phiên 1) bị bỏ. Các logic cũ dùng <= 250 ván, SGDLR 300 (vừa đủ), LAGAC dùng toàn bộ 300 ván đang giữ · riêng PERIOD cần ~2000 ván mới bắt được chu kỳ theo phiên (ở 300 ván gần như luôn bỏ phiếu trắng, vô hại) -> muốn PERIOD hiệu quả thì nâng số này lên 2000
+HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sun15_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
+HIST_KEEP = 300            # CỬA SỔ TRƯỢT: chỉ lưu 300 phiên GẦN NHẤT (cả trong RAM lẫn file sun15_hist.json) — có phiên thứ 301 thì phiên cũ nhất (phiên 1) bị bỏ. Các logic cũ dùng <= 250 ván, SGDLR 300 (vừa đủ), LAGAC dùng toàn bộ 300 ván đang giữ · riêng PERIOD cần ~2000 ván mới bắt được chu kỳ theo phiên (ở 300 ván gần như luôn bỏ phiếu trắng, vô hại) -> muốn PERIOD hiệu quả thì nâng số này lên 2000
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
@@ -361,7 +365,7 @@ ICON_DUNG = "✅"            # icon hiện cho ván ĐOÁN ĐÚNG trong chuỗi 
 ICON_SAI = "❌"             # icon hiện cho ván ĐOÁN SAI
 
 # ─── PERSISTENCE (lưu graded để Railway không mất sau restart) ───────────
-PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", _data_path("sunviw_graded.json"))
+PERSIST_PATH = os.environ.get("SUNVIW_PERSIST", _data_path("sun15_graded.json"))
 PERSIST_KEEP = max(100, EVAL_WINDOW)   # giữ tối đa N graded entry trong file (100 ván; trước là 50 nên WR "100 phiên" thực chất chỉ đo được 50 ván). Tự nâng theo EVAL_WINDOW
 
 
@@ -432,8 +436,8 @@ HIST_MAX = 300             # trần số ván lịch sử cho ?hist=N và ô nh�
 #  🎯  CONFIG HITCLUB (GAME 3 · 2 BÀN)  —  MỖI BÀN MỘT BỘ CONFIG RIÊNG  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
 #   2 bàn (port từ hittxthuong.js / hittxmd5.js):
-#       TX THƯỜNG  gid=vgmn_100 · GET /api/predicthittxthuong · file data hittxthuong.json (lịch sử xúc xắc + các ván đã chấm của RIÊNG bàn này)
-#       TX MD5     gid=vgmn_101 · GET /api/predicthittxmd5    · file data hittxmd5.json    (RIÊNG bàn này)
+#       TX THƯỜNG  gid=vgmn_100 · GET /api/predicthittxthuong · file data hit15_txthuong.json (lịch sử xúc xắc + các ván đã chấm của RIÊNG bàn này)
+#       TX MD5     gid=vgmn_101 · GET /api/predicthittxmd5    · file data hit15_txmd5.json    (RIÊNG bàn này)
 #   Nguồn = HTTP polling: quét API Hit mỗi POLL_SEC giây, tự tích lũy lịch sử (giống cách SUN tích lũy).
 #       TX THƯỜNG : cmd 1008 nhả sid · cmd 1003 nhả xúc xắc -> ghép sid + xúc xắc (y như file JS)
 #       TX MD5    : cmd 2006 nhả luôn sid + xúc xắc
@@ -454,8 +458,8 @@ HIST_MAX = 300             # trần số ván lịch sử cho ?hist=N và ô nh�
 HIT_ENABLED = _env_bool("HITCLUB", True)
 HIT_API_URL = os.environ.get("HIT_API_URL", "https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid={GID}")
 HIT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-HIT_TXTHUONG_PATH = os.environ.get("HITTXTHUONG_PATH", _data_path("hittxthuong.json"))
-HIT_TXMD5_PATH = os.environ.get("HITTXMD5_PATH", _data_path("hittxmd5.json"))
+HIT_TXTHUONG_PATH = os.environ.get("HITTXTHUONG_PATH", _data_path("hit15_txthuong.json"))
+HIT_TXMD5_PATH = os.environ.get("HITTXMD5_PATH", _data_path("hit15_txmd5.json"))
 
 
 def _hit_env(prefix, d):
@@ -495,7 +499,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 68,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 42, "AF_FLIP_HIGH_MIN": 57, "AF_FLIP_HIGH_MAX": 70,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 42, "AF_FLIP_HIGH_MIN": 62, "AF_FLIP_HIGH_MAX": 75,
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
@@ -528,7 +532,50 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
+    # đánh giá đúng/sai + số ván lưu
+    "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
+}))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  🟣  CONFIG TELE68 TX MD5 (GAME 4)  —  CONFIG RIÊNG, DATA RIÊNG  —  CHỈNH Ở ĐÂY
+# ═══════════════════════════════════════════════════════════════════════════
+#   Nguồn: https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=<TOKEN>
+#   Khác các game kia (chỉ trả 1 phiên mới nhất): API này trả CẢ DANH SÁCH {"list":[{id, resultTruyenThong, dices:[a,b,c], point}, ...]} (~105 phiên, phiên ĐẦU = MỚI NHẤT).
+#   Cách tool làm:
+#       · Mỗi lần quét: đọc TOÀN BỘ list, chỉ LƯU THÊM các phiên CHƯA có trong data (phiên đã học giữ nguyên) -> tích lũy tối đa HIST_KEEP phiên.
+#       · Dự đoán = phiên MỚI NHẤT + 1 (bộ 15 logic SEQ15 + AF + WR như SUN/Hit, đọc config RIÊNG ở khối dưới).
+#       · Dự đoán được giữ trong file data (trường "pending") cho tới khi API trả ra kết quả đúng phiên đó -> khi phiên đó xuất hiện, tool so sánh & chấm ĐÚNG / SAI (vào lich_su + WR/AF).
+#   Endpoint: GET /api/predicttele68txmd5 (?hist=N · ?detail=1) · file data tele68_txmd5.json · tab "Tele68 MD5" ở /api/html · key game TELE68 (tiền tố TELE-)
+#   Đổi mà không sửa file: TELE68_API_URL (URL đầy đủ, vd khi token `at=` đổi) · TELE68_ENABLED=0 (tắt) · TELE68_TXMD5_PATH · TELE68_REFERER (thêm header Referer/Origin nếu server đòi)
+#                          TELE68TXMD5_<TÊN> ghi đè từng thông số của khối config (vd. TELE68TXMD5_AF_ENABLED=0 · TELE68TXMD5_WR_WINDOW=17 · TELE68TXMD5_POLL_SEC=2)
+TELE68_ENABLED = _env_bool("TELE68_ENABLED", True)
+TELE68_API_URL = os.environ.get("TELE68_API_URL", "https://wtxmd52.tele68.com/v1/txmd5/sessions?cp=R&cl=R&pf=web&at=6cd221bcc034632d6cb745a302c066c6")
+TELE68_REFERER = os.environ.get("TELE68_REFERER", "").strip()
+TELE68_TXMD5_PATH = os.environ.get("TELE68_TXMD5_PATH", _data_path("tele68_txmd5.json"))
+
+TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
+    "ENABLED": True,
+    "GID": "tele68_txmd5",
+    "POLL_SEC": 3.0,
+    "HIST_KEEP": 300,
+    "TIE_LOGIC": "PPM6",
+    "CONSEC_CHECK": True,
+    # WR có trọng số
+    "WR_WINDOW": 13, "WR_DECAY": 0.95, "WR_FLOOR": 0.75, "WR_WEIGHT_NEWEST": 1.4, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    # bẻ final (dùng khi AF tắt)
+    "FLIP_FINAL": False,
+    # AF: bước 1 bẻ logic
+    "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 47, "AF_FLIP_HIGH_MIN": 60, "AF_FLIP_HIGH_MAX": 64,
+    "AF_MIN_GAMES": 7,
+    # AF: bước 2 nhóm CAO/THẤP
+    "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
+    # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
+    "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
+    # AF: bẻ final riêng
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 100, "PERSIST_KEEP": 100,
 }))
@@ -546,7 +593,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
 #   Endpoint: POST /api/history/clear  {"game": "sun" | "hittxthuong" | "hittxmd5" | "hitclub" | "all"}  (cần key người dùng; key chỉ xóa được lịch sử của game nó thuộc về)
 HIST_CLEAR_ENABLED_DEFAULT = True
 HIST_CLEAR_ENABLED = _env_bool("SUNVIW_HIST_CLEAR", HIST_CLEAR_ENABLED_DEFAULT)
-HIST_CLEAR_PATH = os.environ.get("SUNVIW_HISTCLEAR_PATH", _data_path("sunviw_histclear.json"))
+HIST_CLEAR_PATH = os.environ.get("SUNVIW_HISTCLEAR_PATH", _data_path("sun15_histclear.json"))
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  🌐  CONFIG IP — THEO DÕI IP TRUY CẬP (tab "IP" của panel /api/html)  —  CHỈNH Ở ĐÂY
@@ -593,11 +640,11 @@ def vote_result(preds):
 
 def compute_all(hist):
     """Vote của 15 logic SUN cho phiên KẾ TIẾP, từ lịch sử `hist` (cũ -> mới; mỗi phần tử có actual / total / d1 d2 d3 / phien). Thứ tự = SUN_NAMES.
-    Logic bình thường chưa đủ lịch sử / không có tín hiệu -> theo kết quả ván trước. Logic trong SUN_ABSTAIN (LAGAC, PERIOD) chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê;
+    Logic bình thường chưa đủ lịch sử / không có tín hiệu -> theo kết quả ván trước. Logic trong SUN_ABSTAIN (LAGAC, PERIOD, CTW, BOCPD, HMM2, ARSUM) chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê;
     không kích hoạt -> phiếu = ĐA SỐ của các logic bình thường (không biến thành phiếu "copy ván trước")."""
     S = {"y": [1 if r["actual"] == TAI else 0 for r in hist], "t": [int(r["total"]) for r in hist],
          "d": [(r["d1"], r["d2"], r["d3"]) for r in hist],
-         "p": [int(r["phien"]) for r in hist]}              # số phiên (SESS · PERIOD dùng)
+         "p": [int(r["phien"]) for r in hist]}              # số phiên (PERIOD dùng)
     fb = S["y"][-1] if S["y"] else 0
     out = []
     for nm, fn in SUN_LOGICS:
@@ -666,32 +713,6 @@ def lg_ppm(S, K, W, alpha):
     return 1 if s > 0 else 0 if s < 0 else y[-1]
 
 
-def lg_knn(S, L, K, W, mode):
-    y, t = S["y"], S["t"]
-    n = len(y)
-    if n < L + 10:
-        return None
-    lo = max(L, n - W)
-    cur = y[n - L:n] if mode == "y" else t[n - L:n]
-    rows = []
-    for j in range(lo, n):
-        if mode == "y":
-            dist = float(sum(1 for a, b in zip(y[j - L:j], cur) if a != b))
-            w = 1.0 / (1 + dist) ** 2
-        else:
-            dist = float(sum(abs(a - b) for a, b in zip(t[j - L:j], cur)))
-            w = 1.0 / (1 + dist / L) ** 2
-        rows.append((dist, j, w))
-    rows.sort(key=lambda r: (r[0], r[1]))
-    s1 = s0 = 0.0
-    for dist, j, w in rows[:K]:
-        if y[j] == 1:
-            s1 += w
-        else:
-            s0 += w
-    return 1 if s1 > s0 else 0 if s0 > s1 else y[-1]
-
-
 def _f_t2(S, j):
     t = S["t"]
     return (_tb1(t[j - 1]), _tb1(t[j - 2]))
@@ -740,28 +761,13 @@ def lg_nb(S, featfns, W, a=1.0):
 
 
 _nb_y3 = lambda S, j: tuple(S["y"][j - 3:j])
-_nb_y4 = lambda S, j: tuple(S["y"][j - 4:j])
 _nb_t1b = lambda S, j: _tb1(S["t"][j - 1])
 _nb_max = lambda S, j: max(S["d"][j - 1])
 _nb_min = lambda S, j: min(S["d"][j - 1])
 _nb_dist = lambda S, j: len(set(S["d"][j - 1]))
-_nb_par = lambda S, j: S["t"][j - 1] % 2
 
 
-# ── logic thêm ở bản SEQ14/SEQ15 (PAT · EWMA · REGIME · SESS · LAGAC · PERIOD · SGDLR). Trả 1 = TÀI · 0 = XỈU · None = bỏ phiếu trắng (compute_all -> theo kết quả ván trước) ──
-def lg_alt(S):
-    """PAT: nhận diện cầu lặp chu kỳ P ∈ {2,3,4,6} (1-1 · chu kỳ 3 · 2-2 · 3-3): y[n-i] == y[n-i-P] trọn P+3 bước liền nhau -> ván kế = y[n-P]."""
-    y = S["y"]
-    n = len(y)
-    for P in (2, 3, 4, 6):
-        M = P + 3
-        if n < P + M + 1:
-            continue
-        if all(y[n - i] == y[n - i - P] for i in range(1, M + 1)):
-            return y[n - P]
-    return None
-
-
+# ── logic thêm ở bản SEQ14/SEQ15 (EWMA · REGIME · LAGAC · PERIOD · SGDLR). Trả 1 = TÀI · 0 = XỈU · None = bỏ phiếu trắng (compute_all -> theo kết quả ván trước) ──
 def lg_ewma(S, alpha=0.1, W=250, m=10.0):
     """EWMA: trung bình trượt mũ của TỔNG chia 5 nhóm; học online P(Tài | nhóm) trong W ván (co về 50%, m=10). Hướng (Tài/Xỉu) do dữ liệu quyết định, không đặt cứng."""
     t, y = S["t"], S["y"]
@@ -814,16 +820,6 @@ def _p_at(S, j):
     """Số phiên của ván j (j = len(y) là ván CẦN DỰ ĐOÁN = phiên cuối + 1)."""
     p = S["p"]
     return p[j] if j < len(p) else p[-1] + (j - len(p) + 1)
-
-
-_nb_sm = lambda m: (lambda S, j: _p_at(S, j) % m)
-
-
-def lg_sess(S, W=250, a=4.0):
-    """SESS: Naive Bayes trên số phiên mod 2/3/5/7/10 (học online, làm mượt a=4 để bucket ít mẫu không gây nhiễu)."""
-    if not S.get("p"):
-        return None
-    return lg_nb(S, [_nb_sm(2), _nb_sm(3), _nb_sm(5), _nb_sm(7), _nb_sm(10)], W, a)
 
 
 def lg_lagac(S, K=16, W=1500, crit=26.3):
@@ -913,30 +909,301 @@ def lg_sgdlr(S, W=300, ep=2, lr=0.05, lam=0.02, NL=12):
     return 1 if z > 0 else 0 if z < 0 else None
 
 
+# ── 4 logic thêm ở bản SEQ15 (CTW · BOCPD · HMM2 · ARSUM) ──────────────────────────────────────────────────────────────
+# Cả 4 CHỈ bỏ phiếu khi QUA "CỔNG TỰ CHẤM": mô hình tự dự đoán lại SUN_GATE_N ván gần nhất bằng dữ liệu TRƯỚC từng ván (không nhìn trước đáp án),
+# lấy log-loss trừ log-loss của đồng xu 50/50, và chỉ được bỏ phiếu khi trung bình lợi thế đạt z >= SUN_GATE_Z. Không đạt -> None (phiếu trắng, SUN_ABSTAIN điền đa số logic thường).
+SUN_GATE_Z = _env_num("SUNVIW_GATE_Z", 2.0, float)
+SUN_GATE_N = 60
+_LN2 = math.log(2.0)
+_LN_HALF = -_LN2
+
+
+def _gate_pass(qs, ys, G=None, zc=None):
+    """qs[i] = P(Tài) mô hình dự đoán cho ván i (chỉ dùng dữ liệu trước ván i) · ys[i] = kết quả thật (1 = Tài). True nếu G ván cuối cho lợi thế log-loss z >= zc so với đồng xu."""
+    G = SUN_GATE_N if G is None else G
+    zc = SUN_GATE_Z if zc is None else zc
+    m = min(len(qs), len(ys), G)
+    if m < 30:
+        return False
+    sm = sq = 0.0
+    for q, yy in zip(qs[-m:], ys[-m:]):
+        q = min(max(q, 1e-6), 1.0 - 1e-6)
+        d = math.log(q if yy else 1.0 - q) + _LN2
+        sm += d
+        sq += d * d
+    mean = sm / m
+    var = (sq - m * mean * mean) / (m - 1)
+    if var <= 1e-12:
+        return False
+    return mean / math.sqrt(var / m) >= zc
+
+
+def _lb_q(v, m):
+    """Thống kê Ljung–Box Q của chuỗi v trên m độ trễ (so với χ²(m): m=3 -> 7.81 · m=8 -> 15.51 ở mức 95%)."""
+    N = len(v)
+    mu = sum(v) / N
+    c = [a - mu for a in v]
+    g0 = sum(a * a for a in c)
+    if g0 <= 1e-12:
+        return 0.0
+    q = 0.0
+    for k in range(1, m + 1):
+        r = sum(c[i] * c[i + k] for i in range(N - k)) / g0
+        q += r * r / (N - k)
+    return N * (N + 2.0) * q
+
+
+# ── CTW: Context Tree Weighting (Willems–Shtarkov–Tjalkens) trên chuỗi Tài/Xỉu ──
+# Nút ở độ sâu k = k kết quả gần nhất (mới nhất đứng đầu). Mỗi nút giữ (số 0, số 1, log P_KT, log P_w) với P_w = ½·P_KT + ½·P_w(con 0)·P_w(con 1) (lá: P_w = P_KT).
+def _ctw_walk(nodes, ctx, D, sym, commit):
+    """Đi từ lá (độ sâu D) lên gốc với ký hiệu `sym` được thêm vào; trả log P_w(gốc). commit=True thì ghi lại các nút trên đường đi."""
+    child = 0.0
+    for k in range(D, -1, -1):
+        key = ctx[:k]
+        nd = nodes.get(key)
+        a, b, lpe, _ = nd if nd else (0, 0, 0.0, 0.0)
+        lpe += math.log(((b if sym else a) + 0.5) / (a + b + 1.0))
+        if sym:
+            b += 1
+        else:
+            a += 1
+        if k == D:
+            lpw = lpe
+        else:
+            sib = nodes.get(key + (1 - ctx[k],))
+            x, v = lpe, child + (sib[3] if sib else 0.0)
+            m = x if x > v else v
+            lpw = _LN_HALF + m + math.log(math.exp(x - m) + math.exp(v - m))
+        if commit:
+            nodes[key] = (a, b, lpe, lpw)
+        child = lpw
+    return child
+
+
+def _ctw_q1(nodes, ctx, D):
+    """P(kết quả kế = Tài | quá khứ) = P_w(quá khứ, 1) / P_w(quá khứ)."""
+    root = nodes.get(())
+    return math.exp(_ctw_walk(nodes, ctx, D, 1, False) - (root[3] if root else 0.0))
+
+
+def lg_ctw(S, D=8, W=300):
+    y = S["y"]
+    n = len(y)
+    N = min(n, W)
+    if N < D + SUN_GATE_N + 30:
+        return None
+    ys = y[n - N:]
+    nodes, qs = {}, []
+    for i in range(D, N):                                   # 1 lượt duy nhất: dự đoán TRƯỚC khi học ván i -> chính là walk-forward
+        ctx = tuple(ys[i - 1 - k] for k in range(D))
+        qs.append(_ctw_q1(nodes, ctx, D))
+        _ctw_walk(nodes, ctx, D, ys[i], True)
+    if not _gate_pass(qs, ys[D:]):
+        return None
+    q = _ctw_q1(nodes, tuple(ys[N - 1 - k] for k in range(D)), D)
+    return 1 if q > 0.5 else 0 if q < 0.5 else None
+
+
+# ── BOCPD: phát hiện điểm đổi chế độ Bayes online (Adams–MacKay), Beta(1,1)–Bernoulli, hazard H ──
+def lg_bocpd(S, W=200, H=0.01):
+    y = S["y"]
+    n = len(y)
+    N = min(n, W)
+    if N < SUN_GATE_N + 40:
+        return None
+    ys = y[n - N:]
+    R, ones, qs = [1.0], [0], []                            # R[r] = P(đợt hiện tại dài r ván) · ones[r] = số Tài trong r ván cuối
+    for yy in ys:
+        pr = [(o + 1.0) / (r + 2.0) for r, o in enumerate(ones)]
+        qs.append(sum(a * p for a, p in zip(R, pr)))
+        lk = pr if yy else [1.0 - p for p in pr]
+        w = [a * l for a, l in zip(R, lk)]
+        R = [sum(w) * H] + [v * (1.0 - H) for v in w]       # đổi chế độ (r = 0) hoặc đợt kéo dài thêm 1 ván
+        z = sum(R)
+        R = [v / z for v in R]
+        ones = [0] + [o + yy for o in ones]
+    if not _gate_pass(qs, ys):
+        return None
+    q = sum(a * (o + 1.0) / (r + 2.0) for r, (a, o) in enumerate(zip(R, ones)))
+    return 1 if q > 0.5 else 0 if q < 0.5 else None
+
+
+# ── HMM2: 2 trạng thái ẩn "bệt" / "đảo" trên x_t = 1 nếu ván t GIỐNG ván t-1 ──
+def _cl(v, lo=0.02, hi=0.98):
+    return lo if v < lo else hi if v > hi else v
+
+
+def _hmm2_fwd(x, aB, aD, pBB, pDD):
+    """Forward có chuẩn hoá. Trả (F0, F1, C, loglik): F = P(trạng thái | x[0..t]) · C[t] = P(x[t] | x[<t])."""
+    T = len(x)
+    F0, F1, C = [0.0] * T, [0.0] * T, [0.0] * T
+    f0 = f1 = 0.5
+    ll = 0.0
+    for t in range(T):
+        if t:
+            p0, p1 = f0 * pBB + f1 * (1.0 - pDD), f0 * (1.0 - pBB) + f1 * pDD
+        else:
+            p0 = p1 = 0.5
+        g0, g1 = (p0 * aB, p1 * aD) if x[t] else (p0 * (1.0 - aB), p1 * (1.0 - aD))
+        c = g0 + g1
+        f0, f1 = g0 / c, g1 / c
+        F0[t], F1[t], C[t] = f0, f1, c
+        ll += math.log(c)
+    return F0, F1, C, ll
+
+
+def _hmm2_em(x, par, iters=12):
+    """Baum–Welch cho HMM 2 trạng thái / phát xạ nhị phân. par = (aB, aD, pBB, pDD) khởi đầu. Trả (tham số, loglik)."""
+    aB, aD, pBB, pDD = par
+    T = len(x)
+    prev = None
+    for _ in range(iters):
+        F0, F1, C, ll = _hmm2_fwd(x, aB, aD, pBB, pDD)
+        if prev is not None and ll - prev < 1e-3:
+            break
+        prev = ll
+        B0, B1 = [1.0] * T, [1.0] * T
+        for t in range(T - 2, -1, -1):
+            if x[t + 1]:
+                b0, b1 = B0[t + 1] * aB, B1[t + 1] * aD
+            else:
+                b0, b1 = B0[t + 1] * (1.0 - aB), B1[t + 1] * (1.0 - aD)
+            d = C[t + 1]
+            B0[t] = (pBB * b0 + (1.0 - pBB) * b1) / d
+            B1[t] = ((1.0 - pDD) * b0 + pDD * b1) / d
+        s0 = s1 = sx0 = sx1 = m0 = m1 = t00 = t11 = 0.0
+        for t in range(T):
+            g0, g1 = F0[t] * B0[t], F1[t] * B1[t]
+            s0 += g0
+            s1 += g1
+            if x[t]:
+                sx0 += g0
+                sx1 += g1
+            if t < T - 1:
+                m0 += g0
+                m1 += g1
+                e0, e1 = (aB, aD) if x[t + 1] else (1.0 - aB, 1.0 - aD)
+                d = C[t + 1]
+                t00 += F0[t] * pBB * e0 * B0[t + 1] / d
+                t11 += F1[t] * pDD * e1 * B1[t + 1] / d
+        if min(s0, s1, m0, m1) < 1e-6:
+            break
+        aB, aD, pBB, pDD = _cl(sx0 / s0), _cl(sx1 / s1), _cl(t00 / m0), _cl(t11 / m1)
+    return (aB, aD, pBB, pDD), _hmm2_fwd(x, aB, aD, pBB, pDD)[3]
+
+
+def lg_hmm2(S, W=300, bic_min=10.0):
+    y = S["y"]
+    n = len(y)
+    N = min(n, W)
+    G = SUN_GATE_N
+    if N < 150:
+        return None
+    ys = y[n - N:]
+    x = [1 if ys[i] == ys[i - 1] else 0 for i in range(1, N)]      # x[j] liên quan ys[j+1] so với ys[j]
+    T = len(x)
+    Ttr = T - G                                                     # học tham số trên Ttr bước đầu · G bước cuối = tập chấm cổng (ngoài mẫu)
+    if Ttr < 100:
+        return None
+    xt = x[:Ttr]
+    if _lb_q(xt, 3) < 7.81:                                         # 2 chế độ kéo dài => x tự tương quan dương; không có -> khỏi chạy EM (tiết kiệm CPU)
+        return None
+    k = sum(xt)
+    p1 = _cl(k / float(Ttr), 1e-3, 1.0 - 1e-3)
+    ll1 = k * math.log(p1) + (Ttr - k) * math.log(1.0 - p1)        # mô hình 1 trạng thái (1 tham số)
+    best = None
+    for init in ((0.70, 0.30, 0.90, 0.90), (0.60, 0.40, 0.80, 0.80)):
+        par, ll = _hmm2_em(xt, init)
+        if best is None or ll > best[1]:
+            best = (par, ll)
+    (aB, aD, pBB, pDD), ll = best
+    if 2.0 * (ll - ll1) - 3.0 * math.log(Ttr) < bic_min:           # HMM hơn mô hình 1 trạng thái 3 tham số: phải thắng BIC rõ rệt
+        return None
+    F0, F1, _C, _ = _hmm2_fwd(x, aB, aD, pBB, pDD)                  # tham số CỐ ĐỊNH, lọc xuyên qua cả phần chấm cổng
+
+    def px_next(t):                                                 # P(x[t] = 1 | x[<t]) từ trạng thái đã lọc ở t-1
+        f0, f1 = F0[t - 1], F1[t - 1]
+        return (f0 * pBB + f1 * (1.0 - pDD)) * aB + (f0 * (1.0 - pBB) + f1 * pDD) * aD
+
+    qs = []
+    for t in range(Ttr, T):
+        px = px_next(t)
+        qs.append(px if ys[t] else 1.0 - px)                        # P(ys[t+1] = Tài)
+    if not _gate_pass(qs, ys[Ttr + 1:], G):
+        return None
+    px = px_next(T)                                                 # dùng trạng thái đã lọc tới x[T-1] (ván cuối) -> dự đoán ván kế
+    q = px if ys[N - 1] else 1.0 - px
+    return 1 if q > 0.5 else 0 if q < 0.5 else None
+
+
+# ── ARSUM: tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker giải bằng Levinson–Durbin, chọn p theo BIC) ──
+def lg_arsum(S, W=300, P=8):
+    y, tt = S["y"], S["t"]
+    n = len(y)
+    N = min(n, W)
+    G = SUN_GATE_N
+    if N < 150:
+        return None
+    s = [float(v) for v in tt[n - N:]]
+    ys = y[n - N:]
+    Ntr = N - G                                                     # hệ số học trên Ntr ván đầu · G ván cuối = tập chấm cổng (ngoài mẫu)
+    mu = sum(s[:Ntr]) / Ntr
+    c = [v - mu for v in s[:Ntr]]
+    g = [sum(c[i] * c[i + k] for i in range(Ntr - k)) / Ntr for k in range(P + 1)]
+    if g[0] <= 1e-9:
+        return None
+    if Ntr * (Ntr + 2.0) * sum((g[k] / g[0]) ** 2 / (Ntr - k) for k in range(1, P + 1)) < 15.51:    # Ljung–Box 8 độ trễ, χ²(8) mức 95%
+        return None
+    phi, v = [], g[0]
+    best = (Ntr * math.log(v), 0, [], v)                            # (BIC, p, hệ số, phương sai nhiễu)
+    for m in range(1, P + 1):
+        k = (g[m] - sum(phi[j] * g[m - 1 - j] for j in range(m - 1))) / v
+        phi = [phi[j] - k * phi[m - 2 - j] for j in range(m - 1)] + [k]
+        v *= 1.0 - k * k
+        if v <= 1e-9:
+            break
+        bic = Ntr * math.log(v) + m * math.log(Ntr)
+        if bic < best[0]:
+            best = (bic, m, list(phi), v)
+    _b, p, phi, v = best
+    if p == 0:
+        return None
+    sd = max(math.sqrt(v), 1.0)
+
+    def pred(i):                                                    # P(tổng ván i > 10.5 = Tài) từ p tổng liền trước
+        sh = mu + sum(phi[k] * (s[i - 1 - k] - mu) for k in range(p))
+        return 0.5 * math.erfc((10.5 - sh) / sd / math.sqrt(2.0))
+
+    if not _gate_pass([pred(i) for i in range(Ntr, N)], ys[Ntr:], G):
+        return None
+    q = pred(N)
+    return 1 if q > 0.5 else 0 if q < 0.5 else None
+
+
 SUN_LOGICS = [
     ("MKT2", lambda S: lg_mk(S, 2, 250, "t1")),
     ("PPM6", lambda S: lg_ppm(S, 6, 250, 1.5)),
-    ("KNNT", lambda S: lg_knn(S, 8, 15, 150, "t")),
     ("CT2", lambda S: lg_cond(S, _f_t2, 250)),
     ("CMM", lambda S: lg_cond(S, _f_mm, 250)),
     ("CDT", lambda S: lg_cond(S, _f_dtt, 250)),
     ("NBMIX", lambda S: lg_nb(S, [_nb_y3, _nb_t1b, _nb_max, _nb_min, _nb_dist], 250)),
-    ("NBY4", lambda S: lg_nb(S, [_nb_y4, _nb_par, _nb_dist], 250)),
-    ("PAT", lambda S: lg_alt(S)),
     ("EWMA", lambda S: lg_ewma(S, 0.1, 250)),
     ("REGIME", lambda S: lg_regime(S, 20, 250)),
-    ("SESS", lambda S: lg_sess(S, 250, 4.0)),
     ("LAGAC", lambda S: lg_lagac(S, 16, 1500)),
     ("PERIOD", lambda S: lg_period(S, 2000)),
     ("SGDLR", lambda S: lg_sgdlr(S, 300)),
+    ("CTW", lambda S: lg_ctw(S)),
+    ("BOCPD", lambda S: lg_bocpd(S)),
+    ("HMM2", lambda S: lg_hmm2(S)),
+    ("ARSUM", lambda S: lg_arsum(S)),
 ]
 
 
 SUN_NAMES = [n for n, _ in SUN_LOGICS]
-SUN_SIG = "SEQ15v1:" + ",".join(SUN_NAMES)         # dấu vân tay bộ logic SUN (bỏ dữ liệu graded của bộ logic cũ; file graded cũ 14 phiếu sẽ tự được chấm lại từ lịch sử)
-SUN_ABSTAIN = {"LAGAC", "PERIOD"}                  # logic chuyên biệt kích hoạt hiếm: không kích hoạt -> phiếu = đa số các logic còn lại (xem compute_all)
+SUN_SIG = "SEQ15v1:" + ",".join(SUN_NAMES)         # dấu vân tay bộ logic SUN (bỏ dữ liệu graded của bộ logic cũ -> không lẫn data 16 logic)
+SUN_ABSTAIN = {"LAGAC", "PERIOD", "CTW", "BOCPD", "HMM2", "ARSUM"}   # logic chuyên biệt kích hoạt hiếm (qua cổng): không kích hoạt -> phiếu = đa số các logic thường (xem compute_all)
 
-# 15 logic là số LẺ nên đa số tất cả logic không hoà; nhưng nhóm CAO/THẤP của AF có thể chẵn -> vẫn giữ phiếu phá hoà: lấy phiếu của logic này (mặc định PPM6; env SUNVIW_TIE_LOGIC).
+# 15 logic là số LẺ nên đa số tất cả logic không hoà; nhưng nhóm CAO/THẤP của AF vẫn có thể chẵn và hoà -> phiếu phá hoà: lấy phiếu của logic này (mặc định PPM6; env SUNVIW_TIE_LOGIC).
 SUN_TIE_LOGIC = os.environ.get("SUNVIW_TIE_LOGIC", "PPM6")
 if SUN_TIE_LOGIC not in SUN_NAMES:
     SUN_TIE_LOGIC = "PPM6" if "PPM6" in SUN_NAMES else SUN_NAMES[0]
@@ -1125,7 +1392,7 @@ def decide_final(votes, graded, dec_wr=None, cfg=SUN):
     `dec_wr` truyền sẵn thì không tính lại wr_decision; chỉ tính khi thật sự cần quay về cách cũ (AF tắt)."""
     if cfg.AF_ENABLED:
         af = af_decision(votes, graded, cfg)
-        if af["final"] not in (TAI, XIU):                 # hoà 7-7 tới tận bước cuối (số logic chẵn) -> phá hoà, không để 'SKIP' lọt ra API
+        if af["final"] not in (TAI, XIU):                 # hoà tới tận bước cuối (nhóm CAO/THẤP có thể chẵn) -> phá hoà, không để 'SKIP' lọt ra API
             tb = _sun_tiebreak(votes, cfg)
             af["final"] = tb
             if af["base"] not in (TAI, XIU):
@@ -1307,6 +1574,51 @@ def rebuild_graded(hist, saved_graded=None, cfg=SUN):
             entry.update(af=True, mode=af["mode"], mflip=af["mflip"], hv=af["hv"], lv=af["lv"])
         fresh.append(entry)
     return merge_graded(seed, fresh)
+
+
+def regrade_graded(graded, cfg=SUN):
+    """CHẤM LẠI toàn bộ các ván đã lưu theo CONFIG HIỆN TẠI (ngưỡng AF · vùng bẻ · bẻ final · WR_*...).
+    Dùng lại `votes` (15 logic) đã lưu trong từng ván -> KHÔNG chạy lại compute_all nên rất nhanh (vài trăm ms thay vì phải đợi ván mới chạy tới).
+    Đi từ ván cũ -> mới: ván k được chốt bằng WR của các ván đã chấm lại TRƯỚC nó (y hệt lúc chạy live, không nhìn trước đáp án).
+    Giữ nguyên phiên · tổng · kết quả thật · votes; chỉ tính lại final / ok / af / mode / mflip / hv / lv. Ván không có votes thì giữ nguyên."""
+    out = []
+    for g in graded:
+        votes = g.get("votes")
+        if not isinstance(votes, list) or not votes or g.get("actual") not in (TAI, XIU):
+            out.append(g)
+            continue
+        final, af = decide_final(votes, out, None, cfg)
+        e = {k: v for k, v in g.items() if k not in ("af", "mode", "mflip", "hv", "lv")}
+        e.update(final=final, ok=final == g["actual"])
+        if af is not None:
+            e.update(af=True, mode=af["mode"], mflip=af["mflip"], hv=af["hv"], lv=af["lv"])
+        out.append(e)
+    return out
+
+
+def _regrade_report(before, after, cfg):
+    """So sánh trước / sau khi chấm lại: số ván đổi dự đoán + đúng/sai trong EVAL_WINDOW ván gần nhất."""
+    changed = sum(1 for a, b in zip(before, after) if out_final_g(a, cfg) != out_final_g(b, cfg))
+    ba, aa = _recent_accuracy(before, cfg.EVAL_WINDOW, cfg=cfg), _recent_accuracy(after, cfg.EVAL_WINDOW, cfg=cfg)
+    return {"so_van": len(after), "doi_du_doan": changed,
+            "truoc": {"dung": ba["dung"], "tong": ba["tong"]}, "sau": {"dung": aa["dung"], "tong": aa["tong"]}}
+
+
+def sun_regrade():
+    """Nút \"Tính lại theo config\" của SUN: chấm lại file graded bằng config hiện tại rồi dựng lại kết quả hiển thị. Giữ nguyên lịch sử."""
+    with _refresh_lock:
+        saved = persist_load()
+        if not saved:
+            return {"so_van": 0, "doi_du_doan": 0, "truoc": {"dung": 0, "tong": 0}, "sau": {"dung": 0, "tong": 0}}
+        new = regrade_graded(saved, SUN)
+        rep = _regrade_report(saved, new, SUN)
+        persist_save(new)
+        hist = [_hist_store[k] for k in sorted(_hist_store)]
+        if hist:
+            res = build_result(hist)                      # dựng lại dự đoán + lich_su từ graded đã chấm lại (không có ván mới nên rất nhanh)
+            with _state_lock:
+                _state.update(result=res, latest=hist[-1]["phien"], updated=_now())
+        return rep
 
 
 def build_result(hist, cfg=SUN, persist=None):
@@ -1501,7 +1813,7 @@ def _acc_rows(rows, n=10):
 
 
 # ─── HITCLUB (GAME 3): 2 BÀN · HTTP POLLING · MỖI BÀN MỘT FILE DATA RIÊNG ───
-# Port từ hittxthuong.js / hittxmd5.js. Mỗi bàn = 1 HitTable: poller riêng + config riêng (xem CONFIG HITCLUB) + file riêng (hittxthuong.json / hittxmd5.json
+# Port từ hittxthuong.js / hittxmd5.js. Mỗi bàn = 1 HitTable: poller riêng + config riêng (xem CONFIG HITCLUB) + file riêng (hit15_txthuong.json / hit15_txmd5.json
 # chứa lịch sử xúc xắc + các ván đã chấm). Dự đoán dùng bộ 15 logic SEQ15 / AF / WR của SUN qua build_result(hist, cfg, persist).
 def _hit_fetch_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": HIT_UA, "Accept": "application/json", "Cache-Control": "no-cache"})
@@ -1570,6 +1882,16 @@ class HitTable:
         self.started = False
         self.dbg = {}                                  # tóm tắt payload quét gần nhất (để /health chẩn đoán)
 
+    game = "hitclub"            # giá trị trường "game" trong JSON
+    kgame = "hit"               # game của KEY được phép dùng bàn này
+    pending = None              # dự đoán đang chờ kết quả: {"phien": n, "du_doan": "TÀI"|"XỈU"}
+
+    def _fetch_items(self):
+        data = _hit_fetch_json(self.url)
+        if not isinstance(data, dict) or data.get("status") != "OK" or not isinstance(data.get("data"), list):
+            raise ValueError("API Hit tra ve khong hop le (status != OK hoac thieu data)")
+        return data["data"]
+
     @property
     def active(self):
         return bool(HIT_ENABLED and self.cfg.ENABLED)
@@ -1594,12 +1916,16 @@ class HitTable:
         self.graded = [g for g in (d.get("graded") or []) if isinstance(g, dict) and g.get("sig") == SUN_SIG]   # bỏ ván của bộ logic khác
         if self.hist:
             self.last_sid = max(self.hist)
+        pd = d.get("pending")
+        if isinstance(pd, dict) and isinstance(pd.get("phien"), int):
+            self.pending = pd
 
     def _write(self):
         try:
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"ban": self.key, "gid": self.cfg.GID, "luu_luc": _now(),
+                           "pending": self.pending,
                            "hist": [self.hist[k] for k in sorted(self.hist)],
                            "graded": self.graded[-self.cfg.PERSIST_KEEP:]}, f, ensure_ascii=False)
             os.replace(tmp, self.path)
@@ -1616,10 +1942,7 @@ class HitTable:
     def refresh(self):
         with self.rlock:
             self._load()
-            data = _hit_fetch_json(self.url)
-            if not isinstance(data, dict) or data.get("status") != "OK" or not isinstance(data.get("data"), list):
-                raise ValueError("API Hit tra ve khong hop le (status != OK hoac thieu data)")
-            items = data["data"]
+            items = self._fetch_items()
             cmds = {}
             for g in items:
                 c = _hit_cmd(g)
@@ -1647,9 +1970,43 @@ class HitTable:
                     self.state.update(error=None, checked=_now())
                 return
             res = build_result(hist, self.cfg, (self._graded_load, self._graded_save))
-            self._write()                               # 1 lần ghi: lịch sử xúc xắc + ván đã chấm
+            self.pending = {"phien": res["base"]["phien"], "du_doan": res["base"]["du_doan"]}   # dự đoán phiên kế tiếp, giữ tới khi API trả kết quả phiên đó
+            self._write()                               # 1 lần ghi: lịch sử xúc xắc + ván đã chấm + dự đoán đang chờ
             with self.slock:
                 self.state.update(result=res, latest=latest, error=None, updated=_now(), checked=_now())
+
+    def wipe(self):
+        """XÓA SẠCH data của bàn này (lịch sử xúc xắc + ván đã chấm + dự đoán chờ) rồi ghi file rỗng. Poller quét lại API và tích lũy lại từ đầu."""
+        with self.rlock:
+            self._load()
+            n = len(self.hist)
+            self.hist.clear()
+            self.graded = []
+            self.pending = None
+            self.last_sid = None
+            self._write()
+            hist_unhide(self.key)
+            with self.slock:
+                self.state.update(result=None, latest=None)
+            return {"phien_da_xoa": n}
+
+    def regrade(self):
+        """Nút \"Tính lại theo config\": chấm lại các ván đã lưu của bàn này bằng config HIỆN TẠI (giữ nguyên lịch sử xúc xắc + ván đã chấm)."""
+        with self.rlock:
+            self._load()
+            if not self.graded:
+                return {"so_van": 0, "doi_du_doan": 0, "truoc": {"dung": 0, "tong": 0}, "sau": {"dung": 0, "tong": 0}}
+            before = list(self.graded)
+            self.graded = regrade_graded(before, self.cfg)[-self.cfg.PERSIST_KEEP:]
+            rep = _regrade_report(before, self.graded, self.cfg)
+            hist = [self.hist[k] for k in sorted(self.hist)]
+            if hist:
+                res = build_result(hist, self.cfg, (self._graded_load, self._graded_save))
+                self.pending = {"phien": res["base"]["phien"], "du_doan": res["base"]["du_doan"]}
+                with self.slock:
+                    self.state.update(result=res, latest=hist[-1]["phien"], updated=_now())
+            self._write()
+            return rep
 
     def _loop(self):
         while True:
@@ -1676,13 +2033,56 @@ class HitTable:
         c = self.cfg
         st.update(ok=st["error"] is None and st["latest"] is not None, bat=self.active, ten=self.label, gid=c.GID, file=self.path,
                   so_phien_luu=len(self.hist), so_van_cham=len(self.graded), poll_sec=c.POLL_SEC, hist_keep=c.HIST_KEEP,
-                  an_den_phien=hist_hidden_upto(self.key), payload_cuoi=self.dbg, config=c.as_dict())
+                  an_den_phien=hist_hidden_upto(self.key), payload_cuoi=self.dbg, du_doan_cho_ket_qua=self.pending, config=c.as_dict())
         return st
 
+
+
+def _tele68_parse(tb, data):
+    """TELE68 TX MD5: {"list":[{id, resultTruyenThong, dices:[a,b,c], point}, ...]} (phiên đầu = mới nhất). Lấy MỌI phiên hợp lệ; HitTable.refresh chỉ lưu thêm phiên CHƯA có."""
+    out = {}
+    for g in data:
+        if not isinstance(g, dict):
+            continue
+        d = g.get("dices")
+        if not isinstance(d, (list, tuple)) or len(d) != 3:
+            continue
+        r = _hit_rec(g.get("id"), d[0], d[1], d[2])
+        if r:
+            out[r["phien"]] = r
+    return list(out.values())
+
+
+class Tele68Table(HitTable):
+    """Bàn TELE68 TX MD5: cùng cơ chế HitTable (poller riêng · config riêng · file riêng), chỉ khác cách đọc API (list nhiều phiên) và game/key riêng."""
+    game = "tele68"
+    kgame = "tele68"
+
+    def __init__(self, key, label, cfg, path, parser):
+        super().__init__(key, label, cfg, path, parser)
+        self.url = TELE68_API_URL
+
+    @property
+    def active(self):
+        return bool(TELE68_ENABLED and self.cfg.ENABLED)
+
+    def _fetch_items(self):
+        h = {"User-Agent": HIT_UA, "Accept": "application/json", "Cache-Control": "no-cache"}
+        if TELE68_REFERER:
+            h["Referer"] = TELE68_REFERER
+            h["Origin"] = TELE68_REFERER.rstrip("/")
+        req = urllib.request.Request(self.url, headers=h)
+        with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        lst = data.get("list") if isinstance(data, dict) else data
+        if not isinstance(lst, list):
+            raise ValueError("API Tele68 tra ve khong hop le (thieu 'list') - kiem tra token at= trong TELE68_API_URL")
+        return lst
 
 HIT_TABLES = {
     "hittxthuong": HitTable("hittxthuong", "TX Thường", HIT_TXTHUONG_CFG, HIT_TXTHUONG_PATH, _hit_parse_thuong),
     "hittxmd5": HitTable("hittxmd5", "TX MD5", HIT_TXMD5_CFG, HIT_TXMD5_PATH, _hit_parse_md5),
+    "tele68txmd5": Tele68Table("tele68txmd5", "Tele68 MD5", TELE68_TXMD5_CFG, TELE68_TXMD5_PATH, _tele68_parse),
 }
 
 
@@ -1694,7 +2094,8 @@ def hit_ensure_pollers():
 # ─── XÓA LỊCH SỬ DỰ ĐOÁN (chỉ ẩn phần hiển thị — xem khối CONFIG XÓA LỊCH SỬ) ───
 _hc_lock = threading.Lock()
 _hc = {"loaded": False, "d": {"sun": {"den": 0, "luc": None},
-                              "hittxthuong": {"den": 0, "luc": None}, "hittxmd5": {"den": 0, "luc": None}}}
+                              "hittxthuong": {"den": 0, "luc": None}, "hittxmd5": {"den": 0, "luc": None},
+                              "tele68txmd5": {"den": 0, "luc": None}}}
 
 
 def _hc_load_locked():
@@ -1736,6 +2137,38 @@ def hist_clear(game, upto):
         except Exception:  # noqa: BLE001
             pass
         return cur["den"]
+
+
+def hist_unhide(game):
+    """Đặt lại mốc \"Xóa lịch sử\" của `game` về 0 (dùng khi XÓA SẠCH data của game để đếm lại từ đầu)."""
+    with _hc_lock:
+        _hc_load_locked()
+        _hc["d"][game] = {"den": 0, "luc": None}
+        try:
+            tmp = HIST_CLEAR_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(_hc["d"], f, ensure_ascii=False)
+            os.replace(tmp, HIST_CLEAR_PATH)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def sun_wipe():
+    """XÓA SẠCH data của SUN: lịch sử xúc xắc + các ván đã chấm + kết quả đang giữ. Tool tự quét lại từ upstream và tích lũy lại từ đầu."""
+    global _hist_loaded
+    with _refresh_lock:
+        n = len(_hist_store)
+        _hist_store.clear()
+        _hist_loaded = True                                # không nạp lại file cũ
+        for path in (HIST_PATH, PERSIST_PATH):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        hist_unhide("sun")
+        with _state_lock:
+            _state.update(result=None, latest=None)
+        return {"phien_da_xoa": n}
 
 
 # ─── PANEL HTML (/api/html) ──────────────────────────────────────────────
@@ -1810,7 +2243,7 @@ h1{font-size:17px;margin:0;font-weight:800}
 .cfg input{width:76px;background:var(--pn);border:1px solid var(--ln);color:var(--tx);border-radius:8px;padding:6px 8px;font:inherit}
 .cfg button{background:none;border:1px solid var(--ln);color:var(--mu);border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer}
 .cfg button:hover{color:var(--tx)}
-.cfg button.dg{margin-left:auto}.cfg button.dg:hover{color:var(--no);border-color:var(--no)}
+.cfg button.rg{margin-left:auto}.cfg button.rg:hover{color:var(--ok);border-color:var(--ok)}.cfg button.rg:disabled{opacity:.5;cursor:wait}.cfg button.dg:disabled{opacity:.5;cursor:wait}.cfg button.dg:hover{color:var(--no);border-color:var(--no)}
 .strip{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px}
 .chip{width:20px;height:20px;border-radius:5px;font-size:12px;line-height:20px;text-align:center;color:#0f1424;font-weight:800}
 .chip.ok{background:var(--ok)}.chip.no{background:var(--no)}
@@ -1860,6 +2293,8 @@ td{padding:7px 8px;border-top:1px solid var(--ln)}
   <label for="n" class="mu">Số ván lịch sử hiển thị</label>
   <input id="n" type="number" min="1" max="__MAX__">
   <button data-n="10">10</button><button data-n="20">20</button><button data-n="50">50</button><button data-n="100">100</button>
+  <button class="rg" id="rg" title="Giữ nguyên lịch sử, nhưng chấm lại đúng/sai của TOÀN BỘ ván đã lưu bằng config hiện tại (ngưỡng AF, bẻ final, WR...) — không phải đợi ván mới">🔄 Tính lại theo config</button>
+  <button class="dg" id="wipe" title="XÓA SẠCH toàn bộ data của game đang chọn (lịch sử xúc xắc + ván đã chấm). Không hoàn tác được">☠ Xóa data game</button>
   <button class="dg" id="clr" title="Chỉ xóa lịch sử dự đoán đang hiển thị của game đang chọn — không ảnh hưởng các logic dự đoán">🗑 Xóa lịch sử</button>
 </div>
 <div id="hist"></div>
@@ -1889,7 +2324,7 @@ async function access(){
 document.addEventListener('click',e=>{if(e.target&&e.target.id==='gre')access()});
 </script>
 <script>
-const G={sun:{n:'Sun',u:'/api/predictsun',g:'sun'},hitt:{n:'Hit Thường',u:'/api/predicthittxthuong',g:'hittxthuong'},hitm:{n:'Hit MD5',u:'/api/predicthittxmd5',g:'hittxmd5'}};
+const G={sun:{n:'Sun',u:'/api/predictsun',g:'sun'},hitt:{n:'Hit Thường',u:'/api/predicthittxthuong',g:'hittxthuong'},hitm:{n:'Hit MD5',u:'/api/predicthittxmd5',g:'hittxmd5'},tele:{n:'Tele68 MD5',u:'/api/predicttele68txmd5',g:'tele68txmd5'}};
 const okG=()=>true;   /* thiết bị đã duyệt vào được cả Sun lẫn 2 bàn Hit -> hiện đủ mọi tab */
 let cur=(localStorage.getItem('g') in G||localStorage.getItem('g')==='ip')?localStorage.getItem('g'):'sun',N=+localStorage.getItem('n')||__SHOW__,IPD=null;
 if(cur!=='ip'&&!okG(cur))cur=Object.keys(G).find(okG)||'ip';
@@ -1971,6 +2406,34 @@ $('#clr').onclick=async()=>{
   }catch(e){alert('Mất kết nối: '+e);return}
   load();
 };
+$('#rg').onclick=async()=>{
+  if(!G[cur])return;
+  if(!confirm('Tính lại đúng/sai của '+G[cur].n+' theo config hiện tại?\n\nLịch sử vẫn được giữ nguyên. Tool chấm lại toàn bộ ván đã lưu bằng ngưỡng / bẻ / WR đang chạy (chỉ vài giây), không cần đợi ván mới.'))return;
+  const b=$('#rg'),t0=b.textContent;b.disabled=true;b.textContent='⏳ Đang tính…';
+  try{
+    const r=await fetch('/api/history/regrade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({game:G[cur].g})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.ok===false){if(r.status!==401)alert(j.loi||'Không tính lại được')}
+    else{const x=(j.ket_qua||{})[G[cur].g];
+      if(x)alert('Đã chấm lại '+x.so_van+' ván theo config hiện tại.\n• Đổi dự đoán: '+x.doi_du_doan+' ván\n• Đúng/sai (gần nhất): '+x.truoc.dung+'/'+x.truoc.tong+' → '+x.sau.dung+'/'+x.sau.tong)}
+  }catch(e){alert('Mất kết nối: '+e)}
+  finally{b.disabled=false;b.textContent=t0}
+  load();
+};
+$('#wipe').onclick=async()=>{
+  if(!G[cur])return;
+  if(!confirm('XÓA SẠCH DATA của '+G[cur].n+'?\n\nXóa thật toàn bộ lịch sử xúc xắc + các ván đã chấm của game này. WR / AF / dự đoán sẽ bắt đầu lại từ đầu.\nKHÔNG hoàn tác được.'))return;
+  if(!confirm('Chắc chắn xóa data '+G[cur].n+'? Bấm OK để xóa vĩnh viễn.'))return;
+  const b=$('#wipe'),t0=b.textContent;b.disabled=true;b.textContent='⏳ Đang xóa…';
+  try{
+    const r=await fetch('/api/history/wipe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({game:G[cur].g,confirm:true})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.ok===false){if(r.status!==401)alert(j.loi||'Không xóa được data')}
+    else{const x=(j.da_xoa||{})[G[cur].g];alert('Đã xóa data '+G[cur].n+(x?' ('+x.phien_da_xoa+' phiên)':'')+'. Tool sẽ quét lại từ đầu.')}
+  }catch(e){alert('Mất kết nối: '+e)}
+  finally{b.disabled=false;b.textContent=t0}
+  load();
+};
 const agoT=s=>s<60?s+'s':s<3600?Math.floor(s/60)+'p':s<86400?Math.floor(s/3600)+'g':Math.floor(s/86400)+'n';
 function ipHtml(){
   const d=IPD||{};
@@ -2006,7 +2469,7 @@ def ip_kind(path):
     """Loại request được tính vào danh sách IP (None = không tính: /health, /, /api/ips ...)."""
     if path in ("/api/predictsun", "/api/predict"):
         return "sun"
-    if path in ("/api/predicthittxthuong", "/api/predicthittxmd5"):
+    if path in ("/api/predicthittxthuong", "/api/predicthittxmd5", "/api/predicttele68txmd5"):
         return "hit"
     if path == "/api/html":
         return "panel"
@@ -2213,11 +2676,11 @@ LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong L
 LOGIN_LOCK_SEC = 900
 KEY_DEV_OPTIONS = (1, 2, 3, 5, 10, 20, 50)            # số thiết bị tối đa chọn được khi tạo key (1 key dùng được trên N thiết bị)
 KEY_DEV_DEFAULT = 1                                   # mặc định (cũng là số thiết bị của key cũ tạo trước bản này)
-KEY_GAMES = ("sun", "hit")                            # game gắn được vào key người dùng — MỖI KEY CHỈ THUỘC 1 GAME, không gộp chung
-KEY_GAME_LABEL = {"sun": "Sun", "hit": "Hit"}
-KEY_PREFIX = {"sun": "SUN", "hit": "HIT"}             # tiền tố key để nhìn là biết game: SUN-XXXX-... / HIT-XXXX-...
+KEY_GAMES = ("sun", "hit", "tele68")                            # game gắn được vào key người dùng — MỖI KEY CHỈ THUỘC 1 GAME, không gộp chung
+KEY_GAME_LABEL = {"sun": "Sun", "hit": "Hit", "tele68": "Tele68"}
+KEY_PREFIX = {"sun": "SUN", "hit": "HIT", "tele68": "TELE"}             # tiền tố key để nhìn là biết game: SUN-XXXX-... / HIT-XXXX-...
 _lg = os.environ.get("SUNVIW_KEY_LEGACY_GAME", "all").strip().lower()
-KEY_LEGACY_GAME = _lg if _lg in ("all", "sun", "hit") else "all"   # game của key cũ chưa có trường game (xem khối CONFIG KEY / ADMIN)
+KEY_LEGACY_GAME = _lg if _lg in ("all", "sun", "hit", "tele68") else "all"   # game của key cũ chưa có trường game (xem khối CONFIG KEY / ADMIN)
 HWID_REQUIRED = _env_bool("SUNVIW_HWID_REQUIRED", True)
 HWID_TOUCH_SEC = 60                                   # ghi "lần dùng gần nhất" tối đa 1 lần / phút / thiết bị (đỡ ghi file mỗi lần panel poll)
 
@@ -2415,8 +2878,9 @@ def _key_tables(kg):
     out = set()
     if kg in ("all", "sun"):
         out.add("sun")
-    if kg in ("all", "hit"):
-        out |= set(HIT_TABLES)
+    for k, tb in HIT_TABLES.items():                   # mỗi bàn thuộc 1 game của key (Hit: 2 bàn · Tele68: bàn Tele68)
+        if kg in ("all", tb.kgame):
+            out.add(k)
     return out
 
 
@@ -2426,6 +2890,8 @@ def _path_game(p):
         return "sun"
     if p in ("/api/predicthittxthuong", "/api/predicthittxmd5"):
         return "hit"
+    if p == "/api/predicttele68txmd5":
+        return "tele68"
     return None
 
 
@@ -2664,7 +3130,7 @@ def api_panel_status():
     return _json({"ok": st == "approved", "status": st, "loi": _PANEL_MSG.get(st, "")}, 429 if st == "limit" else 200)
 
 
-_GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predicthittxthuong", "/api/predicthittxmd5", "/api/ips", "/api/history/clear"}
+_GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predicthittxthuong", "/api/predicthittxmd5", "/api/predicttele68txmd5", "/api/ips", "/api/history/clear", "/api/history/regrade", "/api/history/wipe"}
 
 
 @app.before_request
@@ -3142,7 +3608,7 @@ const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3
  rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
  rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),dev:ic('<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
 let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
-let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
+let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'tele68',ten:'Tele68'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
 function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}
@@ -3190,7 +3656,7 @@ async function loadKeys(){
 const isMain=()=>S&&S.role==='main';
 function stats(){
   const live=KEYS.filter(r=>!r.het).length,a=[[KEYS.length,isMain()?'Tổng key':'Key của bạn'],[live,'Còn hạn'],[KEYS.length-live,'Hết hạn']];
-  {const us=KEYS.filter(r=>r.loai==='user'),cu=us.filter(r=>r.game==='all').length;a.push([us.filter(r=>r.game==='sun').length,'Key Sun'],[us.filter(r=>r.game==='hit').length,'Key Hit']);if(cu)a.push([cu,'Key cũ (mọi game)'])}
+  {const us=KEYS.filter(r=>r.loai==='user'),cu=us.filter(r=>r.game==='all').length;a.push([us.filter(r=>r.game==='sun').length,'Key Sun'],[us.filter(r=>r.game==='hit').length,'Key Hit'],[us.filter(r=>r.game==='tele68').length,'Key Tele68']);if(cu)a.push([cu,'Key cũ (mọi game)'])}
   if(isMain()){const sb=KEYS.filter(r=>r.loai==='sub');a.push([sb.length,'Key admin phụ'],[KEYS.reduce((n,r)=>n+r.so_dev,0),'Thiết bị đang gắn'])}
   return a.map(([n,l])=>`<div><b>${n}</b><span>${l}</span></div>`).join('');
 }
@@ -3208,7 +3674,7 @@ function renderDash(){
   <div class="gr"><div class="lb">Ghi chú (không bắt buộc)</div><input class="f" id="cnote" maxlength="40" placeholder="Ví dụ: khách A"></div></div>
   <button class="go mk" id="mk">Tạo key</button><div id="newk"></div></section>
   <section class="pn"><div class="hd"><h2>Danh sách key <span class="mu s" id="cnt"></span></h2><div class="act"><button class="gh" id="rf">${I.rf} Làm mới</button>${m?`<button class="gh dg" id="clean">${I.del} Dọn key hết hạn</button>`:''}</div></div>
-  <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn'],['sun','Game Sun'],['hit','Game Hit']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
+  <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn'],['sun','Game Sun'],['hit','Game Hit'],['tele68','Game Tele68']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
   <div class="sel" id="selbar"></div><div id="tbl"></div></section>`;
 }
 function paint(){
@@ -3263,7 +3729,7 @@ function renderPv(){
 }
 function visible(){
   const q=(F.q||'').toLowerCase();
-  return KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:(F.t==='sun'||F.t==='hit')?(r.loai==='user'&&(r.game===F.t||r.game==='all')):r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip_cuoi,r.loai==='user'?GN(r.game):''].join(' ').toLowerCase().includes(q)));
+  return KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:(F.t==='sun'||F.t==='hit'||F.t==='tele68')?(r.loai==='user'&&(r.game===F.t||r.game==='all')):r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip_cuoi,r.loai==='user'?GN(r.game):''].join(' ').toLowerCase().includes(q)));
 }
 function renderSel(){
   const el=$('#selbar');if(!el)return;
@@ -3396,7 +3862,7 @@ def _hit_predict(tb):
     """Handler chung của 2 bàn HITCLUB (cùng cấu trúc JSON với /api/predictsun, game="hitclub", thêm ban / ten_ban)."""
     ensure_poller()
     if not tb.active:
-        return _json({"ok": False, "game": "hitclub", "ban": tb.key, "loi": "ban dang tat (HITCLUB=0 / ENABLED=False)"}, 503)
+        return _json({"ok": False, "game": tb.game, "ban": tb.key, "loi": "ban dang tat (HITCLUB=0 / TELE68_ENABLED=0 / ENABLED=False)"}, 503)
     with tb.slock:
         have = tb.state["result"] is not None
     if not have:                                  # request đầu tiên, poller chưa kịp quét xong
@@ -3408,21 +3874,27 @@ def _hit_predict(tb):
     with tb.slock:
         res, err, upd = tb.state["result"], tb.state["error"], tb.state["updated"]
     if res is None:
-        return _json({"ok": False, "game": "hitclub", "ban": tb.key,
+        return _json({"ok": False, "game": tb.game, "ban": tb.key,
                       "loi": err or "dang cho phien dau tien tu API Hit (can it nhat 1 phien co ket qua)"}, 503)
-    return _json(_predict_out(res, err, upd, "hitclub", tb.key, tb.cfg, {"ban": tb.key, "ten_ban": tb.label}))
+    return _json(_predict_out(res, err, upd, tb.game, tb.key, tb.cfg, {"ban": tb.key, "ten_ban": tb.label}))
 
 
 @app.route("/api/predicthittxthuong")
 def api_predict_hit_thuong():
-    """[HITCLUB · TX THƯỜNG] — config riêng HIT_TXTHUONG_CFG · data riêng hittxthuong.json."""
+    """[HITCLUB · TX THƯỜNG] — config riêng HIT_TXTHUONG_CFG · data riêng hit15_txthuong.json."""
     return _hit_predict(HIT_TABLES["hittxthuong"])
 
 
 @app.route("/api/predicthittxmd5")
 def api_predict_hit_md5():
-    """[HITCLUB · TX MD5] — config riêng HIT_TXMD5_CFG · data riêng hittxmd5.json."""
+    """[HITCLUB · TX MD5] — config riêng HIT_TXMD5_CFG · data riêng hit15_txmd5.json."""
     return _hit_predict(HIT_TABLES["hittxmd5"])
+
+
+@app.route("/api/predicttele68txmd5")
+def api_predict_tele68_md5():
+    """[TELE68 · TX MD5] — config riêng TELE68_TXMD5_CFG · data riêng tele68_txmd5.json · nguồn: list ~105 phiên, chỉ lưu thêm phiên chưa có."""
+    return _hit_predict(HIT_TABLES["tele68txmd5"])
 
 
 @app.route("/api/history/clear", methods=["POST"])
@@ -3434,10 +3906,10 @@ def api_history_clear():
     ensure_poller()
     b = request.get_json(silent=True) or {}
     g = str(b.get("game") or "").strip().lower()
-    if g not in ("sun", "hittxthuong", "hittxmd5", "hitclub", "all"):
-        return _json({"ok": False, "loi": 'game phai la "sun", "hittxthuong", "hittxmd5", "hitclub" hoac "all"'}, 400)
+    if g not in ("sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5", "tele68", "all"):
+        return _json({"ok": False, "loi": 'game phai la "sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5" hoac "all"'}, 400)
     allow = _key_tables(getattr(flask_g, "key_game", "all"))      # key game Sun -> chỉ {"sun"} · key game Hit -> 2 bàn Hit · KEY_GATE_API tắt -> tất cả
-    want = {"sun": {"sun"}, "hittxthuong": {"hittxthuong"}, "hittxmd5": {"hittxmd5"}, "hitclub": set(HIT_TABLES), "all": {"sun"} | set(HIT_TABLES)}[g]
+    want = {"sun": {"sun"}, "hittxthuong": {"hittxthuong"}, "hittxmd5": {"hittxmd5"}, "hitclub": {"hittxthuong", "hittxmd5"}, "tele68txmd5": {"tele68txmd5"}, "tele68": {"tele68txmd5"}, "all": {"sun"} | set(HIT_TABLES)}[g]
     if not (want & allow):
         return _json({"ok": False, "sai_game": True, "loi": "key cua ban khong thuoc game nay, khong xoa duoc lich su game do"}, 403)
     want &= allow                                                 # "all" / "hitclub" với key 1 game -> chỉ xóa phần game của key
@@ -3464,6 +3936,72 @@ def api_history_clear():
     return _json({"ok": True, "da_xoa": done})
 
 
+@app.route("/api/history/regrade", methods=["POST"])
+def api_history_regrade():
+    """TÍNH LẠI đúng/sai của TOÀN BỘ ván đã lưu theo CONFIG HIỆN TẠI: {"game": "sun" | "hittxthuong" | "hittxmd5" | "hitclub" | "tele68txmd5" | "all"}.
+    Dùng khi vừa đổi config (ngưỡng AF · bẻ final · WR...) rồi khởi động lại tool: lịch sử vẫn giữ, nhưng đúng/sai được chấm lại bằng config mới ngay,
+    không phải đợi ván mới. Không chạy lại 15 logic (dùng votes đã lưu) nên nhanh. Không đụng mốc \"Xóa lịch sử\".
+    Trả {"ok":true,"ket_qua":{"sun":{"so_van":N,"doi_du_doan":M,"truoc":{"dung","tong"},"sau":{"dung","tong"}}}}."""
+    ensure_poller()
+    b = request.get_json(silent=True) or {}
+    g = str(b.get("game") or "").strip().lower()
+    if g not in ("sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5", "tele68", "all"):
+        return _json({"ok": False, "loi": 'game phai la "sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5" hoac "all"'}, 400)
+    allow = _key_tables(getattr(flask_g, "key_game", "all"))
+    want = {"sun": {"sun"}, "hittxthuong": {"hittxthuong"}, "hittxmd5": {"hittxmd5"}, "hitclub": {"hittxthuong", "hittxmd5"}, "tele68txmd5": {"tele68txmd5"}, "tele68": {"tele68txmd5"}, "all": {"sun"} | set(HIT_TABLES)}[g]
+    if not (want & allow):
+        return _json({"ok": False, "sai_game": True, "loi": "key cua ban khong thuoc game nay"}, 403)
+    want &= allow
+    done = {}
+    try:
+        if "sun" in want:
+            with _state_lock:
+                have = _state["result"] is not None
+            if not have:
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001
+                    pass
+            done["sun"] = sun_regrade()
+        for key, tb in HIT_TABLES.items():
+            if key in want and tb.active:
+                done[key] = tb.regrade()
+    except Exception as e:  # noqa: BLE001
+        return _json({"ok": False, "loi": f"{type(e).__name__}: {e}"}, 500)
+    return _json({"ok": True, "ket_qua": done})
+
+
+@app.route("/api/history/wipe", methods=["POST"])
+def api_history_wipe():
+    """XÓA SẠCH DATA của game: {"game": "sun" | "hittxthuong" | "hittxmd5" | "hitclub" | "tele68txmd5" | "all", "confirm": true}.
+    Khác \"Xóa lịch sử\" (chỉ ẩn): lệnh này xóa thật lịch sử xúc xắc + ván đã chấm + mốc ẩn của game đó, rồi tool đếm lại từ đầu (WR / AF cũng bắt đầu lại).
+    Bắt buộc \"confirm\": true. Không hoàn tác được."""
+    if not HIST_CLEAR_ENABLED:
+        return _json({"ok": False, "loi": "tinh nang xoa dang tat (SUNVIW_HIST_CLEAR=0)"}, 403)
+    ensure_poller()
+    b = request.get_json(silent=True) or {}
+    if b.get("confirm") is not True:
+        return _json({"ok": False, "loi": 'can {"confirm": true}'}, 400)
+    g = str(b.get("game") or "").strip().lower()
+    if g not in ("sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5", "tele68", "all"):
+        return _json({"ok": False, "loi": 'game phai la "sun", "hittxthuong", "hittxmd5", "hitclub", "tele68txmd5" hoac "all"'}, 400)
+    allow = _key_tables(getattr(flask_g, "key_game", "all"))
+    want = {"sun": {"sun"}, "hittxthuong": {"hittxthuong"}, "hittxmd5": {"hittxmd5"}, "hitclub": {"hittxthuong", "hittxmd5"}, "tele68txmd5": {"tele68txmd5"}, "tele68": {"tele68txmd5"}, "all": {"sun"} | set(HIT_TABLES)}[g]
+    if not (want & allow):
+        return _json({"ok": False, "sai_game": True, "loi": "key cua ban khong thuoc game nay"}, 403)
+    want &= allow
+    done = {}
+    try:
+        if "sun" in want:
+            done["sun"] = sun_wipe()
+        for key, tb in HIT_TABLES.items():
+            if key in want:
+                done[key] = tb.wipe()
+    except Exception as e:  # noqa: BLE001
+        return _json({"ok": False, "loi": f"{type(e).__name__}: {e}"}, 500)
+    return _json({"ok": True, "da_xoa": done})
+
+
 @app.route("/health")
 def health():
     ensure_poller()
@@ -3479,7 +4017,8 @@ def health():
                      be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_cao=AF_FLIP_FINAL_CAO, be_final_thap=AF_FLIP_FINAL_THAP, be_final_all=AF_FLIP_FINAL_ALL),
              xoa_lich_su=dict(bat=HIST_CLEAR_ENABLED, sun_an_den_phien=hist_hidden_upto("sun")),
              ips=ip_health(), panel_duyet=panel_health())
-    s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items()}}
+    s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "hit"}}
+    s["tele68"] = {"bat": TELE68_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "tele68"}}
     return _json(s)
 
 

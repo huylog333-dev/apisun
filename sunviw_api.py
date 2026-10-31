@@ -2056,7 +2056,7 @@ def _tele68_parse(tb, data):
 class Tele68Table(HitTable):
     """Bàn TELE68 TX MD5: cùng cơ chế HitTable (poller riêng · config riêng · file riêng), chỉ khác cách đọc API (list nhiều phiên) và game/key riêng."""
     game = "tele68"
-    kgame = "tele68"
+    kgame = "lc79"              # key game LC79 (tên cũ: tele68)
 
     def __init__(self, key, label, cfg, path, parser):
         super().__init__(key, label, cfg, path, parser)
@@ -2676,11 +2676,12 @@ LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong L
 LOGIN_LOCK_SEC = 900
 KEY_DEV_OPTIONS = (1, 2, 3, 5, 10, 20, 50)            # số thiết bị tối đa chọn được khi tạo key (1 key dùng được trên N thiết bị)
 KEY_DEV_DEFAULT = 1                                   # mặc định (cũng là số thiết bị của key cũ tạo trước bản này)
-KEY_GAMES = ("sun", "hit", "tele68")                            # game gắn được vào key người dùng — MỖI KEY CHỈ THUỘC 1 GAME, không gộp chung
-KEY_GAME_LABEL = {"sun": "Sun", "hit": "Hit", "tele68": "Tele68"}
-KEY_PREFIX = {"sun": "SUN", "hit": "HIT", "tele68": "TELE"}             # tiền tố key để nhìn là biết game: SUN-XXXX-... / HIT-XXXX-...
+KEY_GAMES = ("sun", "hit", "lc79")                            # game gắn được vào key người dùng — MỖI KEY CHỈ THUỘC 1 GAME, không gộp chung
+KEY_GAME_LABEL = {"sun": "Sun", "hit": "Hit", "lc79": "LC79"}
+KEY_PREFIX = {"sun": "SUN", "hit": "HIT", "lc79": "LC79"}             # tiền tố key để nhìn là biết game: SUN-XXXX-... / HIT-XXXX-...
 _lg = os.environ.get("SUNVIW_KEY_LEGACY_GAME", "all").strip().lower()
-KEY_LEGACY_GAME = _lg if _lg in ("all", "sun", "hit", "tele68") else "all"   # game của key cũ chưa có trường game (xem khối CONFIG KEY / ADMIN)
+_lg = "lc79" if _lg == "tele68" else _lg
+KEY_LEGACY_GAME = _lg if _lg in ("all", "sun", "hit", "lc79") else "all"   # game của key cũ chưa có trường game (xem khối CONFIG KEY / ADMIN)
 HWID_REQUIRED = _env_bool("SUNVIW_HWID_REQUIRED", True)
 HWID_TOUCH_SEC = 60                                   # ghi "lần dùng gần nhất" tối đa 1 lần / phút / thiết bị (đỡ ghi file mỗi lần panel poll)
 
@@ -2865,6 +2866,8 @@ def _dev_use(rec, hw, ip, ua, now, alts=(), fresh=False, bind=True):
 def _key_game(rec):
     """Game của key người dùng: "sun" | "hit"; key cũ chưa gán game -> KEY_LEGACY_GAME ("all" = mọi game)."""
     g = str(rec.get("game") or "").strip().lower()
+    if g == "tele68":                                  # tên cũ -> LC79 (key TELE-... đã tạo trước vẫn dùng được, chỉ cho game LC79)
+        g = "lc79"
     return g if g in KEY_GAMES else KEY_LEGACY_GAME
 
 
@@ -2891,7 +2894,7 @@ def _path_game(p):
     if p in ("/api/predicthittxthuong", "/api/predicthittxmd5"):
         return "hit"
     if p == "/api/predicttele68txmd5":
-        return "tele68"
+        return "lc79"
     return None
 
 
@@ -3167,6 +3170,7 @@ def api_key_check():
     k = b.get("key") or request.headers.get("X-User-Key") or request.args.get("key", "")
     hw, alts, hfresh = req_hw_ids(b)
     gm = str(b.get("game") or request.args.get("game") or "").strip().lower()    # (tuỳ chọn) kiểm tra key có đúng game này không
+    gm = "lc79" if gm == "tele68" else gm
     gm = gm if gm in KEY_GAMES else None
     rec, err, exists, kg = _check_user_key(k, hw, ip, request.headers.get("User-Agent", ""), alts, hfresh, gm)
     if not rec:
@@ -3289,8 +3293,9 @@ def api_admin_keys_create():
     if kind == "sub" and s["r"] != "main":
         return _json({"ok": False, "loi": "chi admin chinh moi tao duoc key admin phu"}, 403)
     game = str(b.get("game") or "").strip().lower()
+    game = "lc79" if game == "tele68" else game
     if kind == "user" and game not in KEY_GAMES:       # key người dùng PHẢI chọn đúng 1 game (không có key gộp chung)
-        return _json({"ok": False, "loi": "chua chon game cho key (sun hoac hit)"}, 400)
+        return _json({"ok": False, "loi": "chua chon game cho key (sun, hit hoac lc79)"}, 400)
     try:
         days = int(b.get("days"))
     except (TypeError, ValueError):
@@ -3599,7 +3604,7 @@ const fmt=t=>t?new Date(t*1000).toLocaleString('vi-VN'):'';
 const left=s=>{if(s<=0)return 'đã hết hạn';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return 'còn '+(d?d+' ngày '+h+' giờ':h?h+' giờ '+m+' phút':m+' phút')};
 const ago=t=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));return s<60?'vừa xong':s<3600?Math.floor(s/60)+' phút trước':s<86400?Math.floor(s/3600)+' giờ trước':Math.floor(s/86400)+' ngày trước'};
 const shortHw=h=>String(h).length>14?String(h).slice(0,8)+'…'+String(h).slice(-4):String(h);
-const GN=g=>({sun:'Sun',hit:'Hit'}[g]||'Mọi game');
+const GN=g=>({sun:'Sun',hit:'Hit',lc79:'LC79'}[g]||'Mọi game');
 const gameBd=r=>r.loai==='user'?`<span class="bd g-${esc(r.game)}" title="${r.game_cu?'Key tạo trước khi có chia game — dùng được mọi game':'Key này chỉ dùng cho game '+esc(GN(r.game))}">${esc(GN(r.game))}${r.game_cu?' · key cũ':''}</span>`:'';
 const DAYLBL={1:'1 ngày',2:'2 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
 const ic=p=>'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
@@ -3608,7 +3613,7 @@ const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3
  rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
  rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),dev:ic('<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
 let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
-let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'tele68',ten:'Tele68'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
+let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'lc79',ten:'LC79'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
 function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}
@@ -3656,7 +3661,7 @@ async function loadKeys(){
 const isMain=()=>S&&S.role==='main';
 function stats(){
   const live=KEYS.filter(r=>!r.het).length,a=[[KEYS.length,isMain()?'Tổng key':'Key của bạn'],[live,'Còn hạn'],[KEYS.length-live,'Hết hạn']];
-  {const us=KEYS.filter(r=>r.loai==='user'),cu=us.filter(r=>r.game==='all').length;a.push([us.filter(r=>r.game==='sun').length,'Key Sun'],[us.filter(r=>r.game==='hit').length,'Key Hit'],[us.filter(r=>r.game==='tele68').length,'Key Tele68']);if(cu)a.push([cu,'Key cũ (mọi game)'])}
+  {const us=KEYS.filter(r=>r.loai==='user'),cu=us.filter(r=>r.game==='all').length;a.push([us.filter(r=>r.game==='sun').length,'Key Sun'],[us.filter(r=>r.game==='hit').length,'Key Hit'],[us.filter(r=>r.game==='lc79').length,'Key LC79']);if(cu)a.push([cu,'Key cũ (mọi game)'])}
   if(isMain()){const sb=KEYS.filter(r=>r.loai==='sub');a.push([sb.length,'Key admin phụ'],[KEYS.reduce((n,r)=>n+r.so_dev,0),'Thiết bị đang gắn'])}
   return a.map(([n,l])=>`<div><b>${n}</b><span>${l}</span></div>`).join('');
 }
@@ -3674,7 +3679,7 @@ function renderDash(){
   <div class="gr"><div class="lb">Ghi chú (không bắt buộc)</div><input class="f" id="cnote" maxlength="40" placeholder="Ví dụ: khách A"></div></div>
   <button class="go mk" id="mk">Tạo key</button><div id="newk"></div></section>
   <section class="pn"><div class="hd"><h2>Danh sách key <span class="mu s" id="cnt"></span></h2><div class="act"><button class="gh" id="rf">${I.rf} Làm mới</button>${m?`<button class="gh dg" id="clean">${I.del} Dọn key hết hạn</button>`:''}</div></div>
-  <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn'],['sun','Game Sun'],['hit','Game Hit'],['tele68','Game Tele68']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
+  <div class="tb"><input class="f" id="fq" placeholder="Tìm key, người tạo, ghi chú…"><div class="chips" id="ft">${[['all','Tất cả'],['live','Còn hạn'],['exp','Hết hạn'],['sun','Game Sun'],['hit','Game Hit'],['lc79','Game LC79']].concat(m?[['user','Người dùng'],['sub','Admin phụ']]:[]).map(c=>`<button data-f="${c[0]}" class="${F.t===c[0]?'on':''}">${c[1]}</button>`).join('')}</div></div>
   <div class="sel" id="selbar"></div><div id="tbl"></div></section>`;
 }
 function paint(){
@@ -3729,7 +3734,7 @@ function renderPv(){
 }
 function visible(){
   const q=(F.q||'').toLowerCase();
-  return KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:(F.t==='sun'||F.t==='hit'||F.t==='tele68')?(r.loai==='user'&&(r.game===F.t||r.game==='all')):r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip_cuoi,r.loai==='user'?GN(r.game):''].join(' ').toLowerCase().includes(q)));
+  return KEYS.filter(r=>(F.t==='all'||(F.t==='live'?!r.het:F.t==='exp'?r.het:(F.t==='sun'||F.t==='hit'||F.t==='lc79')?(r.loai==='user'&&(r.game===F.t||r.game==='all')):r.loai===F.t))&&(!q||[r.key,r.nguoi_tao,r.ghi_chu,r.dung_boi,r.ip_cuoi,r.loai==='user'?GN(r.game):''].join(' ').toLowerCase().includes(q)));
 }
 function renderSel(){
   const el=$('#selbar');if(!el)return;
@@ -4018,7 +4023,7 @@ def health():
              xoa_lich_su=dict(bat=HIST_CLEAR_ENABLED, sun_an_den_phien=hist_hidden_upto("sun")),
              ips=ip_health(), panel_duyet=panel_health())
     s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "hit"}}
-    s["tele68"] = {"bat": TELE68_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "tele68"}}
+    s["tele68"] = {"bat": TELE68_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "lc79"}}
     return _json(s)
 
 
@@ -4178,7 +4183,7 @@ def main():
     print(f"WR 100 phien ->  luu toi da {PERSIST_KEEP} van da cham · WR dung/sai xet {EVAL_WINDOW} van gan nhat")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))
-    print(f"KEY/ADMIN   ->  trang admin /api/admin (1 o nhap key, tu nhan dien · moi key chi thuoc 1 game (sun | hit, chon luc tao; key cu chua gan game = {KEY_LEGACY_GAME}) · moi key gan HWID thiet bi (nhieu thiet bi / key, admin chinh + admin phu deu chon duoc) · bat buoc HWID {'BAT' if HWID_REQUIRED else 'TAT'}) · mat khau admin chinh {'tu env SUNVIW_MAIN_PASS' if _ENV_MAIN_PASS else 'tu hash mac dinh trong code (nen dat SUNVIW_MAIN_PASS)'} · bat key cho API {'BAT' if KEY_GATE_API else 'TAT'} · file key {KEYS_PATH}")
+    print(f"KEY/ADMIN   ->  trang admin /api/admin (1 o nhap key, tu nhan dien · moi key chi thuoc 1 game (sun | hit | lc79, chon luc tao; key cu chua gan game = {KEY_LEGACY_GAME}) · moi key gan HWID thiet bi (nhieu thiet bi / key, admin chinh + admin phu deu chon duoc) · bat buoc HWID {'BAT' if HWID_REQUIRED else 'TAT'}) · mat khau admin chinh {'tu env SUNVIW_MAIN_PASS' if _ENV_MAIN_PASS else 'tu hash mac dinh trong code (nen dat SUNVIW_MAIN_PASS)'} · bat key cho API {'BAT' if KEY_GATE_API else 'TAT'} · file key {KEYS_PATH}")
     for _tb in HIT_TABLES.values():
         _c = _tb.cfg
         print(f"HITCLUB {_tb.label:<9} ->  {'BAT' if _tb.active else 'TAT'} · http://{a.host}:{a.port}/api/predict{_tb.key} · gid {_c.GID} · quet moi {_c.POLL_SEC:g}s · file {_tb.path} · "

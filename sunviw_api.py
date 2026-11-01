@@ -610,7 +610,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 47, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 64,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 47, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 72,
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,

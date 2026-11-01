@@ -2746,7 +2746,7 @@ def _track_ip():
 #                     xóa key (tích chọn nhiều key rồi xóa một lượt), xem mọi key (ai tạo, hạn, số thiết bị đang gắn, LẦN DÙNG GẦN NHẤT, từng thiết bị) và RESET / GỠ THIẾT BỊ.
 #     · Admin phụ   : nhập key admin phụ (do admin chính tạo). Key chưa ai dùng -> nhập username (vd. Dark) -> key gắn với username đó VÀ gắn với HWID của thiết bị đăng nhập đầu tiên.
 #                     Key dùng được tối đa N thiết bị (N do admin chính chọn lúc tạo key): máy thứ N+1 bị chặn cho tới khi admin chính reset / gỡ thiết bị.
-#                     Admin phụ tạo / xóa KEY NGƯỜI DÙNG (chỉ key mình tạo; cũng chọn được số thiết bị tối đa, tích chọn xóa nhiều key, reset thiết bị key của mình) với hạn 1-2-7-14-30-60-90-180-365 ngày.
+#                     Admin phụ tạo / xóa KEY NGƯỜI DÙNG (chỉ key mình tạo; cũng chọn được số thiết bị tối đa, tích chọn xóa nhiều key, reset thiết bị key của mình) với hạn 1 ngày · 3 ngày · 1 tuần · 1 tháng · 2 tháng · 3 tháng.
 #     · Key người dùng / key không tồn tại -> trang admin báo rõ là key người dùng (không phải admin) hoặc không tìm thấy key.
 #   Người dùng nhập KEY NGƯỜI DÙNG ở panel /api/html (hoặc tool gọi POST /api/key/check {"key": "...", "hwid": "..."}).
 #   HWID = mã thiết bị. KHÔNG dùng IP / mạng để chặn: đổi Wi-Fi <-> 4G <-> VPN, đổi IP thoải mái, cùng máy vẫn dùng bình thường (server chỉ GHI IP để admin xem). Chỉ MÁY KHÁC mới bị chặn khi key đã đủ thiết bị.
@@ -2778,9 +2778,9 @@ ADMIN_PASS_HASH_DEFAULT = "69eb8d5a0692dade93234908118f99d1b8990e3484dc3fca7bb38
 KEYS_PATH = os.environ.get("SUNVIW_KEYS_PATH", _data_path("sunviw_keys.json"))
 KEY_GATE_API = _env_bool("SUNVIW_GATE_API", True)
 KEY_START_ON_ACTIVATE = _env_bool("SUNVIW_KEY_START_ON_ACTIVATE", True)   # True (mặc định) = key mới tạo CHƯA tính hạn; hạn chỉ bắt đầu chạy từ lần dùng THÀNH CÔNG đầu tiên (kích hoạt). False = như cũ (tính từ lúc tạo)
-KEY_DAYS = (1, 2, 3, 7, 14, 30, 60, 90, 180, 365)    # hạn key cho phép (ngày)
+KEY_DAYS = (1, 3, 7, 30, 60, 90)                     # hạn key cho phép khi TẠO (ngày) = 1 ngày · 3 ngày · 1 tuần · 1 tháng · 2 tháng · 3 tháng. Key cũ có hạn khác (2/14/180/365 ngày) vẫn dùng + hiển thị bình thường
 # 💰 GIÁ BÁN KEY (VNĐ) theo số ngày của gói — dùng để TỰ TÍNH DOANH THU khi key được KÍCH HOẠT (áp dụng cho cả key Sun · Hit · LC79).
-#    Gói không có trong bảng (2 / 14 / 60 / 90 / 180 / 365 ngày) = chưa có giá -> không tính vào doanh thu (chỉ đếm riêng ở "chưa có giá"). Muốn tính thêm gói nào thì thêm vào đây.
+#    Gói không có trong bảng (60 / 90 ngày, hoặc key cũ 2 / 14 / 180 / 365 ngày) = chưa có giá -> không tính vào doanh thu (chỉ đếm riêng ở "chưa có giá"). Muốn tính thêm gói nào thì thêm vào đây.
 #    Giá được CHỐT vào sổ doanh thu ngay lúc kích hoạt -> sau này đổi bảng giá không làm đổi doanh thu cũ. Doanh thu chỉ ADMIN CHÍNH xem được (GET /api/admin/revenue + khối "Doanh thu" ở /api/admin).
 KEY_PRICE = {1: 10000, 3: 25000, 7: 75000, 30: 250000}
 REV_KEEP_SEC = 400 * 86400                            # sổ doanh thu giữ tối đa bấy lâu (đủ cho cửa sổ 1 ngày / 1 tuần / 1 tháng)
@@ -3883,14 +3883,14 @@ const ago=t=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));return s<60?'v�
 const shortHw=h=>String(h).length>14?String(h).slice(0,8)+'…'+String(h).slice(-4):String(h);
 const GN=g=>({sun:'Sun',hit:'Hit',lc79:'LC79'}[g]||'Mọi game');
 const gameBd=r=>r.loai==='user'?`<span class="bd g-${esc(r.game)}" title="${r.game_cu?'Key tạo trước khi có chia game — dùng được mọi game':'Key này chỉ dùng cho game '+esc(GN(r.game))}">${esc(GN(r.game))}${r.game_cu?' · key cũ':''}</span>`:'';
-const DAYLBL={1:'1 ngày',2:'2 ngày',3:'3 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
+const DAYLBL={1:'1 ngày',2:'2 ngày',3:'3 ngày',7:'1 tuần',14:'2 tuần',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
 const ic=p=>'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
 const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/>'),lock:ic('<path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="10" rx="2"/>'),
  copy:ic('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),del:ic('<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
  rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
  rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),dev:ic('<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
 let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
-let need=false,busy=false,KEYS=[],DAYS=[1,2,3,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'lc79',ten:'LC79'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
+let need=false,busy=false,KEYS=[],DAYS=[1,3,7,30,60,90],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'lc79',ten:'LC79'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
 function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}

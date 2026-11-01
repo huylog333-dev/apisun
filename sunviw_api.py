@@ -113,7 +113,7 @@ JSON /api/predict:
     Admin chính + admin phụ đều chọn được số thiết bị khi tạo key; admin phụ chỉ tạo được key người dùng. Trang admin hiện: số thiết bị đang gắn / tối đa · lần dùng gần nhất · từng thiết bị (có nút Gỡ)
     · tích chọn nhiều key để xóa một lượt.
     ⚑ KHÔNG BAO GIỜ chặn theo IP: đổi mạng / đổi IP không ảnh hưởng key, chỉ máy khác mới bị chặn. Mã thiết bị được giữ ổn định (lưu localStorage + cookie, dấu vân tay phần cứng không đổi theo UA / zoom / xoay màn hình),
-    server học thêm mã phụ cho từng thiết bị (header X-HWID-ALT) để máy xoá dữ liệu trình duyệt vẫn được nhận lại thay vì chiếm thêm chỗ — chi tiết ở khối "CONFIG KEY / ADMIN".
+    server học thêm mã phụ cho từng thiết bị (header X-HWID-ALT) để máy xoá dữ liệu trình duyệt vẫ được nhận lại thay vì chiếm thêm chỗ — chi tiết ở khối "CONFIG KEY / ADMIN".
 
 🎯 HITCLUB (GAME 3 · 2 BÀN) — port từ hittxthuong.js / hittxmd5.js (khối "CONFIG HITCLUB" + phần "HITCLUB" ở giữa file):
     Bàn TX THƯỜNG (gid vgmn_100, cmd 1008 + 1003) và bàn TX MD5 (gid vgmn_101, cmd 2006): mỗi bàn một poller (mặc định 3s), tự tích lũy lịch sử xúc xắc.

@@ -28,7 +28,7 @@ Endpoint:
     GET /api/admin/panel (+ POST /approve · /deny · /remove) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
     GET /health                  -> trạng thái nền của Sun + Hit
     GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa (tích chọn nhiều key) / xem key, MỌI key gắn HWID thiết bị (1 key dùng được N thiết bị), hiện lần dùng gần nhất, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
-    POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
+    POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ + KÍCH HOẠT (lần đầu dùng thành công mới bắt đầu tính hạn) cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
     POST /api/history/clear      -> XÓA LỊCH SỬ DỰ ĐOÁN hiển thị: {"game":"sun"|"hittxthuong"|"hittxmd5"|"hitclub"|"all"} (nút "Xóa lịch sử" ở panel /api/html). CHỈ ẩn lich_su + số liệu đúng/sai đã hiển thị bằng 1 mốc phiên (file riêng),
                                     KHÔNG xóa dữ liệu nào khác và KHÔNG ảnh hưởng các logic / WR / AF dự đoán (xem khối "CONFIG XÓA LỊCH SỬ"; tắt hẳn bằng SUNVIW_HIST_CLEAR=0)
     POST /api/history/wipe       -> XÓA SẠCH data của game: {"game":"sun"|"hittxthuong"|"hittxmd5"|"hitclub"|"tele68txmd5"|"all","confirm":true} (nút "☠ Xóa data game" ở panel; xóa thật lịch sử xúc xắc + ván đã chấm, không hoàn tác)
@@ -134,6 +134,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -231,8 +232,8 @@ AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế đ�
 AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
 AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
-AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
-AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
+AF_FLIP_FINAL_THAP_DEFAULT = True     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
+AF_FLIP_FINAL_ALL_DEFAULT = False      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
 AF_FLIP_LOW = _env_num("SUNVIW_AF_LOW", AF_FLIP_LOW_DEFAULT, float)
@@ -286,15 +287,54 @@ UPSTREAM_TIMEOUT = 9      # giây
 # THƯ MỤC LƯU DỮ LIỆU BỀN: Railway gắn Volume thì tự đặt RAILWAY_VOLUME_MOUNT_PATH (vd. /data) -> mọi file lưu (lịch sử, graded, key, IP...)
 # nằm trong Volume nên KHÔNG MẤT sau mỗi lần deploy / restart. Không có Volume (chạy máy local) -> dùng /tmp như cũ.
 # Muốn tự chọn thư mục: đặt SUNVIW_DATA_DIR. Từng file vẫn ghi đè riêng được bằng SUNVIW_HIST / SUNVIW_PERSIST / SUNVIW_KEYS_PATH / SUNVIW_IPS_PATH.
-DATA_DIR = os.environ.get("SUNVIW_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "/tmp"
+ON_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID") or os.environ.get("RAILWAY_SERVICE_ID"))
+DATA_DIR = os.environ.get("SUNVIW_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ""
+if not DATA_DIR and ON_RAILWAY:                        # Railway nhưng chưa có biến Volume -> thử các điểm gắn ổ đĩa hay dùng (chỉ nhận nếu THẬT SỰ là ổ đĩa gắn riêng)
+    for _cand in ("/data", "/app/data", "/mnt/data"):
+        if os.path.ismount(_cand):
+            DATA_DIR = _cand
+            break
+DATA_DIR = DATA_DIR or "/tmp"
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
 except OSError:
     DATA_DIR = "/tmp"
+# Dữ liệu có BỀN qua redeploy không? /tmp (hoặc thư mục tạm) = KHÔNG. Chạy máy local thì ổ đĩa bình thường nên coi là bền, chỉ cảnh báo khi đang ở Railway.
+DATA_PERSISTENT = (DATA_DIR == os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")) or not (DATA_DIR == "/tmp" or DATA_DIR.startswith("/tmp/")) or not ON_RAILWAY
 
 
 def _data_path(name):
     return os.path.join(DATA_DIR, name)
+
+
+BOOT_PATH = os.environ.get("SUNVIW_BOOT_PATH", _data_path("sunviw_boot.json"))
+
+
+def _boot_mark():
+    """Ghi mốc khởi động vào thư mục data: lần đầu (first) + số lần khởi động (count). Redeploy xong mà `first` vẫn cũ và `count` tăng = data đã được giữ lại.
+    Ngược lại `first` = vừa mới => thư mục data đã bị xoá sạch (chưa gắn Volume)."""
+    now = int(time.time())
+    d = {"first": now, "count": 0}
+    try:
+        with open(BOOT_PATH, "r", encoding="utf-8") as f:
+            o = json.load(f)
+        if isinstance(o, dict) and o.get("first"):
+            d["first"], d["count"] = int(o["first"]), int(o.get("count") or 0)
+    except Exception:  # noqa: BLE001
+        pass
+    d["count"] += 1
+    d["last"] = now
+    try:
+        tmp = BOOT_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        os.replace(tmp, BOOT_PATH)
+    except OSError:
+        d["loi_ghi"] = True
+    return d
+
+
+BOOT_INFO = _boot_mark()
 
 
 HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sun15_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
@@ -508,7 +548,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 300, "PERSIST_KEEP": 100,
 }))
@@ -577,7 +617,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))
@@ -2720,12 +2760,14 @@ def _track_ip():
 #   SUNVIW_KEYS_PATH   file lưu key (mặc định <DATA_DIR>/sunviw_keys.json; DATA_DIR = Volume Railway nếu có, không thì /tmp). Railway: PHẢI gắn Volume, không thì MẤT KEY mỗi lần deploy.
 #   SUNVIW_SECRET      (tuỳ chọn) khoá ký phiên đăng nhập admin; không đặt = tự sinh và lưu chung file key.
 #   SUNVIW_GATE_API    1 = bắt buộc key cho các endpoint ở trên (mặc định) · 0 = tắt (ai gọi API cũng được như trước)
+#   SUNVIW_KEY_START_ON_ACTIVATE  1 = (mặc định) key mới tạo CHƯA tính hạn: hạn chỉ chạy từ lần dùng THÀNH CÔNG đầu tiên (key người dùng: lần gọi hợp lệ đầu tiên đúng game + gắn được thiết bị · key admin phụ: lần đăng nhập đầu tiên). 0 = tính hạn từ lúc tạo như cũ. Key tạo TRƯỚC bản này giữ nguyên hạn cũ.
 #   SUNVIW_HWID_REQUIRED  1 = request dùng key người dùng mà KHÔNG kèm HWID bị từ chối (mặc định) · 0 = cho qua (không gắn thiết bị). Có gửi HWID thì luôn được kiểm tra + gắn thiết bị.
 ADMIN_MAIN_NAME = "admin chính"
 _ADMIN_SALT = b"sunviw-admin-v1:93eacb1bcbb59252"
 ADMIN_PASS_HASH_DEFAULT = "69eb8d5a0692dade93234908118f99d1b8990e3484dc3fca7bb3847d8b6578eb"         # PBKDF2-SHA256 (200.000 vòng) — không đảo ngược được thành mật khẩu, nhưng mật khẩu toàn số ngắn vẫn dò được nếu lộ hash -> nên đặt SUNVIW_MAIN_PASS
 KEYS_PATH = os.environ.get("SUNVIW_KEYS_PATH", _data_path("sunviw_keys.json"))
 KEY_GATE_API = _env_bool("SUNVIW_GATE_API", True)
+KEY_START_ON_ACTIVATE = _env_bool("SUNVIW_KEY_START_ON_ACTIVATE", True)   # True (mặc định) = key mới tạo CHƯA tính hạn; hạn chỉ bắt đầu chạy từ lần dùng THÀNH CÔNG đầu tiên (kích hoạt). False = như cũ (tính từ lúc tạo)
 KEY_DAYS = (1, 2, 7, 14, 30, 60, 90, 180, 365)       # hạn key cho phép (ngày)
 KEY_MAX_TOTAL = 5000                                  # trần số key lưu trong file
 ADMIN_SESSION_SEC = 12 * 3600                         # phiên đăng nhập admin sống bao lâu
@@ -2755,13 +2797,14 @@ _KEY_ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"        # bỏ 0/O/1/I cho dễ �
 
 
 def _kv_load():
-    try:
-        with open(KEYS_PATH, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(d, dict) and isinstance(d.get("keys"), dict):
-            return d
-    except Exception:  # noqa: BLE001
-        pass
+    for pth in (KEYS_PATH, KEYS_PATH + ".bak"):       # file chính hỏng / mất -> đọc bản sao .bak (tránh lần lưu sau ghi đè mất sạch key)
+        try:
+            with open(pth, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict) and isinstance(d.get("keys"), dict):
+                return d
+        except Exception:  # noqa: BLE001
+            pass
     return {"secret": "", "keys": {}}
 
 
@@ -2771,6 +2814,11 @@ def _kv_save(d):
     tmp = KEYS_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False)
+    try:
+        if os.path.exists(KEYS_PATH) and os.path.getsize(KEYS_PATH) > 2:
+            shutil.copyfile(KEYS_PATH, KEYS_PATH + ".bak")   # giữ bản trước đó
+    except OSError:
+        pass
     os.replace(tmp, KEYS_PATH)
 
 
@@ -2843,6 +2891,39 @@ def req_hw_ids(body=None):
 def req_hwid(body=None):
     """HWID chính của thiết bị gọi request (giữ để tool cũ không hỏng) — xem req_hw_ids."""
     return req_hw_ids(body)[0]
+
+
+def _activated(rec):
+    """Key đã kích hoạt (đã bắt đầu tính hạn) chưa. Key tạo TRƯỚC bản này (không có trường "act") = coi như đã kích hoạt từ lúc tạo -> hạn cũ giữ nguyên."""
+    return "act" not in rec or bool(rec.get("act"))
+
+
+def _is_expired(rec, now):
+    """Hết hạn chưa. Key chưa kích hoạt thì KHÔNG BAO GIỜ hết hạn (hạn chưa chạy)."""
+    return _activated(rec) and int(rec.get("exp") or 0) <= now
+
+
+def _activate(rec, now):
+    """Kích hoạt lần đầu: bắt đầu tính hạn từ `now` (exp = now + số ngày của gói). Trả True nếu VỪA kích hoạt (nơi gọi phải _kv_save)."""
+    if _activated(rec):
+        return False
+    try:
+        days = max(1, int(rec.get("days") or 1))
+    except (TypeError, ValueError):
+        days = 1
+    rec["act"] = now
+    rec["exp"] = now + days * 86400
+    return True
+
+
+def _left_sec(rec, now):
+    """Số giây còn lại; key chưa kích hoạt = trọn gói (days * 86400)."""
+    if _activated(rec):
+        return max(0, int(rec.get("exp") or 0) - int(now))
+    try:
+        return max(0, int(rec.get("days") or 0)) * 86400
+    except (TypeError, ValueError):
+        return 0
 
 
 def _max_dev(rec):
@@ -2992,7 +3073,7 @@ def _tok_check():
             with _kv_lock:
                 d = _kv_load()
                 rec = d["keys"].get(p["k"])
-                if rec and rec.get("type") == "sub" and rec.get("owner") == p["n"] and rec["exp"] > now:
+                if rec and rec.get("type") == "sub" and rec.get("owner") == p["n"] and not _is_expired(rec, now):
                     devs = rec.get("devs") if isinstance(rec.get("devs"), dict) else {}
                     kr = _dev_find(devs, hw, alts, hfresh)                  # thiết bị đang gọi
                     if kr is not None and kr == _dev_find(devs, p.get("h", "")):      # = thiết bị đã đăng nhập tạo ra phiên này
@@ -3050,7 +3131,7 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
             return None, "key khong hop le", False, None
         now = int(time.time())
         kg = _key_game(r)
-        if r["exp"] <= now:
+        if _is_expired(r, now):
             return None, "key da het han", True, kg
         if not _game_ok(kg, game):
             return None, (f"{WRONG_GAME_MSG} {KEY_GAME_LABEL.get(kg, kg)} — không dùng được cho game {KEY_GAME_LABEL.get(game, game)}. "
@@ -3059,13 +3140,17 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
             ok, err, ch = _dev_use(r, hw, ip, ua, now, alts, fresh)
             if not ok:
                 return None, err, True, kg
-            if ch:
-                try:
-                    _kv_save(d)
-                except OSError:
-                    pass
         elif HWID_REQUIRED:
             return None, "Thiếu mã thiết bị (HWID) — gửi header X-HWID hoặc ?hwid= cùng key.", True, kg
+        else:
+            ch = False
+        if _activate(r, now):                            # lần dùng THÀNH CÔNG đầu tiên (đúng game + gắn được thiết bị) -> bắt đầu tính hạn từ đây
+            ch = True
+        if ch:
+            try:
+                _kv_save(d)
+            except OSError:
+                pass
         return r, "", True, kg
 
 
@@ -3237,7 +3322,7 @@ def api_key_check():
             return _json({"ok": False, "sai_game": True, "game_can": kg, "loi": err}, 403)
         return _json({"ok": False, "dev_locked": err.startswith("Key đã đủ"), "loi": err}, 401)
     _rl_reset(ip)
-    return _json({"ok": True, "het_han": rec["exp"], "con_lai_giay": max(0, int(rec["exp"] - time.time())),
+    return _json({"ok": True, "het_han": rec["exp"], "con_lai_giay": _left_sec(rec, time.time()), "kich_hoat": rec.get("act") or None,
                   "game": kg, "game_ten": KEY_GAME_LABEL.get(kg, "Mọi game"),
                   "so_dev": len(rec.get("devs") or {}), "max_dev": _max_dev(rec)})
 
@@ -3269,7 +3354,7 @@ def api_admin_login():
         d = _kv_load()
         rec = d["keys"].get(k) if k else None
         if rec:                                          # key có trong file -> phân loại theo type
-            if rec["exp"] <= now:
+            if _is_expired(rec, now):
                 return _json({"ok": False, "kind": rec.get("type"), "loi": "Key này đã hết hạn."}, 403)
             if rec.get("type") != "sub":
                 return _json({"ok": False, "kind": "user", "loi": "Key hợp lệ nhưng chỉ dùng để vào tool ở panel /api/html, không phải key admin."}, 403)
@@ -3290,6 +3375,8 @@ def api_admin_login():
             if not ok:
                 _rl_fail(ip)
                 return _json({"ok": False, "kind": "sub", "dev_locked": True, "loi": err}, 403)
+            if _activate(rec, now):                      # đăng nhập thành công lần đầu -> bắt đầu tính hạn key admin phụ
+                ch = True
             if ch or fresh:
                 try:
                     _kv_save(d)
@@ -3329,8 +3416,10 @@ def api_admin_keys():
         devs = r.get("devs") if isinstance(r.get("devs"), dict) else {}
         tb = sorted(({"hw": h, "lan_dau": v.get("first"), "gan_nhat": v.get("last"), "ip": v.get("ip"), "ua": v.get("ua", "")} for h, v in devs.items()),
                     key=lambda x: -(x["gan_nhat"] or 0))
-        rows.append({"key": k, "loai": r.get("type"), "nguoi_tao": r.get("by_name"), "tao_luc": r.get("created"), "het_han": r["exp"],
-                     "con_lai": max(0, int(r["exp"] - now)), "het": r["exp"] <= now, "ngay": r.get("days"), "ghi_chu": r.get("note", ""),
+        act = _activated(r)
+        rows.append({"key": k, "loai": r.get("type"), "nguoi_tao": r.get("by_name"), "tao_luc": r.get("created"), "het_han": (r["exp"] if act else None),
+                     "con_lai": _left_sec(r, now), "het": _is_expired(r, now), "ngay": r.get("days"), "ghi_chu": r.get("note", ""),
+                     "kich_hoat": act, "kich_hoat_luc": (r.get("act") or None),               # kich_hoat=False: chưa ai dùng -> hạn chưa chạy
                      "dung_boi": r.get("owner"), "da_tao": made.get(r.get("owner"), 0) if r.get("type") == "sub" else None,
                      "max_dev": _max_dev(r), "so_dev": len(devs), "dung_luc": r.get("last"), "ip_cuoi": r.get("last_ip"), "thiet_bi": tb,
                      "game": _key_game(r) if r.get("type") == "user" else None,                                   # sun | hit | all (key cũ chưa gán game)
@@ -3378,8 +3467,10 @@ def api_admin_keys_create():
         made = []
         for _ in range(cnt):
             k = _new_key("AD" if kind == "sub" else KEY_PREFIX[game], d["keys"])
-            d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": now + days * 86400,
+            d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": (0 if KEY_START_ON_ACTIVATE else now + days * 86400),
                             "days": days, "note": note, "owner": None, "max_dev": mdev, "devs": {}}
+            if KEY_START_ON_ACTIVATE:
+                d["keys"][k]["act"] = 0                  # 0 = CHƯA KÍCH HOẠT: hạn (exp) chỉ được tính khi key được dùng thành công lần đầu
             if kind == "user":
                 d["keys"][k]["game"] = game
             made.append(k)
@@ -3387,7 +3478,7 @@ def api_admin_keys_create():
             _kv_save(d)
         except OSError as e:
             return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
-    return _json({"ok": True, "keys": made, "het_han": now + days * 86400, "max_dev": mdev, "game": game if kind == "user" else None})
+    return _json({"ok": True, "keys": made, "het_han": (None if KEY_START_ON_ACTIVATE else now + days * 86400), "tinh_han_tu_kich_hoat": KEY_START_ON_ACTIVATE, "ngay": days, "max_dev": mdev, "game": game if kind == "user" else None})
 
 
 @app.route("/api/admin/keys/delete", methods=["POST"])
@@ -3403,7 +3494,7 @@ def api_admin_keys_delete():
         d = _kv_load()
         keys = d["keys"]
         if b.get("expired") and s["r"] == "main":        # dọn mọi key hết hạn
-            dead = [k for k, r in keys.items() if r["exp"] <= now]
+            dead = [k for k, r in keys.items() if _is_expired(r, now)]
         else:
             lst = b.get("keys") if isinstance(b.get("keys"), list) else [b.get("key")]
             want = list(dict.fromkeys(x for x in (_norm_key(v) for v in lst[:KEY_MAX_TOTAL]) if x))
@@ -3730,7 +3821,7 @@ function renderDash(){
   <section class="pn"><h2>Tạo key mới</h2>
   ${m?`<div class="seg" id="ct"><button data-t="user" class="on">Key người dùng</button><button data-t="sub">Key admin phụ</button></div>`:''}
   <div id="cgw"${m&&CF.type==='sub'?' hidden':''}><div class="lb">Game của key <span class="mu s">(mỗi key chỉ dùng được cho đúng 1 game — muốn dùng cả 2 game thì tạo 2 key riêng)</span></div><div class="pills" id="cg">${GAMES.map(g=>`<button data-g="${esc(g.id)}" class="${g.id===CF.game?'on':''}">${esc(g.ten)}</button>`).join('')}</div></div>
-  <div class="lb">Thời hạn</div><div class="pills" id="cd">${DAYS.map(d=>`<button data-d="${d}" class="${d===CF.days?'on':''}">${DAYLBL[d]||d+' ngày'}</button>`).join('')}</div>
+  <div class="lb">Thời hạn <span class="mu s">(tính từ lần dùng đầu tiên)</span></div><div class="pills" id="cd">${DAYS.map(d=>`<button data-d="${d}" class="${d===CF.days?'on':''}">${DAYLBL[d]||d+' ngày'}</button>`).join('')}</div>
   <div class="lb">Số thiết bị tối đa mỗi key <span class="mu s">(1 key dùng được trên bấy nhiêu máy)</span></div><div class="pills" id="cv">${DEVO.map(v=>`<button data-v="${v}" class="${v===CF.dev?'on':''}">${v} thiết bị</button>`).join('')}</div>
   <div class="fr"><div><div class="lb">Số lượng</div><div class="step"><button data-n="-1" aria-label="Giảm">−</button><b id="cn">${CF.n}</b><button data-n="1" aria-label="Tăng">+</button></div></div>
   <div class="gr"><div class="lb">Ghi chú (không bắt buộc)</div><input class="f" id="cnote" maxlength="40" placeholder="Ví dụ: khách A"></div></div>
@@ -3759,8 +3850,8 @@ function row(r){
   let who;
   if(sub&&m)who=(r.dung_boi?`<div><b>${esc(r.dung_boi)}</b> <span class="mu s">· đã tạo ${r.da_tao} key</span></div>`:`<span class="mu">Chưa ai kích hoạt</span>`)+useBox(r,!r.dung_boi);
   else who=`<div class="mu s">${m?'Tạo bởi '+esc(r.nguoi_tao||''):''}</div><div>${esc(r.ghi_chu||'')}</div>`+useBox(r);
-  return `<div class="rw"><div><div class="kk"><label class="ck" title="Chọn để xóa nhiều key"><input type="checkbox" data-sel="${esc(r.key)}"${SEL.has(r.key)?' checked':''}></label><span class="mono">${esc(r.key)}</span><span class="bd ${sub?'sb':'us'}">${sub?'admin phụ':'người dùng'}</span>${gameBd(r)}${r.het?'<span class="bd ex">hết hạn</span>':''}</div></div>
-  <div><div class="s">${esc(fmt(r.het_han))}</div><div class="s ${r.het?'':'mu'}" style="${r.het?'color:var(--no)':''}">${esc(left(r.con_lai))}${r.ngay?' · gói '+esc(DAYLBL[r.ngay]||r.ngay+' ngày'):''}</div><div class="bar"><i class="${r.het?'xx':pct<20?'lo':''}" style="width:${pct}%"></i></div></div>
+  return `<div class="rw"><div><div class="kk"><label class="ck" title="Chọn để xóa nhiều key"><input type="checkbox" data-sel="${esc(r.key)}"${SEL.has(r.key)?' checked':''}></label><span class="mono">${esc(r.key)}</span><span class="bd ${sub?'sb':'us'}">${sub?'admin phụ':'người dùng'}</span>${gameBd(r)}${r.het?'<span class="bd ex">hết hạn</span>':''}${r.kich_hoat===false?'<span class="bd us">chờ kích hoạt</span>':''}</div></div>
+  <div>${r.kich_hoat===false?`<div class="s">Chưa kích hoạt</div><div class="s mu">hạn ${esc(DAYLBL[r.ngay]||r.ngay+' ngày')} sẽ tính từ lần dùng đầu tiên</div>`:`<div class="s">${esc(fmt(r.het_han))}</div><div class="s ${r.het?'':'mu'}" style="${r.het?'color:var(--no)':''}">${esc(left(r.con_lai))}${r.ngay?' · gói '+esc(DAYLBL[r.ngay]||r.ngay+' ngày'):''}</div>${r.kich_hoat_luc?`<div class="s mu">kích hoạt ${esc(fmt(r.kich_hoat_luc))}</div>`:''}`}<div class="bar"><i class="${r.het?'xx':pct<20?'lo':''}" style="width:${pct}%"></i></div></div>
   <div>${who}</div>
   <div class="ra"><button class="gh ib" data-copy="${esc(r.key)}" title="Sao chép" aria-label="Sao chép">${I.copy}</button>${r.so_dev?`<button class="gh ib" data-rs="${esc(r.key)}" title="Reset thiết bị" aria-label="Reset thiết bị">${I.rs}</button>`:''}<button class="gh dg ib" data-del="${esc(r.key)}" title="Xóa" aria-label="Xóa">${I.del}</button></div>${devList(r)}</div>`;
 }
@@ -4078,7 +4169,10 @@ def health():
                      mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_che_do=AF_MODE_FLIP, be_final_af=AF_FLIP_FINAL,
                      be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_cao=AF_FLIP_FINAL_CAO, be_final_thap=AF_FLIP_FINAL_THAP, be_final_all=AF_FLIP_FINAL_ALL),
              xoa_lich_su=dict(bat=HIST_CLEAR_ENABLED, sun_an_den_phien=hist_hidden_upto("sun")),
-             ips=ip_health(), panel_duyet=panel_health())
+             ips=ip_health(), panel_duyet=panel_health(),
+             luu_tru=dict(thu_muc=DATA_DIR, ben=DATA_PERSISTENT, tren_railway=ON_RAILWAY, file_key=KEYS_PATH, key_tinh_han_tu_kich_hoat=KEY_START_ON_ACTIVATE,
+                          khoi_dong_dau=BOOT_INFO.get("first"), so_lan_khoi_dong=BOOT_INFO.get("count"),
+                          canh_bao=(None if DATA_PERSISTENT else "Dang chay tren Railway nhung CHUA co Volume -> key / lich su game se MAT sau moi lan deploy. Gan Volume (mount path /data) cho service.")))
     s["hitclub"] = {"bat": HIT_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "hit"}}
     s["tele68"] = {"bat": TELE68_ENABLED, "ban": {k: tb.health() for k, tb in HIT_TABLES.items() if tb.kgame == "lc79"}}
     return _json(s)
@@ -4226,6 +4320,14 @@ def main():
     elif a.no_wr_flip:
         WR_FLIP_WEIGHT = False
     ensure_poller()
+    if DATA_PERSISTENT:
+        print(f"DATA        ->  {DATA_DIR} (BEN · khoi dong lan thu {BOOT_INFO.get('count')} · lan dau {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(BOOT_INFO.get('first') or 0))})")
+    else:
+        print("!" * 100)
+        print(f"!! DATA        ->  {DATA_DIR} KHONG BEN: dang chay tren Railway ma CHUA gan Volume -> key, lich su game, thiet bi duoc duyet se MAT sau moi lan deploy / restart.")
+        print("!!                 Cach sua: Railway -> service -> Settings -> Volumes -> New Volume -> Mount path /data -> redeploy. Code tu nhan (RAILWAY_VOLUME_MOUNT_PATH).")
+        print("!" * 100)
+    print(f"KEY HAN     ->  {'tinh tu LAN DUNG DAU TIEN (kich hoat)' if KEY_START_ON_ACTIVATE else 'tinh tu luc TAO key (kieu cu)'} · key cu tao truoc do giu nguyen han")
     print(f"SUNVIW API  ->  http://{a.host}:{a.port}/api/predict")
     print(f"upstream    ->  {UPSTREAM_URL}")
     print(f"be final SUN ->  {'BAT' if FLIP_FINAL else 'TAT'}  (chi ap cho van quay ve cach cu; van do AF chot khong bi be)")

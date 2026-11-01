@@ -2778,7 +2778,12 @@ ADMIN_PASS_HASH_DEFAULT = "69eb8d5a0692dade93234908118f99d1b8990e3484dc3fca7bb38
 KEYS_PATH = os.environ.get("SUNVIW_KEYS_PATH", _data_path("sunviw_keys.json"))
 KEY_GATE_API = _env_bool("SUNVIW_GATE_API", True)
 KEY_START_ON_ACTIVATE = _env_bool("SUNVIW_KEY_START_ON_ACTIVATE", True)   # True (mặc định) = key mới tạo CHƯA tính hạn; hạn chỉ bắt đầu chạy từ lần dùng THÀNH CÔNG đầu tiên (kích hoạt). False = như cũ (tính từ lúc tạo)
-KEY_DAYS = (1, 2, 7, 14, 30, 60, 90, 180, 365)       # hạn key cho phép (ngày)
+KEY_DAYS = (1, 2, 3, 7, 14, 30, 60, 90, 180, 365)    # hạn key cho phép (ngày)
+# 💰 GIÁ BÁN KEY (VNĐ) theo số ngày của gói — dùng để TỰ TÍNH DOANH THU khi key được KÍCH HOẠT (áp dụng cho cả key Sun · Hit · LC79).
+#    Gói không có trong bảng (2 / 14 / 60 / 90 / 180 / 365 ngày) = chưa có giá -> không tính vào doanh thu (chỉ đếm riêng ở "chưa có giá"). Muốn tính thêm gói nào thì thêm vào đây.
+#    Giá được CHỐT vào sổ doanh thu ngay lúc kích hoạt -> sau này đổi bảng giá không làm đổi doanh thu cũ. Doanh thu chỉ ADMIN CHÍNH xem được (GET /api/admin/revenue + khối "Doanh thu" ở /api/admin).
+KEY_PRICE = {1: 10000, 3: 25000, 7: 75000, 30: 250000}
+REV_KEEP_SEC = 400 * 86400                            # sổ doanh thu giữ tối đa bấy lâu (đủ cho cửa sổ 1 ngày / 1 tuần / 1 tháng)
 KEY_MAX_TOTAL = 5000                                  # trần số key lưu trong file
 ADMIN_SESSION_SEC = 12 * 3600                         # phiên đăng nhập admin sống bao lâu
 LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong LOGIN_LOCK_SEC -> khóa IP đó LOGIN_LOCK_SEC giây
@@ -3128,6 +3133,58 @@ def _rl_reset(ip):
         _rl.pop(ip, None)
 
 
+def _key_price(days):
+    """Giá bán (VNĐ) của gói `days` ngày; gói chưa có giá -> 0."""
+    try:
+        return int(KEY_PRICE.get(int(days), 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rev_record(d, k, rec, now):
+    """Ghi 1 key người dùng VỪA kích hoạt vào sổ doanh thu d["rev"] (nơi gọi tự _kv_save). Sổ độc lập với danh sách key -> xóa key / dọn key hết hạn KHÔNG làm mất doanh thu."""
+    if rec.get("type") != "user":
+        return
+    rv = d.setdefault("rev", {})
+    if not isinstance(rv, dict):
+        rv = d["rev"] = {}
+    rv[k] = {"t": int(now), "g": _key_game(rec), "d": int(rec.get("days") or 0), "p": _key_price(rec.get("days"))}
+    cut = now - REV_KEEP_SEC
+    for kk in [x for x, v in rv.items() if int((v or {}).get("t") or 0) < cut]:
+        del rv[kk]
+
+
+def _revenue_calc(d, now):
+    """Doanh thu theo cửa sổ TRƯỢT 1 ngày (24 giờ) · 1 tuần (7 ngày) · 1 tháng (30 ngày) tính từ lúc KÍCH HOẠT key, tách theo game.
+       Nguồn = sổ d["rev"] + các key người dùng ĐÃ kích hoạt từ trước bản này mà chưa có trong sổ (tính theo giá hiện tại, thời điểm = lúc kích hoạt; key cũ không có trường act = lúc tạo)."""
+    ent = {}
+    for k, v in (d.get("rev") or {}).items():
+        if isinstance(v, dict):
+            ent[k] = (int(v.get("t") or 0), str(v.get("g") or "all"), int(v.get("d") or 0), int(v.get("p") or 0))
+    for k, r in (d.get("keys") or {}).items():
+        if k in ent or r.get("type") != "user" or not _activated(r):
+            continue
+        t = int(r.get("act") or r.get("created") or 0)
+        if t:
+            ent[k] = (t, _key_game(r), int(r.get("days") or 0), _key_price(r.get("days")))
+    wins = (("ngay", 86400), ("tuan", 7 * 86400), ("thang", 30 * 86400))
+    games = list(KEY_GAMES) + ["all"]
+    out = {w: {"tong": 0, "so_key": 0, "chua_co_gia": 0, "game": {g: {"tien": 0, "so_key": 0} for g in games}} for w, _ in wins}
+    for t, g, days, price in ent.values():
+        g = g if g in games else "all"
+        for w, sec in wins:
+            if now - sec <= t <= now + 60:
+                o = out[w]
+                if price > 0:
+                    o["tong"] += price
+                    o["so_key"] += 1
+                    o["game"][g]["tien"] += price
+                    o["game"][g]["so_key"] += 1
+                else:
+                    o["chua_co_gia"] += 1
+    return out
+
+
 def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
     """(record, lỗi, đã_tồn_tại, game_của_key). Chỉ key loại 'user' còn hạn VÀ đúng game (nếu `game` được truyền) mới qua; sai game -> lỗi bắt đầu bằng WRONG_GAME_MSG, KHÔNG gắn thiết bị. Có HWID -> kiểm tra / gắn thiết bị (đủ chỗ mới gắn thêm) và ghi "lần dùng gần nhất";
     không có HWID mà HWID_REQUIRED bật -> từ chối. `ip` chỉ để ghi lại, không dùng để chặn."""
@@ -3156,6 +3213,7 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
             ch = False
         if _activate(r, now):                            # lần dùng THÀNH CÔNG đầu tiên (đúng game + gắn được thiết bị) -> bắt đầu tính hạn từ đây
             ch = True
+            _rev_record(d, k, r, now)                    # ghi sổ doanh thu (giá chốt ngay lúc kích hoạt)
         if ch:
             try:
                 _kv_save(d)
@@ -3458,6 +3516,21 @@ def api_admin_keys():
     rows.sort(key=lambda x: -(x["tao_luc"] or 0))
     return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "so_tb": list(KEY_DEV_OPTIONS),
                   "games": [{"id": g, "ten": KEY_GAME_LABEL[g]} for g in KEY_GAMES], "keys": rows})
+
+
+@app.route("/api/admin/revenue")
+def api_admin_revenue():
+    """Doanh thu tự tính theo giá KEY_PRICE khi key được kích hoạt (Sun · Hit · LC79): 1 ngày / 1 tuần / 1 tháng. CHỈ ADMIN CHÍNH — admin phụ và key người dùng đều bị từ chối."""
+    s, err = _need_admin()
+    if err:
+        return err
+    if s["r"] != "main":
+        return _json({"ok": False, "loi": "chi admin chinh moi xem duoc doanh thu"}, 403)
+    now = int(time.time())
+    with _kv_lock:
+        d = _kv_load()
+    return _json({"ok": True, "don_vi": "VND", "bang_gia": {str(k): v for k, v in sorted(KEY_PRICE.items())},
+                  "games": [{"id": g, "ten": KEY_GAME_LABEL[g]} for g in KEY_GAMES], "doanh_thu": _revenue_calc(d, now)})
 
 
 @app.route("/api/admin/keys/create", methods=["POST"])
@@ -3810,14 +3883,14 @@ const ago=t=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));return s<60?'v�
 const shortHw=h=>String(h).length>14?String(h).slice(0,8)+'…'+String(h).slice(-4):String(h);
 const GN=g=>({sun:'Sun',hit:'Hit',lc79:'LC79'}[g]||'Mọi game');
 const gameBd=r=>r.loai==='user'?`<span class="bd g-${esc(r.game)}" title="${r.game_cu?'Key tạo trước khi có chia game — dùng được mọi game':'Key này chỉ dùng cho game '+esc(GN(r.game))}">${esc(GN(r.game))}${r.game_cu?' · key cũ':''}</span>`:'';
-const DAYLBL={1:'1 ngày',2:'2 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
+const DAYLBL={1:'1 ngày',2:'2 ngày',3:'3 ngày',7:'7 ngày',14:'14 ngày',30:'1 tháng',60:'2 tháng',90:'3 tháng',180:'6 tháng',365:'1 năm'};
 const ic=p=>'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
 const I={key:ic('<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/>'),lock:ic('<path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="10" rx="2"/>'),
  copy:ic('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),del:ic('<path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
  rf:ic('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),ok:ic('<path d="m5 12 5 5 9-10"/>'),x:ic('<path d="M6 6l12 12M18 6 6 18"/>'),info:ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>'),
  rs:ic('<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>'),dev:ic('<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),out:ic('<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 8l4 4-4 4M20 12H9"/>')};
 let S=null;try{S=JSON.parse(sessionStorage.getItem('as')||'null')}catch(e){}
-let need=false,busy=false,KEYS=[],DAYS=[1,2,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'lc79',ten:'LC79'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
+let need=false,busy=false,KEYS=[],DAYS=[1,2,3,7,14,30,60,90,180,365],NEW=[],F={t:'all',q:''},CF={type:'user',days:30,n:1,dev:1,game:'sun'},GAMES=[{id:'sun',ten:'Sun'},{id:'hit',ten:'Hit'},{id:'lc79',ten:'LC79'}],DEVO=[1,2,3,5,10,20,50],SEL=new Set(),OPEN=new Set();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2600)}
 function ask(msg,ok){return new Promise(r=>{const d=$('#dlg');$('#dm').textContent=msg;$('#dok').textContent=ok||'Xác nhận';d.onclose=()=>r(d.returnValue==='ok');d.returnValue='no';d.showModal()})}
@@ -3857,7 +3930,25 @@ async function login(){
   showRes(t[0],t[1],j.loi||'');
 }
 /* ── BẢNG ĐIỀU KHIỂN ── */
+let RV=null;
+async function loadRv(){
+  if(!isMain())return;
+  const j=await api('/api/admin/revenue');if(!S)return;
+  if(j.ok){RV=j;renderRv()}
+}
+const vnd=n=>Number(n||0).toLocaleString('vi-VN')+' đ';
+function renderRv(){
+  const el=$('#rv');if(!el)return;
+  if(!RV){el.innerHTML='<h2>Doanh thu</h2><div class="s mu">Đang tải…</div>';return}
+  const W=[['ngay','Doanh thu 1 ngày','24 giờ gần nhất'],['tuan','Doanh thu 1 tuần','7 ngày gần nhất'],['thang','Doanh thu 1 tháng','30 ngày gần nhất']];
+  const gl=g=>g==='all'?'Key cũ':GN(g);
+  el.innerHTML=`<div class="hd"><h2>Doanh thu <span class="mu s">(tính khi key được kích hoạt · chỉ admin chính thấy)</span></h2><div class="act"><button class="gh" id="rvrf">${I.rf} Làm mới</button></div></div>
+  <div class="stats">${W.map(([k,t,sub])=>`<div><b>${vnd(RV.doanh_thu[k].tong)}</b><span>${t} · ${RV.doanh_thu[k].so_key} key</span><span style="display:block;font-size:12px">${sub}</span></div>`).join('')}</div>
+  ${W.map(([k,t])=>{const o=RV.doanh_thu[k],gs=Object.keys(o.game).filter(g=>g!=='all'||o.game[g].so_key);return `<div class="s" style="margin:6px 0"><b>${t}:</b> ${gs.map(g=>`${esc(gl(g))} <b>${vnd(o.game[g].tien)}</b> <span class="mu">(${o.game[g].so_key} key)</span>`).join(' · ')}${o.chua_co_gia?` · <span class="mu">${o.chua_co_gia} key gói chưa có giá (không tính)</span>`:''}</div>`}).join('')}
+  <div class="s mu" style="margin-top:8px">Bảng giá: ${Object.entries(RV.bang_gia).map(([d,p])=>esc(DAYLBL[d]||d+' ngày')+' = '+vnd(p)).join(' · ')}</div>`;
+}
 async function loadKeys(){
+  if(isMain())loadRv();
   const j=await api('/api/admin/keys');if(!S)return;
   if(j.ok){KEYS=j.keys;DAYS=j.ngay||DAYS;DEVO=j.so_tb||DEVO;GAMES=j.games||GAMES;const have=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>have.has(k)))}
   paint();
@@ -3873,6 +3964,7 @@ function renderDash(){
   const m=isMain();
   $('#app').innerHTML=`<div class="top"><div class="mark">${I.key.replace(/18/g,'22')}</div><div><h1>SUNVIW · Quản trị</h1><span class="role ${m?'m':'s'}">${m?'Admin chính':'Admin phụ · '+esc(S.name)}</span></div><div class="sp"></div><button class="gh" id="out">${I.out} Đăng xuất</button></div>
   <div class="stats" id="stats"></div>
+  ${m?'<section class="pn" id="rv"></section>':''}
   ${m?'<section class="pn" id="pv"></section>':''}
   <section class="pn"><h2>Tạo key mới</h2>
   ${m?`<div class="seg" id="ct"><button data-t="user" class="on">Key người dùng</button><button data-t="sub">Key admin phụ</button></div>`:''}
@@ -3888,7 +3980,7 @@ function renderDash(){
 }
 function paint(){
   if(!$('#tbl'))renderDash();
-  $('#stats').innerHTML=stats();renderNew();renderTable();renderPv();if(isMain()&&!PVON){PVON=true;loadPanel()}
+  $('#stats').innerHTML=stats();renderNew();renderTable();renderPv();renderRv();if(isMain()&&!PVON){PVON=true;loadPanel()}
 }
 function renderNew(){
   const el=$('#newk');if(!el)return;
@@ -3986,6 +4078,7 @@ document.addEventListener('click',async e=>{
   if(d.pb){if(!await ask('Ban thiết bị '+shortHw(d.pb)+'? Thiết bị VÀ IP của nó sẽ bị chặn hoàn toàn khỏi /api/html (báo 404 như web sập). Tool dùng key vẫn chạy bình thường.','Ban'))return;const j=await api('/api/admin/panel/ban',{hwid:d.pb});if(j.ok){PF='banned';await loadPanel();toast('Đã ban thiết bị'+(j.ip_da_xu_ly?' + '+j.ip_da_xu_ly+' IP':''))}else toast(j.loi||'Lỗi',1);return}
   if(d.pu){if(!await ask('Bỏ ban thiết bị '+shortHw(d.pu)+' và IP của nó? Máy này phải xin duyệt lại từ đầu.','Bỏ ban'))return;const j=await api('/api/admin/panel/unban',{hwid:d.pu});if(j.ok){await loadPanel();toast('Đã bỏ ban')}else toast(j.loi||'Lỗi',1);return}
   if(d.pr){if(!await ask('Gỡ thiết bị '+shortHw(d.pr)+' khỏi danh sách? Nếu đang được duyệt, máy này mất quyền vào panel ngay và phải xin duyệt lại.','Gỡ'))return;const j=await api('/api/admin/panel/remove',{hwid:d.pr});if(j.ok){await loadPanel();toast('Đã gỡ thiết bị')}else toast(j.loi||'Lỗi',1);return}
+  if(b.id==='rvrf'){await loadRv();toast('Đã làm mới doanh thu');return}
   if(b.id==='clean'){if(!await ask('Xóa toàn bộ key đã hết hạn?','Xóa hết'))return;const j=await api('/api/admin/keys/delete',{expired:true});if(j.ok){await loadKeys();toast('Đã xóa '+j.da_xoa+' key')}else toast(j.loi||'Lỗi',1)}
 });
 document.addEventListener('input',e=>{if(e.target.id==='fq'){F.q=e.target.value;renderTable()}});

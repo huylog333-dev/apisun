@@ -225,15 +225,15 @@ AF_FLIP_HIGH_MAX_DEFAULT = 75
 AF_GROUP_FLIPPED_ONLY_DEFAULT = True
 AF_GROUP_NEED_MAJORITY_DEFAULT = True
 AF_MIN_GAMES_DEFAULT = 7
-AF_MODE_WINDOW_DEFAULT = 11
+AF_MODE_WINDOW_DEFAULT = 13
 AF_MODE_MIN_DEFAULT = 7
 AF_MODE_BELOW_DEFAULT = 45
 AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế độ): False = TẮT · True = BẬT
 AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
 AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
-AF_FLIP_FINAL_THAP_DEFAULT = True     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
-AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
+AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
+AF_FLIP_FINAL_ALL_DEFAULT = False      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
 AF_FLIP_LOW = _env_num("SUNVIW_AF_LOW", AF_FLIP_LOW_DEFAULT, float)

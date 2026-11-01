@@ -25,7 +25,7 @@ Endpoint:
     GET /api/predicttele68txmd5  -> [TELE68 · TX MD5] JSON dự đoán (game="tele68", ban="tele68txmd5"); nguồn trả CẢ DANH SÁCH ~105 phiên, tool chỉ lưu thêm phiên chưa có, dự đoán phiên mới nhất + 1 và giữ tới khi API trả kết quả phiên đó (xem khối "CONFIG TELE68")
     GET /api/html                -> panel HTML theo dõi Sun + Hit, đổi qua lại, chọn số ván lịch sử. CHỈ MỞ KHI ADMIN CHÍNH DUYỆT THIẾT BỊ (HWID): máy lạ thấy bảng "Đang chờ admin duyệt", được duyệt thì tự mở, KHÔNG cần key, vào cả Sun + Hit
     GET /api/panel/status        -> panel hỏi trạng thái duyệt của thiết bị này (gửi yêu cầu lần đầu): {"status": "approved" | "pending" | "denied" | "limit"} (xem khối "DUYỆT THIẾT BỊ VÀO PANEL")
-    GET /api/admin/panel (+ POST /approve · /deny · /remove) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
+    GET /api/admin/panel (+ POST /approve · /deny · /remove · /ban · /unban) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền / BAN (danh sách đen: chặn cả IP + thiết bị khỏi /api/html, trả 404) thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
     GET /health                  -> trạng thái nền của Sun + Hit
     GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa (tích chọn nhiều key) / xem key, MỌI key gắn HWID thiết bị (1 key dùng được N thiết bị), hiện lần dùng gần nhất, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
     POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ + KÍCH HOẠT (lần đầu dùng thành công mới bắt đầu tính hạn) cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
@@ -2411,9 +2411,19 @@ function gateView(st,msg){
   KB.innerHTML=T[0]+'<b>'+T[1]+'</b><p class="mu">'+T[2]+'</p><div class="gcode">Mã thiết bị<b>'+HWID.slice(0,8)+'…'+HWID.slice(-4)+'</b></div><button id="gre" type="button">Kiểm tra lại</button>';
   KOV.style.display='flex';
 }
+function fake404(){
+  window.__banned=true;ACC=false;
+  try{const t=setTimeout(()=>{},0);for(let i=0;i<=t+100;i++){clearTimeout(i);clearInterval(i)}}catch(e){}
+  document.open();
+  document.write('<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n');
+  document.close();
+}
 async function access(){
+  if(window.__banned)return;
   try{
-    const r=await fetch('/api/panel/status',{cache:'no-store'}),j=await r.json().catch(()=>({}));
+    const r=await fetch('/api/panel/status',{cache:'no-store'});
+    if(r.status===404){fake404();return}
+    const j=await r.json().catch(()=>({}));
     if(j.status==='approved'){if(!ACC){ACC=true;GV='';KOV.style.display='none';load()}return}
     ACC=false;gateView(['pending','denied','limit'].includes(j.status)?j.status:'error',j.loi);
   }catch(e){ACC=false;gateView('error','Mất kết nối tới server — đang thử lại…')}
@@ -2668,7 +2678,7 @@ def ip_health():
 
 
 # ─── FLASK ────────────────────────────────────────────────────────────────
-from flask import Flask, Response, request  # noqa: E402
+from flask import Flask, Response, abort, request  # noqa: E402
 from flask import g as flask_g  # noqa: E402  (đặt tên khác vì nhiều hàm dùng biến cục bộ `g`)
 
 app = Flask(__name__)
@@ -3164,6 +3174,9 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
 #   (cổng _gate_key nhận HWID đã duyệt). Key người dùng + tool (X-User-Key + X-HWID) vẫn chạy y như trước, KHÔNG đổi.
 #   Gỡ quyền / xóa thiết bị khỏi danh sách -> panel của máy đó bị khóa lại ngay (trong ~3 giây) và phải xin duyệt lại.
 #   HWID nhận diện y như hệ key (mã đã lưu localStorage + cookie, mã phụ phần cứng): đổi mạng / đổi IP không ảnh hưởng, IP chỉ GHI LẠI để admin xem.
+#   🚫 DANH SÁCH ĐEN (BAN): admin chính bấm "Ban" ở 1 thiết bị -> thiết bị đó (theo HWID) VÀ IP của nó bị chặn HOÀN TOÀN khỏi /api/html + /api/panel/status:
+#      server trả HTTP 404 "Not Found" y như trang web không tồn tại / sập. Máy khác dùng cùng IP bị ban cũng 404. Ban KHÔNG ảnh hưởng tool: /api/predict* · /api/key/check ... vẫn chạy bình thường bằng key.
+#      Bỏ ban: nút "Bỏ ban" ở tab "Danh sách đen" (gỡ cả thiết bị lẫn IP, máy đó phải xin duyệt lại từ đầu).
 #   PANEL_DEV_PATH             file lưu danh sách thiết bị (env SUNVIW_PANEL_DEV_PATH; mặc định <DATA_DIR>/sunviw_panel_devices.json). Railway: nằm cùng Volume với file key.
 #   PANEL_MAX_DEVICES          trần số thiết bị lưu (đầy -> bỏ yêu cầu CHỜ DUYỆT cũ nhất; thiết bị đã duyệt / từ chối không bị xóa tự động)
 #   PANEL_MAX_PENDING_PER_IP   mỗi IP chỉ được có tối đa N yêu cầu đang chờ duyệt cùng lúc (chống spam HWID giả) — env SUNVIW_PANEL_PENDING_PER_IP
@@ -3226,7 +3239,7 @@ def _panel_access(hw, alts=(), fresh=False, ip="", ua="", create=True):
                 ch = True
             if ch:
                 _pv_save(d)
-            return dv.get("st") if dv.get("st") in ("approved", "pending", "denied") else "pending"
+            return dv.get("st") if dv.get("st") in ("approved", "pending", "denied", "banned") else "pending"
         if not create:
             return "none"
         if sum(1 for v in devs.values() if v.get("st") == "pending" and v.get("ip") == ip) >= PANEL_MAX_PENDING_PER_IP:
@@ -3248,13 +3261,29 @@ def _panel_approved(hw, alts=(), fresh=False, ip="", ua=""):
     return bool(hw) and _panel_access(hw, alts, fresh, ip, ua, create=False) == "approved"
 
 
+def _panel_banned(hw, alts=(), fresh=False, ip=""):
+    """Request này có bị BAN khỏi panel /api/html không: IP nằm trong danh sách đen HOẶC thiết bị (HWID) bị ban. Chỉ đọc, không tạo yêu cầu mới."""
+    with _pv_lock:
+        d = _pv_load()
+        if ip and ip != "unknown" and ip in (d.get("bans") or {}):
+            return True
+        if hw:
+            devs = d["devs"]
+            k = _dev_find(devs, hw, alts, fresh)
+            if k is not None and devs[k].get("st") == "banned":
+                return True
+    return False
+
+
 def panel_health():
     with _pv_lock:
-        devs = _pv_load()["devs"]
-        c = {"pending": 0, "approved": 0, "denied": 0}
+        d = _pv_load()
+        devs = d["devs"]
+        c = {"pending": 0, "approved": 0, "denied": 0, "banned": 0}
         for v in devs.values():
             if v.get("st") in c:
                 c[v["st"]] += 1
+        c["ip_banned"] = len(d.get("bans") or {})
     return dict(tong=len(devs), **c)
 
 
@@ -3269,6 +3298,8 @@ def api_panel_status():
     """Panel /api/html gọi 3 giây / lần: gửi yêu cầu duyệt (lần đầu) và hỏi trạng thái. Trả {"ok": true, "status": "approved"} khi đã được duyệt,
     còn lại "pending" | "denied" | "limit". Không cần key."""
     hw, alts, hfresh = req_hw_ids(request.get_json(silent=True) or {})
+    if _panel_banned(hw, alts, hfresh, client_ip()):
+        abort(404)                                      # bị ban -> giả như trang không tồn tại
     if not hw:
         return _json({"ok": False, "status": "error", "loi": "Thiếu mã thiết bị (HWID) — hãy mở panel bằng trình duyệt hoặc gửi header X-HWID."}, 400)
     st = _panel_access(hw, alts, hfresh, client_ip(), request.headers.get("User-Agent", ""))
@@ -3581,10 +3612,12 @@ def api_admin_panel():
     if err:
         return err
     with _pv_lock:
-        devs = _pv_load()["devs"]
+        _d = _pv_load()
+        devs, bans = _d["devs"], _d.get("bans") or {}
         rows = [{"hw": h, "trang_thai": v.get("st"), "lan_dau": v.get("first"), "gan_nhat": v.get("last"), "ip": v.get("ip"), "ua": v.get("ua", ""),
-                 "duyet_luc": v.get("dec_at"), "duyet_boi": v.get("dec_by")} for h, v in devs.items()]
-    order = {"pending": 0, "approved": 1, "denied": 2}
+                 "duyet_luc": v.get("dec_at"), "duyet_boi": v.get("dec_by"),
+                 "ip_chan": [i for i, b in (bans or {}).items() if b.get("hw") == h]} for h, v in devs.items()]
+    order = {"pending": 0, "approved": 1, "denied": 2, "banned": 3}
     rows.sort(key=lambda r: (order.get(r["trang_thai"], 9), -(r["gan_nhat"] or 0)))
     return _json({"ok": True, "devices": rows})
 
@@ -3601,6 +3634,7 @@ def _panel_admin_act(act):
         return _json({"ok": False, "loi": "hwid khong hop le"}, 400)
     now = int(time.time())
     done = 0
+    ipn = 0
     with _pv_lock:
         d = _pv_load()
         devs = d["devs"]
@@ -3608,8 +3642,20 @@ def _panel_admin_act(act):
             rec = devs.get(h)
             if not rec:
                 continue
-            if act == "remove":
+            if act in ("remove", "unban"):
+                bans = d.get("bans")
+                if isinstance(bans, dict):                      # gỡ luôn IP đã bị ban cùng thiết bị này
+                    for i in [i for i, b in bans.items() if b.get("hw") == h or i == rec.get("ip")]:
+                        del bans[i]
+                        ipn += 1
                 del devs[h]
+            elif act == "ban":
+                rec["st"] = "banned"
+                rec["dec_at"], rec["dec_by"] = now, s["n"]
+                ip = str(rec.get("ip") or "")
+                if ip and ip != "unknown":                      # không ban IP "unknown" (sẽ chặn nhầm tất cả)
+                    d.setdefault("bans", {})[ip] = {"at": now, "by": s["n"], "hw": h}
+                    ipn += 1
             else:
                 rec["st"] = "approved" if act == "approve" else "denied"
                 rec["dec_at"], rec["dec_by"] = now, s["n"]
@@ -3618,7 +3664,7 @@ def _panel_admin_act(act):
             return _json({"ok": False, "loi": "khong thay thiet bi"}, 404)
         if not _pv_save(d):
             return _json({"ok": False, "loi": "khong ghi duoc file thiet bi panel"}, 500)
-    return _json({"ok": True, "da_xu_ly": done})
+    return _json({"ok": True, "da_xu_ly": done, "ip_da_xu_ly": ipn})
 
 
 @app.route("/api/admin/panel/approve", methods=["POST"])
@@ -3634,6 +3680,16 @@ def api_admin_panel_deny():
 @app.route("/api/admin/panel/remove", methods=["POST"])
 def api_admin_panel_remove():
     return _panel_admin_act("remove")
+
+
+@app.route("/api/admin/panel/ban", methods=["POST"])
+def api_admin_panel_ban():
+    return _panel_admin_act("ban")
+
+
+@app.route("/api/admin/panel/unban", methods=["POST"])
+def api_admin_panel_unban():
+    return _panel_admin_act("unban")
 
 
 ADMIN_HTML = r"""<!doctype html>
@@ -3729,7 +3785,7 @@ input.f:focus{outline:0;border-color:var(--au)}
 .pvb{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 8px;margin-left:10px;border-radius:99px;background:var(--au);color:#2a1c00;font-size:12.5px;font-weight:800;vertical-align:middle}
 .pr{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.2fr) auto;gap:8px 18px;align-items:center;padding:13px 2px;border-top:1px solid var(--ln)}
 .pr:first-child{border-top:0}
-.bd.pd{color:var(--au);border-color:rgba(242,179,61,.55);background:rgba(242,179,61,.08)}.bd.ap{color:var(--ok);border-color:rgba(53,214,160,.45)}.bd.dn{color:var(--no);border-color:rgba(255,107,125,.5)}
+.bd.bn{color:#fff;background:rgba(255,107,125,.22);border-color:var(--no)}.bd.pd{color:var(--au);border-color:rgba(242,179,61,.55);background:rgba(242,179,61,.08)}.bd.ap{color:var(--ok);border-color:rgba(53,214,160,.45)}.bd.dn{color:var(--no);border-color:rgba(255,107,125,.5)}
 .go.sm{width:auto;height:36px;margin:0;padding:0 14px;font-size:14px;display:inline-flex;align-items:center;gap:6px}
 @media(max-width:720px){.pr{grid-template-columns:1fr}.pr .ra{justify-content:flex-start;flex-wrap:wrap}}
 dialog{border:1px solid var(--ln);border-radius:16px;background:var(--pn);color:var(--tx);padding:20px;max-width:380px;width:calc(100% - 32px)}
@@ -3865,20 +3921,23 @@ async function loadPanel(){
   renderPv();
 }
 function pvRow(x){
-  const st=x.trang_thai,bdc={pending:'pd',approved:'ap',denied:'dn'}[st]||'',bl={pending:'chờ duyệt',approved:'đã duyệt',denied:'từ chối'}[st]||st;
-  const act=(st!=='approved'?`<button class="go sm" data-pa="${esc(x.hw)}">${I.ok} Duyệt</button>`:'')+(st==='pending'?`<button class="gh dg" data-pd="${esc(x.hw)}">Từ chối</button>`:'')+(st!=='pending'?`<button class="gh dg" data-pr="${esc(x.hw)}" title="${st==='approved'?'Thu hồi quyền — thiết bị phải xin duyệt lại':'Xóa khỏi danh sách'}">${I.del} ${st==='approved'?'Gỡ quyền':'Xóa'}</button>`:'');
-  return `<div class="pr"><div><div class="kk"><span class="mono" title="${esc(x.hw)}">${esc(shortHw(x.hw))}</span><span class="bd ${bdc}">${bl}</span><span class="mu s">${esc(uaLabel(x.ua))}</span></div><div class="s mu" style="margin-top:3px">IP ${esc(x.ip||'?')}</div></div>
-  <div class="s"><div>Gửi yêu cầu: ${esc(fmt(x.lan_dau))}</div><div class="mu">Thấy lần cuối: ${esc(ago(x.gan_nhat))}${x.duyet_luc?' · '+(st==='approved'?'duyệt':'xử lý')+' '+esc(fmt(x.duyet_luc)):''}</div></div>
+  const st=x.trang_thai,bdc={pending:'pd',approved:'ap',denied:'dn',banned:'bn'}[st]||'',bl={pending:'chờ duyệt',approved:'đã duyệt',denied:'từ chối',banned:'bị ban'}[st]||st;
+  const act=st==='banned'
+    ?`<button class="gh" data-pu="${esc(x.hw)}" title="Gỡ ban thiết bị + IP, máy phải xin duyệt lại">Bỏ ban</button>`
+    :((st!=='approved'?`<button class="go sm" data-pa="${esc(x.hw)}">${I.ok} Duyệt</button>`:'')+(st==='pending'?`<button class="gh dg" data-pd="${esc(x.hw)}">Từ chối</button>`:'')+(st!=='pending'?`<button class="gh dg" data-pr="${esc(x.hw)}" title="${st==='approved'?'Thu hồi quyền — thiết bị phải xin duyệt lại':'Xóa khỏi danh sách'}">${I.del} ${st==='approved'?'Gỡ quyền':'Xóa'}</button>`:'')+`<button class="gh dg" data-pb="${esc(x.hw)}" title="Đưa vào danh sách đen: chặn cả thiết bị + IP khỏi /api/html (404)" style="color:var(--no);border-color:var(--no)">⛔ Ban</button>`);
+  const ipx=st==='banned'&&(x.ip_chan||[]).length?' · <b style="color:var(--no)">đã chặn IP '+esc(x.ip_chan.join(', '))+'</b>':'';
+  return `<div class="pr"><div><div class="kk"><span class="mono" title="${esc(x.hw)}">${esc(shortHw(x.hw))}</span><span class="bd ${bdc}">${bl}</span><span class="mu s">${esc(uaLabel(x.ua))}</span></div><div class="s mu" style="margin-top:3px">IP ${esc(x.ip||'?')}${ipx}</div></div>
+  <div class="s"><div>Gửi yêu cầu: ${esc(fmt(x.lan_dau))}</div><div class="mu">Thấy lần cuối: ${esc(ago(x.gan_nhat))}${x.duyet_luc?' · '+(st==='approved'?'duyệt':st==='banned'?'ban':'xử lý')+' '+esc(fmt(x.duyet_luc)):''}</div></div>
   <div class="ra">${act}</div></div>`;
 }
 function renderPv(){
   const el=$('#pv');if(!el)return;
-  const cnt={pending:0,approved:0,denied:0};PV.forEach(x=>{if(cnt[x.trang_thai]!==undefined)cnt[x.trang_thai]++});
-  const rows=PV.filter(x=>PF==='all'||x.trang_thai===PF),LB={pending:'Chờ duyệt',approved:'Đã duyệt',denied:'Từ chối'};
+  const cnt={pending:0,approved:0,denied:0,banned:0};PV.forEach(x=>{if(cnt[x.trang_thai]!==undefined)cnt[x.trang_thai]++});
+  const rows=PV.filter(x=>PF==='all'||x.trang_thai===PF),LB={pending:'Chờ duyệt',approved:'Đã duyệt',denied:'Từ chối',banned:'Danh sách đen'};
   el.innerHTML=`<div class="hd"><h2>Duyệt thiết bị vào panel HTML${cnt.pending?`<span class="pvb">${cnt.pending} chờ</span>`:''}</h2><div class="act"><button class="gh" id="pvrf">${I.rf} Làm mới</button></div></div>
-  <p class="mu s" style="margin:-6px 0 12px">Ai mở <b>/api/html</b> sẽ thấy bảng chờ duyệt. Thiết bị được duyệt vào được cả Sun lẫn Hit và không cần key. Gỡ quyền → máy đó bị khóa lại trong vài giây.</p>
-  <div class="chips">${['pending','approved','denied','all'].map(f=>`<button data-pf="${f}" class="${PF===f?'on':''}">${f==='all'?'Tất cả ('+PV.length+')':LB[f]+' ('+cnt[f]+')'}</button>`).join('')}</div>
-  <div>${rows.length?rows.map(pvRow).join(''):`<div class="emp">${PF==='pending'?'Không có thiết bị nào đang chờ duyệt.':'Không có thiết bị nào ở mục này.'}</div>`}</div>`;
+  <p class="mu s" style="margin:-6px 0 12px">Ai mở <b>/api/html</b> sẽ thấy bảng chờ duyệt. Thiết bị được duyệt vào được cả Sun lẫn Hit và không cần key. Gỡ quyền → máy đó bị khóa lại trong vài giây. <b>Ban</b> → chặn hoàn toàn thiết bị + IP khỏi /api/html (báo 404 như web sập), tool vẫn dùng bình thường.</p>
+  <div class="chips">${['pending','approved','denied','banned','all'].map(f=>`<button data-pf="${f}" class="${PF===f?'on':''}">${f==='all'?'Tất cả ('+PV.length+')':LB[f]+' ('+cnt[f]+')'}</button>`).join('')}</div>
+  <div>${rows.length?rows.map(pvRow).join(''):`<div class="emp">${PF==='pending'?'Không có thiết bị nào đang chờ duyệt.':PF==='banned'?'Danh sách đen đang trống.':'Không có thiết bị nào ở mục này.'}</div>`}</div>`;
 }
 function visible(){
   const q=(F.q||'').toLowerCase();
@@ -3924,6 +3983,8 @@ document.addEventListener('click',async e=>{
   if(d.pf){PF=d.pf;renderPv();return}
   if(d.pa){const j=await api('/api/admin/panel/approve',{hwid:d.pa});if(j.ok){await loadPanel();toast('Đã duyệt — thiết bị vào được panel')}else toast(j.loi||'Lỗi',1);return}
   if(d.pd){if(!await ask('Từ chối thiết bị '+shortHw(d.pd)+'? Thiết bị sẽ thấy thông báo bị từ chối.','Từ chối'))return;const j=await api('/api/admin/panel/deny',{hwid:d.pd});if(j.ok){await loadPanel();toast('Đã từ chối thiết bị')}else toast(j.loi||'Lỗi',1);return}
+  if(d.pb){if(!await ask('Ban thiết bị '+shortHw(d.pb)+'? Thiết bị VÀ IP của nó sẽ bị chặn hoàn toàn khỏi /api/html (báo 404 như web sập). Tool dùng key vẫn chạy bình thường.','Ban'))return;const j=await api('/api/admin/panel/ban',{hwid:d.pb});if(j.ok){PF='banned';await loadPanel();toast('Đã ban thiết bị'+(j.ip_da_xu_ly?' + '+j.ip_da_xu_ly+' IP':''))}else toast(j.loi||'Lỗi',1);return}
+  if(d.pu){if(!await ask('Bỏ ban thiết bị '+shortHw(d.pu)+' và IP của nó? Máy này phải xin duyệt lại từ đầu.','Bỏ ban'))return;const j=await api('/api/admin/panel/unban',{hwid:d.pu});if(j.ok){await loadPanel();toast('Đã bỏ ban')}else toast(j.loi||'Lỗi',1);return}
   if(d.pr){if(!await ask('Gỡ thiết bị '+shortHw(d.pr)+' khỏi danh sách? Nếu đang được duyệt, máy này mất quyền vào panel ngay và phải xin duyệt lại.','Gỡ'))return;const j=await api('/api/admin/panel/remove',{hwid:d.pr});if(j.ok){await loadPanel();toast('Đã gỡ thiết bị')}else toast(j.loi||'Lỗi',1);return}
   if(b.id==='clean'){if(!await ask('Xóa toàn bộ key đã hết hạn?','Xóa hết'))return;const j=await api('/api/admin/keys/delete',{expired:true});if(j.ok){await loadKeys();toast('Đã xóa '+j.da_xoa+' key')}else toast(j.loi||'Lỗi',1)}
 });
@@ -3963,6 +4024,9 @@ def _hist_n():
 
 @app.route("/api/html")
 def api_html():
+    hw, alts, hfresh = req_hw_ids()
+    if _panel_banned(hw, alts, hfresh, client_ip()):
+        abort(404)                                      # IP / thiết bị bị ban -> 404 Not Found như web sập
     page = PANEL_HTML.replace("__SHOW__", str(PANEL_DEFAULT_SHOW)).replace("__MAX__", str(HIST_MAX)).replace("/*__HWID_JS__*/", HWID_JS)
     return Response(page, content_type="text/html; charset=utf-8")
 

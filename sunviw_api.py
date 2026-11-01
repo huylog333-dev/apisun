@@ -92,7 +92,10 @@ JSON /api/predict:
                         ⚙ GIỚI HẠN VÙNG BẺ (AF_FLIP_BAND, mặc định BẬT): chỉ bẻ khi WR nằm TRONG vùng THẤP 32-40% hoặc vùng CAO 60-68% (gồm đầu mút); ngoài vùng (vd 29% / 41% / 59% / 69%) KHÔNG bẻ.
                         Vùng chỉnh bằng AF_FLIP_LOW_MIN/MAX · AF_FLIP_HIGH_MIN/MAX (env SUNVIW_AF_LOW_MIN... · cờ --af-low-min...) · tắt: --af-no-band hoặc SUNVIW_AF_BAND=0 (về ngưỡng 37/63 cũ)
     Bước 2 (CAO/THẤP):  ⚙ CHỈ logic ĐÃ BỊ BẺ (WR trong vùng bẻ) mới vào nhóm CAO/THẤP; logic không bẻ mặc định ALL (không thuộc nhóm nào) — AF_GROUP_FLIPPED_ONLY (--af-no-group-flipped = tắt).
-                        ⚙ Nhóm CAO/THẤP được chọn phải có >= ĐA SỐ toàn bộ logic (n//2+1 = 8/15); ít hơn -> dùng chế độ ALL — AF_GROUP_NEED_MAJORITY (--af-no-group-majority = tắt).
+                        ⚙ ĐỔI CHẾ ĐỘ DỄ HƠN (AF_SWITCH, mặc định BẬT · --af-no-switch = tắt): xoay quanh 3 chế độ ALL · THẤP · CAO. Mỗi logic bỏ 1 phiếu: nhóm CAO -> CAO · nhóm THẤP -> THẤP · logic không bẻ -> ALL (tổng 15 phiếu).
+                        Tool NHỚ chế độ ván trước: chế độ KHÁC chỉ cần >= AF_SWITCH_NEED = 4/15 phiếu là đổi (bản gốc phải đa số 8/15). Đang ALL -> CAO / THẤP đủ 4 phiếu là sang · đang CAO -> ALL / THẤP đủ 4 phiếu là sang · đang THẤP -> ALL / CAO đủ 4 phiếu là sang.
+                        Không chế độ khác nào đủ 4 phiếu -> giữ chế độ hiện tại · nhiều chế độ cùng đủ 4 -> lấy chế độ nhiều phiếu nhất (bằng nhau -> giữ chế độ hiện tại, tránh nhảy qua lại). Khi bật, AF_GROUP_NEED_MAJORITY (8/15) không còn tác dụng. --af-switch-need N đổi số phiếu.
+                        ⚙ (Khi AF_SWITCH TẮT — cách gốc) Nhóm CAO/THẤP được chọn phải có >= ĐA SỐ toàn bộ logic (n//2+1 = 8/15); ít hơn -> dùng chế độ ALL — AF_GROUP_NEED_MAJORITY (--af-no-group-majority = tắt).
                         WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP. Nhóm nào ĐÔNG hơn thì chỉ vote trong nhóm đó (chế độ CAO / THẤP); bằng nhau -> vote tất cả (chế độ ALL).
     Bước 3 (bẻ chế độ): WR của CHẾ ĐỘ đang chạy trong AF_MODE_WINDOW (7) ván gần nhất của chế độ đó < AF_MODE_BELOW (45%) -> ĐẢO final (không theo đa số nữa);
                         từ 45% trở lên -> theo bình thường. Đang bẻ THẤP mà ván sau lên CAO thì xét lại WR của CAO. Chưa đủ AF_MODE_MIN ván của chế độ đó -> không bẻ.
@@ -173,6 +176,7 @@ def _env_num(name, default, cast):
 #   Port từ SUNVIW_9logics_autoflip_auto.html. WR từng logic = WR CÓ TRỌNG SỐ của SUN (WR_WINDOW / WR_DECAY / WR_FLOOR / WR_WEIGHT_NEWEST / WR_FLIP_WEIGHT).
 #   Bước 1  bẻ logic     : WR < AF_FLIP_LOW -> đảo phiếu logic · WR > AF_FLIP_HIGH -> đảo phiếu logic (WR dùng = 100 − WR). Chưa đủ AF_MIN_GAMES ván -> không bẻ, vote tất cả.
 #   Bước 2  CAO / THẤP   : WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP · nhóm đông hơn được vote (CHẾ ĐỘ CAO / THẤP) · bằng nhau -> vote tất cả (ALL) · pool hoà phiếu -> đa số tất cả logic.
+#                          AF_SWITCH BẬT (mặc định): thay "nhóm đông hơn thắng + đa số 8/15" bằng ĐỔI CHẾ ĐỘ DỄ HƠN — nhớ chế độ ván trước, chế độ khác đủ AF_SWITCH_NEED (4/15) phiếu là đổi (xem khối ĐỔI CHẾ ĐỘ DỄ HƠN bên dưới).
 #   Bước 3  bẻ chế độ    : WR của chế độ đang chạy trong AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ < AF_MODE_BELOW -> đảo final · ≥ AF_MODE_BELOW -> theo bình thường.
 #                          Cần đủ AF_MODE_MIN ván của chế độ đó mới xét bẻ. CAO / THẤP / ALL đều có chuỗi ván riêng (hv / lv / av lưu trong từng ván đã chấm) — WR của từng chế độ xét RIÊNG, chế độ nào < AF_MODE_BELOW thì chế độ đó bị bẻ khi được chọn.
 #                          ⛔ MẶC ĐỊNH ĐANG TẮT (AF_MODE_FLIP_DEFAULT = False): bước 3 bị bỏ qua -> final = kết quả sau bước 2 (CAO / THẤP / ALL), không bị đảo theo WR chế độ.
@@ -224,6 +228,26 @@ AF_FLIP_HIGH_MAX_DEFAULT = 75
 #                          lệnh --af-group-flipped / --af-no-group-flipped · --af-group-majority / --af-no-group-majority
 AF_GROUP_FLIPPED_ONLY_DEFAULT = True
 AF_GROUP_NEED_MAJORITY_DEFAULT = True
+# ── ĐỔI CHẾ ĐỘ DỄ HƠN (Bước 2) — AF_SWITCH + AF_SWITCH_NEED ─────────────────────────────────────────────────
+#   Xoay quanh 3 chế độ ALL · THẤP · CAO. Mỗi logic "bỏ phiếu" cho 1 chế độ: logic nhóm CAO -> phiếu CAO · nhóm THẤP -> phiếu THẤP · logic không thuộc nhóm nào (không bẻ) -> phiếu ALL.
+#   Tổng luôn = số logic (vd 15): phiếu ALL + phiếu CAO + phiếu THẤP = 15.
+#   AF_SWITCH_DEFAULT BẬT (mặc định): chế độ có NHỚ chế độ của ván trước (đang ALL / CAO / THẤP) rồi mới xét đổi:
+#       · Chế độ KHÁC có >= AF_SWITCH_NEED phiếu (mặc định 4/15) -> ĐỔI sang chế độ đó (bản gốc phải 8/15 = đa số mới đổi sang CAO / THẤP).
+#           vd đang ALL: CAO được 4 phiếu -> sang CAO · THẤP được 4 phiếu -> sang THẤP.   vd đang CAO: ALL hoặc THẤP được 4 phiếu -> sang ALL / THẤP.   (tương tự khi đang THẤP)
+#       · Không chế độ khác nào đủ AF_SWITCH_NEED phiếu -> GIỮ chế độ hiện tại.
+#       · Nhiều chế độ cùng đủ phiếu (kể cả chế độ hiện tại) -> chọn chế độ NHIỀU phiếu nhất (tránh nhảy qua nhảy lại mỗi ván); bằng nhau ở đầu bảng -> giữ chế độ hiện tại.
+#       · Chế độ đang giữ là CAO / THẤP mà nhóm đó không còn logic nào -> không có ai để vote, tạm dùng ALL ván này.
+#       Khi BẬT: AF_GROUP_NEED_MAJORITY (đa số 8/15) KHÔNG còn tác dụng — ngưỡng 4/15 thay cho nó.
+#   TẮT : quay về cách gốc (không nhớ chế độ cũ · nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số 8/15 nếu AF_GROUP_NEED_MAJORITY bật).
+#   Ván đầu / ván cũ chưa lưu chế độ -> coi chế độ trước là ALL.
+#   Đổi mà không sửa file: env SUNVIW_AF_SWITCH=1|0 · SUNVIW_AF_SWITCH_NEED     lệnh --af-switch / --af-no-switch · --af-switch-need N
+#   AF_SWITCH_LEAD_DEFAULT = False (mặc định): chỉ cần chế độ khác đủ AF_SWITCH_NEED phiếu là đổi, KỂ CẢ khi chế độ đang chạy nhiều phiếu hơn (đúng ý "chỉ cần 4/15").
+#       Hệ quả: khi cả 2 chế độ cùng >= AF_SWITCH_NEED phiếu thì ván sau có thể đổi ngược lại (vd ALL 9 · CAO 4: ALL -> CAO, rồi CAO -> ALL ...) — chế độ đổi nhiều hơn.
+#       True = êm hơn: chế độ mới còn phải DẪN ĐẦU duy nhất (nhiều phiếu hơn cả chế độ đang chạy) mới đổi. Lưu ý: 15 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu,
+#       nên với True mọi AF_SWITCH_NEED <= 5 cho kết quả GIỐNG HỆT nhau (4/15 không dễ hơn 5/15).   env SUNVIW_AF_SWITCH_LEAD · lệnh --af-switch-lead / --af-no-switch-lead
+AF_SWITCH_DEFAULT = True
+AF_SWITCH_NEED_DEFAULT = 4
+AF_SWITCH_LEAD_DEFAULT = False
 AF_MIN_GAMES_DEFAULT = 7
 AF_MODE_WINDOW_DEFAULT = 13
 AF_MODE_MIN_DEFAULT = 7
@@ -232,7 +256,7 @@ AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế đ�
 AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
 AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
-AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
+AF_FLIP_FINAL_THAP_DEFAULT = True     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
 AF_FLIP_FINAL_ALL_DEFAULT = False      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
@@ -245,6 +269,9 @@ AF_FLIP_HIGH_MIN = _env_num("SUNVIW_AF_HIGH_MIN", AF_FLIP_HIGH_MIN_DEFAULT, floa
 AF_FLIP_HIGH_MAX = _env_num("SUNVIW_AF_HIGH_MAX", AF_FLIP_HIGH_MAX_DEFAULT, float)
 AF_GROUP_FLIPPED_ONLY = _env_bool("SUNVIW_AF_GROUP_FLIPPED", AF_GROUP_FLIPPED_ONLY_DEFAULT)      # chỉ logic bị bẻ mới vào nhóm CAO / THẤP
 AF_GROUP_NEED_MAJORITY = _env_bool("SUNVIW_AF_GROUP_MAJORITY", AF_GROUP_NEED_MAJORITY_DEFAULT)   # nhóm chọn < đa số toàn bộ logic -> dùng ALL
+AF_SWITCH = _env_bool("SUNVIW_AF_SWITCH", AF_SWITCH_DEFAULT)                                     # đổi chế độ ALL / CAO / THẤP dễ hơn: chỉ cần AF_SWITCH_NEED phiếu (thay vì đa số)
+AF_SWITCH_LEAD = _env_bool("SUNVIW_AF_SWITCH_LEAD", AF_SWITCH_LEAD_DEFAULT)                      # True = chế độ mới còn phải dẫn đầu duy nhất mới đổi (êm hơn)
+AF_SWITCH_NEED = _env_num("SUNVIW_AF_SWITCH_NEED", AF_SWITCH_NEED_DEFAULT, int)                 # số phiếu (trên tổng số logic) để đổi sang chế độ khác (mặc định 4/15)
 AF_MIN_GAMES =_env_num("SUNVIW_AF_MIN", AF_MIN_GAMES_DEFAULT, int)
 AF_MODE_WINDOW = _env_num("SUNVIW_AF_MODE_WINDOW", AF_MODE_WINDOW_DEFAULT, int)
 AF_MODE_MIN = _env_num("SUNVIW_AF_MODE_MIN", AF_MODE_MIN_DEFAULT, int)
@@ -260,7 +287,8 @@ AF_FLIP_FINAL_ALL = _env_bool("SUNVIW_AF_FLIP_ALL", AF_FLIP_FINAL_ALL_DEFAULT)  
 def af_apply_limits():
     """Chuẩn hoá tham số AF (gọi lúc import và sau khi đọc cờ dòng lệnh)."""
     global AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_MIN, AF_MODE_BELOW
-    global AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX
+    global AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX, AF_SWITCH_NEED
+    AF_SWITCH_NEED = max(1, int(AF_SWITCH_NEED))
     AF_FLIP_LOW = min(max(0.0, float(AF_FLIP_LOW)), 50.0)
     AF_FLIP_HIGH = min(max(50.0, float(AF_FLIP_HIGH)), 100.0)
     lo_a, lo_b = sorted((min(max(0.0, float(AF_FLIP_LOW_MIN)), 50.0), min(max(0.0, float(AF_FLIP_LOW_MAX)), 50.0)))          # vùng thấp nằm trong 0-50 (tự đổi chỗ nếu gõ ngược)
@@ -443,6 +471,9 @@ class TableCfg:
         self.__dict__.update(values)
         self.__dict__.setdefault("AF_FLIP_FINAL_CAO", False)    # công tắc bẻ final RIÊNG chế độ CAO (thiếu -> không bẻ)
         self.__dict__.setdefault("AF_FLIP_FINAL_THAP", False)   # công tắc bẻ final RIÊNG chế độ THẤP (thiếu -> không bẻ)
+        self.__dict__.setdefault("AF_SWITCH", True)             # đổi chế độ ALL / CAO / THẤP dễ hơn (xem khối ĐỔI CHẾ ĐỘ DỄ HƠN)
+        self.__dict__.setdefault("AF_SWITCH_NEED", 4)           # số phiếu để đổi sang chế độ khác (4/15)
+        self.__dict__.setdefault("AF_SWITCH_LEAD", False)       # True = chế độ mới còn phải dẫn đầu duy nhất mới đổi (êm hơn) · False = chỉ cần đủ AF_SWITCH_NEED phiếu
         self.normalize()
 
     def normalize(self):
@@ -454,6 +485,7 @@ class TableCfg:
         self.WR_WINDOW = max(1, int(self.WR_WINDOW))
         self.WR_MIN_GAMES = max(1, int(self.WR_MIN_GAMES))
         self.AF_MIN_GAMES = max(1, int(self.AF_MIN_GAMES))
+        self.AF_SWITCH_NEED = max(1, int(self.AF_SWITCH_NEED))
         self.AF_MODE_WINDOW = max(1, int(self.AF_MODE_WINDOW))
         self.AF_MODE_MIN = max(1, min(int(self.AF_MODE_MIN), self.AF_MODE_WINDOW))
         self.AF_MODE_BELOW = min(max(0.0, float(self.AF_MODE_BELOW)), 100.0)
@@ -545,10 +577,11 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 4, "AF_SWITCH_LEAD": False,       # đổi chế độ ALL / CAO / THẤP chỉ cần 4/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 300, "PERSIST_KEEP": 100,
 }))
@@ -571,6 +604,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 4, "AF_SWITCH_LEAD": False,       # đổi chế độ ALL / CAO / THẤP chỉ cần 4/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
@@ -614,10 +648,11 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 4, "AF_SWITCH_LEAD": False,       # đổi chế độ ALL / CAO / THẤP chỉ cần 4/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": False,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))
@@ -1395,12 +1430,46 @@ def af_mode_wr(graded, cfg=SUN):
     return out
 
 
+def _af_prev_mode(graded):
+    """Chế độ (ALL | CAO | THAP) của ván đã chấm GẦN NHẤT — dùng để xét đổi chế độ. Ván đầu / ván cũ chưa lưu chế độ (AF tắt lúc đó) -> ALL."""
+    if graded:
+        m = graded[-1].get("mode")
+        if m in ("ALL", "CAO", "THAP"):
+            return m
+    return "ALL"
+
+
+def _af_pick_mode(mvotes, cur, need, lead=False):
+    """ĐỔI CHẾ ĐỘ DỄ HƠN (AF_SWITCH): từ chế độ hiện tại `cur`, chọn chế độ cho ván này theo phiếu của 3 chế độ `mvotes` ({"ALL","CAO","THAP"} -> số logic).
+    lead=False (mặc định, đúng ý "chỉ cần N phiếu"): chế độ KHÁC có >= `need` phiếu (vd 4/15; bản gốc phải đa số 8/15) là ĐỔI, kể cả khi chế độ hiện tại đang nhiều phiếu hơn.
+        Nhiều chế độ khác cùng đủ `need` -> lấy chế độ nhiều phiếu nhất; bằng nhau ở đầu bảng, hoặc không chế độ khác nào đủ `need` -> GIỮ `cur`.
+    lead=True (êm hơn): chế độ mới còn phải DẪN ĐẦU DUY NHẤT (nhiều phiếu hơn mọi chế độ khác, kể cả chế độ đang chạy) mới đổi.
+        Lưu ý: 15 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu nên với lead=True mọi `need` <= 5 cho kết quả y hệt nhau."""
+    if lead:
+        ok = {m: c for m, c in mvotes.items() if c >= need}
+        if not ok:
+            return cur
+        best = max(ok.values())
+        top = [m for m, c in ok.items() if c == best]
+        if cur in top or len(top) != 1:
+            return cur
+        return top[0]
+    cand = {m: c for m, c in mvotes.items() if m != cur and c >= need}
+    if not cand:
+        return cur
+    best = max(cand.values())
+    top = [m for m, c in cand.items() if c == best]
+    return top[0] if len(top) == 1 else cur
+
+
 def af_decision(votes, graded, cfg=SUN):
     """AF (auto-flip + CAO/THẤP + bẻ theo WR chế độ) của SUN — port từ SUNVIW_9logics_autoflip_auto.html (xem khối CONFIG AF).
     Trả dict: mode (CAO | THAP | ALL) · final (SAU bẻ chế độ) · base (TRƯỚC bẻ chế độ) · mflip (đã bẻ chế độ) · tie (pool hoà phiếu -> dùng đa số tất cả logic)
     preds (phiếu sau bẻ logic) · flips[i] (LOW | HIGH | None) · wins / wsum (trọng số) · eff[i] (WR dùng, 0-100) · group[i] (CAO | THAP | None) · hi / lo (chỉ số logic mỗi nhóm)
     hv / lv / av (vote gốc của nhóm CAO / nhóm THẤP / pool ALL — LƯU vào ván đã chấm) · gT / gX (phiếu TÀI / XỈU trong pool) · avg (TB WR dùng của pool, độ tin cậy) · mw (WR 3 chế độ CAO / THAP / ALL)
     demoted (True = nhóm CAO / THẤP được chọn ít hơn đa số toàn bộ logic -> đã hạ về ALL) · need_maj (số logic tối thiểu để một nhóm được dùng).
+    prev (chế độ ván trước) · mvotes (phiếu 3 chế độ: ALL = logic không thuộc nhóm nào · CAO · THAP) · sw_need (số phiếu để đổi chế độ, AF_SWITCH_NEED) · switched (True = chế độ ván này khác ván trước).
+    AF_SWITCH bật: chế độ NHỚ ván trước, chế độ khác đủ sw_need phiếu (4/15) là đổi (xem _af_pick_mode); AF_SWITCH tắt: nhóm đông hơn thắng + đa số 8/15 như bản gốc.
     AF_GROUP_FLIPPED_ONLY: chỉ logic bị bẻ mới có group (CAO | THAP); logic không bẻ -> group None = mặc định ALL."""
     nl = len(votes)
     all_vote = vote_result(votes)
@@ -1410,6 +1479,8 @@ def af_decision(votes, graded, cfg=SUN):
     mw = af_mode_wr(graded, cfg)
     out = {"mode": "ALL", "n": n, "need": need, "final": all_vote, "base": all_vote, "mflip": False, "tie": False, "demoted": False,
            "need_maj": nl // 2 + 1,
+           "prev": _af_prev_mode(graded), "mvotes": {"ALL": nl, "CAO": 0, "THAP": 0}, "sw_need": max(1, min(int(cfg.AF_SWITCH_NEED), nl)),     # chưa đủ ván -> chưa chia nhóm: mọi logic = phiếu ALL
+           "switched": _af_prev_mode(graded) != "ALL",
            "preds": list(votes), "flips": [None] * nl, "wins": [], "wsum": 0.0, "weights": [], "eff": [None] * nl,
            "group": [None] * nl, "hi": [], "lo": [], "hv": None, "lv": None, "av": all_vote if all_vote in (TAI, XIU) else None, "pool": list(range(nl)),     # pool = logic THỰC SỰ tham gia vote ván này (chưa đủ ván -> vote tất cả)
            "gT": sum(1 for v in votes if v == TAI), "gX": sum(1 for v in votes if v == XIU), "avg": None, "mw": mw}
@@ -1452,18 +1523,33 @@ def af_decision(votes, graded, cfg=SUN):
 
     hv, lv = _pv(hi), _pv(lo)
     av = vote_result(preds)                               # vote gốc của pool ALL (đa số tất cả logic sau bẻ logic) — lưu để đo WR riêng của chế độ ALL
-    if len(hi) > len(lo):
-        mode, pool, base = "CAO", hi, hv
-    elif len(lo) > len(hi):
-        mode, pool, base = "THAP", lo, lv
-    else:
-        mode, pool = "ALL", list(range(nl))
-        base = vote_result(preds)
+    mvotes = {"ALL": nl - len(hi) - len(lo), "CAO": len(hi), "THAP": len(lo)}    # "phiếu chọn chế độ" của từng logic: nhóm CAO -> CAO · nhóm THẤP -> THẤP · không thuộc nhóm nào -> ALL
+    prev_mode = _af_prev_mode(graded)                     # chế độ của ván trước (ván đầu / ván cũ chưa lưu -> ALL)
+    sw_need = max(1, min(int(cfg.AF_SWITCH_NEED), nl))
     demoted = False
-    if cfg.AF_GROUP_NEED_MAJORITY and mode != "ALL" and len(pool) < need_maj:    # nhóm được chọn ít hơn đa số của pool ALL -> bỏ nhóm, dùng ALL
-        demoted = True
-        mode, pool = "ALL", list(range(nl))
-        base = vote_result(preds)
+    if cfg.AF_SWITCH:                                     # ĐỔI CHẾ ĐỘ DỄ HƠN: chế độ khác đủ sw_need phiếu (mặc định 4/15) là đổi, thay vì phải đa số 8/15
+        mode = _af_pick_mode(mvotes, prev_mode, sw_need, bool(cfg.AF_SWITCH_LEAD))
+        if mode == "CAO":
+            pool, base = hi, hv
+        elif mode == "THAP":
+            pool, base = lo, lv
+        else:
+            pool, base = list(range(nl)), vote_result(preds)
+        if mode != "ALL" and not pool:                    # đang giữ CAO / THẤP mà nhóm hết logic -> không ai vote, tạm dùng ALL ván này
+            demoted = True
+            mode, pool, base = "ALL", list(range(nl)), vote_result(preds)
+    else:                                                 # cách gốc: nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số (8/15) nếu AF_GROUP_NEED_MAJORITY
+        if len(hi) > len(lo):
+            mode, pool, base = "CAO", hi, hv
+        elif len(lo) > len(hi):
+            mode, pool, base = "THAP", lo, lv
+        else:
+            mode, pool = "ALL", list(range(nl))
+            base = vote_result(preds)
+        if cfg.AF_GROUP_NEED_MAJORITY and mode != "ALL" and len(pool) < need_maj:    # nhóm được chọn ít hơn đa số của pool ALL -> bỏ nhóm, dùng ALL
+            demoted = True
+            mode, pool = "ALL", list(range(nl))
+            base = vote_result(preds)
     tie = False
     if base == "SKIP":                                    # pool hoà phiếu -> đa số tất cả logic (đã bẻ logic); vẫn hoà -> đa số gốc (như cách cũ)
         tie = True
@@ -1476,6 +1562,7 @@ def af_decision(votes, graded, cfg=SUN):
     pv = [preds[i] for i in pool]
     vpool = list(range(nl)) if tie else list(pool)         # logic THAM GIA vote ván này (nhóm hoà phiếu -> thực tế dùng pool ALL) — panel hiện "logic đang dự đoán"
     out.update(mode=mode, final=final, base=base, mflip=mflip, tie=tie, demoted=demoted, need_maj=need_maj, pool=vpool, preds=preds, flips=flips,
+               prev=prev_mode, mvotes=mvotes, sw_need=sw_need, switched=(mode != prev_mode),
                wins=[float(w) for w in wins], wsum=float(wsum), weights=[float(w) for w in weights],
                eff=[float(e / wsum * 100) for e in effw], group=group, hi=hi, lo=lo,
                hv=hv if hv in (TAI, XIU) else None, lv=lv if lv in (TAI, XIU) else None, av=av if av in (TAI, XIU) else None,
@@ -1784,6 +1871,11 @@ def build_result(hist, cfg=SUN, persist=None):
             "can_da_so_nhom": cfg.AF_GROUP_NEED_MAJORITY,              # True = nhóm CAO / THẤP phải có >= đa số toàn bộ logic, không thì dùng ALL
             "da_so_toi_thieu": af["need_maj"] if used_af else (len(votes) // 2 + 1),
             "ha_xuong_all": af["demoted"] if used_af else False,   # True = nhóm CAO / THẤP chọn được ít hơn đa số -> đã hạ về ALL ở ván này
+            "doi_che_do_de": cfg.AF_SWITCH,                            # True = đổi chế độ ALL / CAO / THẤP chỉ cần `phieu_doi_che_do` phiếu (thay vì đa số 8/15)
+            "phieu_doi_che_do": af["sw_need"] if used_af else max(1, min(int(cfg.AF_SWITCH_NEED), len(votes))),
+            "che_do_truoc": af["prev"] if used_af else None,           # chế độ của ván trước (cơ sở để xét đổi chế độ)
+            "phieu_che_do": af["mvotes"] if used_af else None,         # số logic bỏ phiếu cho từng chế độ: ALL (không bẻ) · CAO · THAP
+            "da_doi_che_do": af["switched"] if used_af else False,     # True = chế độ ván này khác ván trước
             "logic_bi_be": [SUN_NAMES[i] for i, f in enumerate(af["flips"]) if f] if used_af else [],
             "wr_che_do": {                                         # WR của từng chế độ trên AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ (vote gốc, chưa bẻ chế độ)
                 m: {"so_van": x["n"], "dung": x["w"], "wr": None if x["wr"] is None else round(x["wr"], 1),
@@ -2472,8 +2564,10 @@ function logicHtml(d){
   if(af){const v=A.gioi_han_vung_be,ng=A.nguong_be_logic;
     band=v&&v.bat?`Chỉ bẻ logic khi WR trong vùng THẤP ${v.thap[0]}–${v.thap[1]}% hoặc CAO ${v.cao[0]}–${v.cao[1]}% · ngoài vùng không bẻ`:(ng?`Bẻ logic khi WR < ${ng.thap}% hoặc > ${ng.cao}%`:'');
     if(A.chi_be_vao_nhom)band+=' · chỉ logic đã bẻ mới vào nhóm CAO/THẤP, logic không bẻ = ALL';
-    if(A.can_da_so_nhom)band+=' · nhóm CAO/THẤP cần ≥ '+A.da_so_toi_thieu+' logic (đa số), ít hơn → dùng ALL';
-    if(A.ha_xuong_all)band+=' · ván này: nhóm chưa đủ đa số → ĐÃ HẠ VỀ ALL'}
+    if(A.doi_che_do_de){const pv=A.phieu_che_do,ct=A.che_do_truoc;
+      band+=' · đổi chế độ chỉ cần ≥ '+A.phieu_doi_che_do+'/'+L.length+' phiếu'+(pv?' (phiếu: ALL '+pv.ALL+' · CAO '+pv.CAO+' · THẤP '+pv.THAP+(ct?' · ván trước: '+(MN[ct]||ct):'')+(A.da_doi_che_do?' → ĐÃ ĐỔI':' → giữ chế độ')+')':'')}
+    else if(A.can_da_so_nhom)band+=' · nhóm CAO/THẤP cần ≥ '+A.da_so_toi_thieu+' logic (đa số), ít hơn → dùng ALL';
+    if(A.ha_xuong_all)band+=A.doi_che_do_de?' · ván này: nhóm đang giữ hết logic → dùng ALL':' · ván này: nhóm chưa đủ đa số → ĐÃ HẠ VỀ ALL'}
   const rows=L.map(x=>{
     const eff=x.af_be&&x.af_wr!=null?` <span class="mu">→ ${x.af_wr}%</span>`:'';
     const nh=af?x.af_nhom:x.nhom;
@@ -4321,7 +4415,7 @@ def health():
              poll_sec=POLL_SEC, wr_window=WR_WINDOW, be_final=FLIP_FINAL,
              wr_weights=wr_weights_full(), wr_flip=WR_FLIP_WEIGHT, wr_decay=WR_DECAY, wr_floor=WR_FLOOR, wr_newest=WR_WEIGHT_NEWEST,       # trọng số cũ nhất -> mới nhất
              hist_keep=HIST_KEEP, persist_keep=PERSIST_KEEP, bo_logic=SUN_NAMES,
-             af=dict(bat=AF_ENABLED, chi_be_vao_nhom=AF_GROUP_FLIPPED_ONLY, can_da_so_nhom=AF_GROUP_NEED_MAJORITY, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
+             af=dict(bat=AF_ENABLED, chi_be_vao_nhom=AF_GROUP_FLIPPED_ONLY, can_da_so_nhom=AF_GROUP_NEED_MAJORITY, doi_che_do_de=AF_SWITCH, phieu_doi_che_do=AF_SWITCH_NEED, flip_low=AF_FLIP_LOW, flip_high=AF_FLIP_HIGH, min_games=AF_MIN_GAMES, mode_window=AF_MODE_WINDOW,
                      vung_be=dict(bat=AF_FLIP_BAND, thap=[AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX], cao=[AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX]),
                      mode_min=AF_MODE_MIN, mode_below=AF_MODE_BELOW, be_che_do=AF_MODE_FLIP, be_final_af=AF_FLIP_FINAL,
                      be_final_cao_thap=AF_FLIP_FINAL_CT, be_final_cao=AF_FLIP_FINAL_CAO, be_final_thap=AF_FLIP_FINAL_THAP, be_final_all=AF_FLIP_FINAL_ALL),
@@ -4349,7 +4443,7 @@ def main():
     global UPSTREAM_URL, POLL_SEC, FLIP_FINAL, WR_FLIP_WEIGHT, HIT_ENABLED
     global AF_ENABLED, AF_FLIP_LOW, AF_FLIP_HIGH, AF_MIN_GAMES, AF_MODE_WINDOW, AF_MODE_BELOW, AF_FLIP_FINAL, AF_FLIP_FINAL_CT, AF_FLIP_FINAL_CAO, AF_FLIP_FINAL_THAP, AF_FLIP_FINAL_ALL, AF_MODE_FLIP
     global AF_FLIP_BAND, AF_FLIP_LOW_MIN, AF_FLIP_LOW_MAX, AF_FLIP_HIGH_MIN, AF_FLIP_HIGH_MAX
-    global AF_GROUP_FLIPPED_ONLY, AF_GROUP_NEED_MAJORITY
+    global AF_GROUP_FLIPPED_ONLY, AF_GROUP_NEED_MAJORITY, AF_SWITCH, AF_SWITCH_NEED, AF_SWITCH_LEAD
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
@@ -4380,6 +4474,13 @@ def main():
     gmg = ap.add_mutually_exclusive_group()
     gmg.add_argument("--af-group-majority", action="store_true", help="BẬT: nhóm CAO/THẤP phải có >= đa số toàn bộ logic, không thì dùng ALL")
     gmg.add_argument("--af-no-group-majority", action="store_true", help="TẮT: nhóm đông hơn luôn được chọn dù ít logic")
+    swg = ap.add_mutually_exclusive_group()
+    swg.add_argument("--af-switch", action="store_true", help="BẬT: đổi chế độ ALL/CAO/THẤP chỉ cần --af-switch-need phiếu (mặc định 4/15) thay vì đa số 8/15")
+    swg.add_argument("--af-no-switch", action="store_true", help="TẮT: quay về cách gốc (nhóm đông hơn thắng, nhóm CAO/THẤP cần đa số 8/15)")
+    ap.add_argument("--af-switch-need", type=int, default=None, help="AF: số phiếu (trên tổng số logic) để đổi sang chế độ khác (mặc định AF_SWITCH_NEED_DEFAULT = 4)")
+    slg = ap.add_mutually_exclusive_group()
+    slg.add_argument("--af-switch-lead", action="store_true", help="êm hơn: chế độ mới còn phải DẪN ĐẦU duy nhất (nhiều phiếu hơn cả chế độ đang chạy) mới đổi")
+    slg.add_argument("--af-no-switch-lead", action="store_true", help="chỉ cần chế độ khác đủ --af-switch-need phiếu là đổi, kể cả khi chế độ đang chạy nhiều phiếu hơn (mặc định)")
     ap.add_argument("--af-low-min", type=float, default=None, help="AF vùng bẻ THẤP: WR tối thiểu (%%) mới bẻ (mặc định 32)")
     ap.add_argument("--af-low-max", type=float, default=None, help="AF vùng bẻ THẤP: WR tối đa (%%) mới bẻ (mặc định 40)")
     ap.add_argument("--af-high-min", type=float, default=None, help="AF vùng bẻ CAO: WR tối thiểu (%%) mới bẻ (mặc định 60)")
@@ -4429,6 +4530,16 @@ def main():
         AF_GROUP_NEED_MAJORITY = True
     elif a.af_no_group_majority:
         AF_GROUP_NEED_MAJORITY = False
+    if a.af_switch:
+        AF_SWITCH = True
+    elif a.af_no_switch:
+        AF_SWITCH = False
+    if a.af_switch_need is not None:
+        AF_SWITCH_NEED = a.af_switch_need
+    if a.af_switch_lead:
+        AF_SWITCH_LEAD = True
+    elif a.af_no_switch_lead:
+        AF_SWITCH_LEAD = False
     if a.af_low_min is not None:
         AF_FLIP_LOW_MIN = a.af_low_min
     if a.af_low_max is not None:
@@ -4493,6 +4604,7 @@ def main():
                  else f"be logic WR < {AF_FLIP_LOW:g}% hoac > {AF_FLIP_HIGH:g}%")
     print(f"AF SUN      ->  {'BAT' if AF_ENABLED else 'TAT'} · {_be_logic} (toi thieu {AF_MIN_GAMES} van) · be che do {('BAT (CAO/THAP khi WR ' + str(AF_MODE_WINDOW) + ' van gan nhat cua che do < ' + format(AF_MODE_BELOW, 'g') + '%, can ' + str(AF_MODE_MIN) + ' van)') if AF_MODE_FLIP else 'TAT'} · be rieng AF {'BAT' if AF_FLIP_FINAL else 'TAT'}")
     print(f"AF nhom     ->  chi logic bi be vao nhom CAO/THAP {'BAT (logic khong be = ALL)' if AF_GROUP_FLIPPED_ONLY else 'TAT'} · nhom phai >= da so toan bo logic (n//2+1) {'BAT (ít hon -> dung ALL)' if AF_GROUP_NEED_MAJORITY else 'TAT'}")
+    print(f"AF doi che do ->  {('BAT · chi can ' + str(AF_SWITCH_NEED) + ' phieu (tren tong so logic) de doi giua ALL / CAO / THAP, thay vi da so 8/15 · nho che do van truoc') if AF_SWITCH else 'TAT (cach goc: nhom dong hon thang, can da so 8/15)'}")
     print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · CAO+THAP gop {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi CAO {'BAT' if AF_FLIP_FINAL_CAO else 'TAT'} · chi THAP {'BAT' if AF_FLIP_FINAL_THAP else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
     print(f"xoa lich su ->  nut o panel {'BAT' if HIST_CLEAR_ENABLED else 'TAT'} · chi an lich su hien thi (khong dung toi logic / WR / AF) · file moc {HIST_CLEAR_PATH}")
     print(f"PANEL HTML  ->  thiet bi phai duoc admin chinh duyet (khong can key, vao ca Sun + Hit) · file {PANEL_DEV_PATH} · toi da {PANEL_MAX_PENDING_PER_IP} yeu cau cho duyet / IP")

@@ -655,7 +655,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 25, "AF_FLIP_LOW_MAX": 35, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 65,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 25, "AF_FLIP_LOW_MAX": 35, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 68,
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
@@ -663,7 +663,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 9, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))

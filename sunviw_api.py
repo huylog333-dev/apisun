@@ -255,7 +255,7 @@ AF_SWITCH_LEAD_DEFAULT = False
 #       TẮT: quay về cách cũ (cả 2 cùng đủ phiếu -> lấy chế độ nhiều phiếu hơn, bằng nhau -> giữ chế độ hiện tại).   env SUNVIW_AF_SWITCH_PRIO=1|0 · lệnh --af-switch-prio / --af-no-switch-prio
 AF_SWITCH_PRIO_DEFAULT = True
 AF_MIN_GAMES_DEFAULT = 7
-AF_MODE_WINDOW_DEFAULT = 13
+AF_MODE_WINDOW_DEFAULT = 15
 AF_MODE_MIN_DEFAULT = 7
 AF_MODE_BELOW_DEFAULT = 45
 AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế độ): False = TẮT · True = BẬT

@@ -1,3 +1,8 @@
 flask>=3.0
 gunicorn>=22.0
 websocket-client>=1.6
+cryptography>=41.0
+requests>=2.31.0
+pandas>=2.0; python_version >= '3.9'
+openpyxl>=3.1
+reportlab>=4.0

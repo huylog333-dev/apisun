@@ -5137,7 +5137,8 @@ def health():
 # ═══════════════════════════════════════════════════════════════════════════
 #   Trang điều khiển:  GET /tool/autocuoc   (cùng cơ chế DUYỆT THIẾT BỊ như /api/html: máy lạ thấy bảng "đang chờ admin duyệt")
 #   Nguồn dự đoán:    bàn Tele68 TX MD5 (HIT_TABLES["tele68txmd5"]) — dùng ĐÚNG dự đoán final mà /api/predicttele68txmd5 đang trả.
-#                     Mỗi phiên mới có dự đoán (tb.pending) -> đặt cược tự động · khi API trả kết quả phiên đó -> chấm thắng/thua rồi tính tiền cược phiên kế.
+#                     Dự đoán phiên mới (tb.pending) có sẵn -> ĐỢI sự kiện socket `tick-update` state PREPARE_TO_START của đúng phiên đó rồi mới đặt cược (state RESULT thì không cược; xem khối "ĐẶT CƯỢC THEO SỰ KIỆN SOCKET") ·
+#                     khi API trả kết quả phiên đó -> chấm thắng/thua rồi tính tiền cược phiên kế. Socket mất -> quay về cách quét cũ.
 #   Mỗi tài khoản LC79 = 1 phiên auto cược chạy luồng riêng (nhiều tài khoản chạy song song). Tất cả tính năng bật / tắt ngay trên trang, đổi khi đang chạy cũng được:
 #     · Khi THUA: giữ nguyên / reset về gốc / x2 (Martingale)  ·  x2 sau chuỗi N ván thua (một lần)  ·  giảm cược sau N ván thua liên tiếp
 #     · Khi THẮNG: giữ nguyên / reset về gốc / x2 sau N ván thắng liên tiếp (về gốc hoặc giữ x2 tới khi thua)
@@ -5176,6 +5177,29 @@ AB_HEADERS = {
     "Referer": AB_ORIGIN + "/",
 }
 AB_P = {"cp": "R", "cl": "R", "pf": "web"}
+
+# ── ĐẶT CƯỢC THEO SỰ KIỆN SOCKET (thay cho kiểu quét tb.pending như cũ) ──
+#   Feed Socket.IO của bàn TX MD5, namespace /txmd5, sự kiện "tick-update" mỗi giây:
+#       42/txmd5,["tick-update", {"id": 7128340, "tick": 50, "subTick": 1, "state": "PREPARE_TO_START", "data": {...}, "timestamp": ...}]
+#       42/txmd5,["tick-update", {"id": 7128340, "tick": 6,  "subTick": 6, "state": "RESULT", ...}]
+#   · state = PREPARE_TO_START (AUTOBET_WS_BET_STATE) -> phiên `id` MỞ -> bắt đầu đặt cược NGAY (chỉ cược khi dự đoán đúng phiên `id` đã sẵn sàng).
+#   · state = RESULT (AUTOBET_WS_NOBET, nhiều state cách nhau dấu phẩy) -> thời gian trả kết quả, KHÔNG cược.
+#   · Chỉ cược ở vòng đã thấy sự kiện PREPARE_TO_START của chính vòng đó (vào giữa vòng thì chờ vòng kế).
+#   · Socket mất / im quá AUTOBET_WS_STALE giây -> quay về cách quét cũ (AUTOBET_WS_FALLBACK=0 để KHÔNG cược khi mất socket).
+#   AUTOBET_WS=0 tắt hẳn (về cách quét cũ) · AUTOBET_WS_URL (đường dẫn socket; lấy ở DevTools > Network > WS) · AUTOBET_WS_NS (mặc định /txmd5) · AUTOBET_WS_EVENT (tick-update)
+#   AUTOBET_WS_AUTH (JSON gửi kèm khi vào namespace, chỉ khi server đòi) · AUTOBET_WS_ID_OFFSET (nếu id sự kiện lệch với số phiên của API sessions) · AUTOBET_WS_ORIGIN
+#   Cần: pip install websocket-client
+AB_WS_ENABLED = _env_bool("AUTOBET_WS", True)
+AB_WS_URL = os.environ.get("AUTOBET_WS_URL", "wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket").strip()   # URL thật (tab WS của trình duyệt); namespace Socket.IO vẫn là /txmd5
+AB_WS_NS = os.environ.get("AUTOBET_WS_NS", "/txmd5").strip()
+AB_WS_EVENT = os.environ.get("AUTOBET_WS_EVENT", "tick-update").strip()
+AB_WS_AUTH = os.environ.get("AUTOBET_WS_AUTH", "").strip()
+AB_WS_ORIGIN = os.environ.get("AUTOBET_WS_ORIGIN", AB_ORIGIN).strip()
+AB_WS_BET_STATE = os.environ.get("AUTOBET_WS_BET_STATE", "PREPARE_TO_START").strip().upper()
+AB_WS_NOBET = {x.strip().upper() for x in os.environ.get("AUTOBET_WS_NOBET", "RESULT").split(",") if x.strip()}
+AB_WS_ID_OFFSET = _env_num("AUTOBET_WS_ID_OFFSET", 0, int)
+AB_WS_STALE_SEC = _env_num("AUTOBET_WS_STALE", 8.0, float)       # quá N giây không có tick-update -> coi như socket chết
+AB_WS_FALLBACK = _env_bool("AUTOBET_WS_FALLBACK", True)           # socket chết -> quét như cũ (False = đứng yên, không cược)
 
 # ── Auto rút: hạn mức / mệnh giá (sửa cho khớp LC79) ──
 AB_AT_TOKENS = ["ef1824c574ee1af6051d14ba998ceb9d", "4ae3141f18b0b121291eac1dddf10f44"]
@@ -5552,6 +5576,253 @@ def _ab_owner_valid(owner):
         return True
 
 
+class AbTickFeed:
+    """Client Socket.IO tối giản (Engine.IO v4, chạy trên websocket-client) nghe sự kiện `tick-update` của bàn TX MD5.
+    MỘT kết nối dùng chung cho mọi tài khoản (feed là dữ liệu chung của bàn, không cần JWT). Mỗi sự kiện đánh thức các phiên auto cược để đặt cược ngay,
+    không phải đợi vòng quét 1.5s. Chỉ cược khi `can_bet()` cho phép (đã thấy PREPARE_TO_START của đúng vòng và hiện không ở state cấm như RESULT)."""
+
+    _EVT = re.compile(r"^42(?:(/[^,\[]*),)?(\d*)(\[.*)$", re.S)
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.wakers = []
+        self.ns = ("/" + AB_WS_NS.strip("/")) if AB_WS_NS.strip("/") else "/"
+        self.cur = None                  # tick-update mới nhất: {id, state, tick, sub, ts, rx}
+        self.armed = None                # id của vòng đã thấy PREPARE_TO_START (được phép cược)
+        self.last_rx = 0.0               # lúc nhận tick-update cuối
+        self.conn_at = 0.0
+        self.connected = False
+        self.ns_ok = False
+        self.n_events = 0
+        self.conn_n = 0
+        self.seen = {}                   # state -> số lần thấy (để biết server thật sự có những state nào)
+        self.err = None
+        self.started = False
+        self._gen = 0
+        self._ws = None
+
+    @property
+    def enabled(self):
+        return bool(AB_WS_ENABLED and AB_WS_URL)
+
+    # ── trạng thái ──
+    def live(self):
+        """Socket đang sống và vừa có tick-update (<= AB_WS_STALE_SEC giây)."""
+        if not self.enabled:
+            return False
+        with self.lock:
+            return self.connected and time.time() - self.last_rx <= AB_WS_STALE_SEC
+
+    def can_bet(self, phien):
+        """(được_cược, lý_do). phien = số phiên mà dự đoán hiện có đang nhắm tới."""
+        with self.lock:
+            c = self.cur
+            if not c:
+                return False, "chua_co_su_kien"
+            if c["state"] in AB_WS_NOBET:
+                return False, "state_cam"                               # RESULT: đang trả kết quả, không cược
+            if self.armed != c["id"]:
+                return False, "cho_vong_moi"                            # chưa thấy PREPARE_TO_START của vòng này (vào giữa vòng)
+            if c["id"] + AB_WS_ID_OFFSET != phien:
+                return False, "lech_id"                                 # dự đoán chưa phải của vòng đang mở
+        return True, ""
+
+    def snapshot(self):
+        with self.lock:
+            c = dict(self.cur) if self.cur else None
+            ok = self.connected and time.time() - self.last_rx <= AB_WS_STALE_SEC
+        return {"bat": self.enabled, "live": bool(ok and self.enabled), "id": c["id"] if c else None,
+                "state": c["state"] if c else None, "tick": c["tick"] if c else None}
+
+    def status(self):
+        """Trạng thái WS cho panel auto cược (CHỈ dùng cho auto cược — bàn LC79 thường vẫn bắt API cũ).
+        mau: live (sẵn sàng, đang nhận tick) · wait (đã nối nhưng chưa có / đang trễ tick) · dead (chưa nối / mất kết nối) · off (tắt)."""
+        if not self.enabled:
+            return {"bat": False, "live": False, "san_sang": False, "mau": "off", "msg": "WS tắt (AUTOBET_WS=0) — auto cược dùng cách quét cũ"}
+        now = time.time()
+        with self.lock:
+            c = dict(self.cur) if self.cur else None
+            conn, nsok, err = self.connected, self.ns_ok, self.err
+            age = (now - self.last_rx) if self.last_rx else None
+            n_ev, n_conn = self.n_events, self.conn_n
+        live = bool(conn and age is not None and age <= AB_WS_STALE_SEC)
+        if live and nsok:
+            mau, msg = "live", "WS LIVE — sẵn sàng đặt cược"
+        elif conn and nsok:
+            mau, msg = "wait", "WS đã nối, đang chờ tick-update" if age is None else f"WS trễ {age:.0f}s chưa có tick mới"
+        elif conn:
+            mau, msg = "wait", "WS đang vào namespace…"
+        else:
+            mau, msg = "dead", "WS chưa sẵn sàng" + (" — " + str(err)[:120] if err else (" (đang kết nối…)" if n_conn else ""))
+        return {"bat": True, "live": live, "san_sang": bool(live and nsok and c), "mau": mau, "msg": msg,
+                "state": c["state"] if c else None, "id": c["id"] if c else None, "tick": c["tick"] if c else None,
+                "tuoi": round(age, 1) if age is not None else None, "so_su_kien": n_ev, "so_lan_noi": n_conn,
+                "fallback_quet": AB_WS_FALLBACK, "loi": err}
+
+    def health(self):
+        with self.lock:
+            c = dict(self.cur) if self.cur else None
+            return {"bat": self.enabled, "url": AB_WS_URL, "ns": self.ns, "ket_noi": self.connected, "da_vao_ns": self.ns_ok,
+                    "live": self.connected and time.time() - self.last_rx <= AB_WS_STALE_SEC, "so_su_kien": self.n_events, "so_lan_noi": self.conn_n,
+                    "state_hien_tai": c["state"] if c else None, "id_hien_tai": c["id"] if c else None, "state_da_thay": dict(self.seen),
+                    "bet_state": AB_WS_BET_STATE, "state_cam": sorted(AB_WS_NOBET), "fallback_quet": AB_WS_FALLBACK, "loi": self.err}
+
+    def add_waker(self, ev):
+        with self.lock:
+            if ev not in self.wakers:
+                self.wakers.append(ev)
+
+    def remove_waker(self, ev):
+        with self.lock:
+            if ev in self.wakers:
+                self.wakers.remove(ev)
+
+    def _wake_all(self):
+        with self.lock:
+            ws = list(self.wakers)
+        for ev in ws:
+            ev.set()
+
+    # ── xử lý gói tin (tách riêng để test được không cần mạng) ──
+    def _connect_packet(self):
+        return "40" + (self.ns + "," if self.ns != "/" else "") + AB_WS_AUTH
+
+    def _on_tick(self, p):
+        try:
+            rid = int(p.get("id"))
+        except (TypeError, ValueError, AttributeError):
+            return
+        st = str(p.get("state") or "").strip().upper()
+        now = time.time()
+        with self.lock:
+            self.connected = True
+            self.last_rx = now
+            self.n_events += 1
+            self.seen[st] = self.seen.get(st, 0) + 1
+            self.cur = {"id": rid, "state": st, "tick": p.get("tick"), "sub": p.get("subTick"), "ts": p.get("timestamp"), "rx": now}
+            if st == AB_WS_BET_STATE:
+                self.armed = rid                                        # vòng `rid` mở -> được phép cược
+        self._wake_all()
+
+    def _on_message(self, ws, msg):
+        if not isinstance(msg, str) or not msg:
+            return
+        c = msg[0]
+        if c == "2":                                                    # Engine.IO ping -> pong
+            ws.send("3")
+        elif c == "0":                                                  # Engine.IO open -> vào namespace
+            try:
+                info = json.loads(msg[1:])
+            except ValueError:
+                info = {}
+            ws.send(self._connect_packet())
+            if "EIO=3" in AB_WS_URL:                                    # EIO 3: client phải tự ping định kỳ
+                self._start_pinger(ws, float(info.get("pingInterval") or 25000) / 1000.0)
+        elif c == "1":                                                  # Engine.IO close
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+        elif c == "4":
+            if msg.startswith("40"):                                    # đã vào namespace
+                with self.lock:
+                    self.ns_ok, self.connected, self.err = True, True, None
+            elif msg.startswith("44"):                                  # từ chối vào namespace (sai token / sai namespace ...)
+                with self.lock:
+                    self.err = "namespace từ chối: " + msg[:160]
+            elif msg.startswith("41"):                                  # server ngắt namespace
+                try:
+                    ws.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            elif msg.startswith("42"):
+                m = self._EVT.match(msg)
+                if not m:
+                    return
+                if m.group(1) is not None and m.group(1) != self.ns:
+                    return
+                try:
+                    arr = json.loads(m.group(3))
+                except ValueError:
+                    return
+                if isinstance(arr, list) and len(arr) >= 2 and arr[0] == AB_WS_EVENT and isinstance(arr[1], dict):
+                    self._on_tick(arr[1])
+
+    def _start_pinger(self, ws, interval):
+        gen = self._gen
+
+        def run():
+            while gen == self._gen:
+                time.sleep(max(interval, 5.0))
+                try:
+                    ws.send("2")
+                except Exception:  # noqa: BLE001
+                    return
+        threading.Thread(target=run, daemon=True, name="abws-ping").start()
+
+    # ── vòng đời kết nối ──
+    def start(self):
+        with self.lock:
+            if self.started or not self.enabled:
+                return
+            self.started = True
+        threading.Thread(target=self._loop, daemon=True, name="abws").start()
+        threading.Thread(target=self._watch, daemon=True, name="abws-watch").start()
+
+    def _loop(self):
+        try:
+            import websocket
+        except ImportError:
+            with self.lock:
+                self.err = "thiếu thư viện websocket-client (pip install websocket-client) — đang dùng cách quét cũ"
+            return
+        delay = 2.0
+        while True:
+            t0 = time.time()
+            try:
+                with self.lock:
+                    self.conn_n += 1
+                    self._gen += 1
+                    self.connected = self.ns_ok = False
+                    self.conn_at = time.time()
+                ws = websocket.WebSocketApp(
+                    AB_WS_URL, header=["User-Agent: " + AB_HEADERS["User-Agent"], "Accept-Language: vi-VN,vi;q=0.9"],
+                    on_message=self._on_message,
+                    on_error=lambda w, e: self._set_err(f"{type(e).__name__}: {e}"),
+                    on_close=lambda w, c, r: self._set_err(f"mất kết nối ({c})") if c else None)
+                self._ws = ws
+                ws.run_forever(ping_interval=0, origin=AB_WS_ORIGIN or None)
+            except Exception as e:  # noqa: BLE001 - giữ luồng sống
+                self._set_err(f"{type(e).__name__}: {e}")
+            with self.lock:
+                self.connected = self.ns_ok = False
+                self._gen += 1
+            self._wake_all()                                            # để các phiên thấy socket chết -> chuyển cách dự phòng
+            delay = 2.0 if time.time() - t0 > 30 else min(delay * 2, 30.0)
+            time.sleep(delay)
+
+    def _set_err(self, msg):
+        with self.lock:
+            self.err = msg
+
+    def _watch(self):
+        """Kết nối sống nhưng không có tick-update quá lâu (treo ngầm) -> đóng để vòng lặp nối lại."""
+        while True:
+            time.sleep(3.0)
+            with self.lock:
+                idle = time.time() - max(self.last_rx, self.conn_at) if self.conn_at else 0
+                dead = self._ws is not None and idle > max(AB_WS_STALE_SEC * 3, 30.0)
+                ws = self._ws
+            if dead:
+                try:
+                    ws.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+AB_TICKS = AbTickFeed()
+
+
 class AbSession:
     """1 tài khoản LC79 đang auto cược. Toàn bộ logic thắng/thua/x2/giảm/pause ported nguyên từ AutoBetSession của bot."""
 
@@ -5580,6 +5851,10 @@ class AbSession:
         self._jwt_chk = 0.0                # lần cuối kiểm tra hạn JWT
         self.thread = None
         self.owner = ""                    # key AUTO CƯỢC LC sở hữu phiên này ("" = phiên cũ tạo trước bản có key)
+        self._wake = threading.Event()     # được AB_TICKS đánh thức mỗi khi có tick-update -> đặt cược ngay, không đợi AB_TICK
+        self._mode = None                  # "ws" = cược theo sự kiện socket · "poll" = quét như cũ (chỉ để ghi log khi đổi chế độ)
+        self._mis = [None, 0.0, False]     # theo dõi lệch id sự kiện / phiên dự đoán: [id vòng, lúc bắt đầu lệch, đã cảnh báo]
+        self._wait_note = [None, 0.0]      # [lý do, lúc ghi log gần nhất] — tránh ghi log chờ liên tục
 
     def reset_state(self):
         self.current_bet = self.cfg["bet"]
@@ -5727,22 +6002,59 @@ class AbSession:
         self.stop_reason = reason
         if msg:
             self.log("warn" if reason in ("nofund", "error", "wd_stop", "expired") else "info", msg)
+        self._wake.set()
         ab_save(force=True)
 
     def _run(self):
         nxt = 0.0
-        while self.alive:
-            try:
-                now = time.time()
-                if now >= nxt:                                             # định kỳ kiểm tra key chủ phiên: hết hạn / bị xoá / sai game -> tự dừng
-                    nxt = now + AB_KEY_RECHECK
-                    if not _ab_owner_valid(self.owner):
-                        self.stop("expired", "Key auto cược đã hết hạn hoặc bị xoá — auto cược tự dừng")
-                        break
-                self._tick()
-            except Exception as e:  # noqa: BLE001 - giữ luồng sống
-                self.log("error", f"Lỗi nội bộ: {type(e).__name__}: {e}")
-            time.sleep(AB_TICK)
+        AB_TICKS.add_waker(self._wake)
+        try:
+            while self.alive:
+                self._wake.clear()                                         # xoá TRƯỚC khi tick: sự kiện đến trong lúc đang tick vẫn còn cờ -> vòng sau chạy ngay
+                try:
+                    now = time.time()
+                    if now >= nxt:                                         # định kỳ kiểm tra key chủ phiên: hết hạn / bị xoá / sai game -> tự dừng
+                        nxt = now + AB_KEY_RECHECK
+                        if not _ab_owner_valid(self.owner):
+                            self.stop("expired", "Key auto cược đã hết hạn hoặc bị xoá — auto cược tự dừng")
+                            break
+                    self._tick()
+                except Exception as e:  # noqa: BLE001 - giữ luồng sống
+                    self.log("error", f"Lỗi nội bộ: {type(e).__name__}: {e}")
+                self._wake.wait(AB_TICK)                                   # có tick-update từ socket -> chạy ngay · không có -> tối đa AB_TICK giây
+        finally:
+            AB_TICKS.remove_waker(self._wake)
+
+    def _bet_gate(self, phien):
+        """Cổng đặt cược: True = được phép cược / theo dõi ảo phiên `phien` ngay lúc này.
+        Socket đang sống -> CHỈ cược khi đã thấy PREPARE_TO_START của đúng vòng này và hiện không ở state cấm (RESULT).
+        Socket chết -> cách quét cũ (hoặc đứng yên nếu AUTOBET_WS_FALLBACK=0)."""
+        if not AB_TICKS.enabled:
+            return True                                                    # đã tắt socket (AUTOBET_WS=0): đúng như bản cũ
+        now = time.time()
+        if not AB_TICKS.live():
+            if self._mode != "poll":
+                self._mode = "poll"
+                self.log("warn", "Chưa có / mất kết nối sự kiện socket — " + ("dùng cách quét dự phòng" if AB_WS_FALLBACK else "TẠM KHÔNG CƯỢC (AUTOBET_WS_FALLBACK=0)"))
+            return AB_WS_FALLBACK
+        if self._mode != "ws":
+            self._mode = "ws"
+            self.log("info", f"Đặt cược theo sự kiện socket: cược khi có {AB_WS_BET_STATE}, không cược khi {'/'.join(sorted(AB_WS_NOBET)) or '—'}")
+        ok, why = AB_TICKS.can_bet(phien)
+        if ok:
+            self._mis[0] = None
+            return True
+        if why == "lech_id":
+            snap = AB_TICKS.snapshot()
+            if self._mis[0] != snap["id"]:
+                self._mis[:] = [snap["id"], now, False]
+            elif not self._mis[2] and now - self._mis[1] > 8.0:           # lệch kéo dài trong 1 vòng -> khả năng id sự kiện khác số phiên của API sessions
+                self._mis[2] = True
+                self.log("warn", f"Sự kiện báo phiên #{snap['id']} nhưng dự đoán đang là #{phien} — nếu lệch cố định hãy đặt AUTOBET_WS_ID_OFFSET")
+        elif why == "cho_vong_moi" and (self._wait_note[0] != why or now - self._wait_note[1] > 120):
+            self._wait_note[:] = [why, now]
+            self.log("info", f"Chờ vòng mới bắt đầu (sự kiện {AB_WS_BET_STATE}) rồi mới cược")
+        return False
 
     def _feed(self):
         tb = HIT_TABLES.get(AB_FEED_KEY)
@@ -5782,6 +6094,8 @@ class AbSession:
         if not pend or pend["phien"] <= latest or pend["phien"] <= self.last_phien:        # 2) phiên mới có dự đoán -> đặt cược
             return
         phien = pend["phien"]
+        if not self._bet_gate(phien):                                      # đặt cược theo SỰ KIỆN socket: chưa có PREPARE_TO_START của vòng này / đang RESULT -> chờ
+            return
         side = "TAI" if pend["du_doan"] == TAI else "XIU"
         if self.paused:                                                    # đang pause: theo dõi ảo, không tốn tiền
             self.last_phien = phien
@@ -6043,6 +6357,7 @@ def ab_boot():
     """Gọi 1 lần khi server khởi động: nạp phiên đã lưu. Có AUTOBET_SAVE_PW + mật khẩu -> tự chạy lại phiên đang chạy; không thì để ở trạng thái dừng (cần đăng nhập lại)."""
     if not AB_ENABLED or not ab_is_leader():
         return
+    AB_TICKS.start()                                       # nối socket tick-update (chỉ worker giữ khoá auto cược mới nối)
     try:
         with open(AB_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -6129,7 +6444,7 @@ def _ab_feed_view():
     with tb.slock:
         err = tb.state.get("error")
     last = tb.hist.get(latest) if latest else None
-    return {"ok": bool(tb.active and not err), "ban": tb.label, "loi": err,
+    return {"ok": bool(tb.active and not err), "ban": tb.label, "loi": err, "ws": AB_TICKS.snapshot(),
             "phien": pend["phien"] if pend and pend["phien"] > latest else None,
             "du_doan": pend["du_doan"] if pend and pend["phien"] > latest else None,
             "phien_truoc": latest or None, "ket_qua_truoc": last["actual"] if last else None,
@@ -6180,6 +6495,7 @@ def tool_autocuoc_state():
         sel = next((s for s in sess if s.alive), sess[0])
     return _json({"ok": True, "feed": _ab_feed_view(), "sessions": [s.view() for s in sess],
                   "selected": sel.view(full=True) if sel else None,
+                  "ws": AB_TICKS.status(),
                   "luu_mk": AB_SAVE_PW, "multi": AB_MULTI,
                   "wd_limits": {"momo": [AB_MOMO_MIN, AB_MOMO_MAX], "bank": [AB_BANK_MIN, AB_BANK_MAX]}})
 
@@ -6304,6 +6620,17 @@ def tool_autocuoc_action():
     return _json({"ok": True})
 
 
+@app.route("/tool/autocuoc/api/ws")
+def tool_autocuoc_ws():
+    """Trạng thái WebSocket auto cược (sẵn sàng LIVE hay chưa) — cần key AUTO CƯỢC LC + HWID như các endpoint khác."""
+    g = _ab_gate()
+    if g is not None:
+        return g
+    resp = _json({"ok": True, **AB_TICKS.status()})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/tool/autocuoc/api/wallets", methods=["POST"])
 def tool_autocuoc_wallets():
     """Lấy STK ngân hàng / ví Momo đã liên kết trên LC79 (khỏi nhập tay)."""
@@ -6354,7 +6681,7 @@ def api_admin_cuocstatus():
 def ab_health():
     with _ab_lock:
         return {"bat": AB_ENABLED, "leader": _ab_leader["ok"], "luu_mk": AB_SAVE_PW, "so_tai_khoan": len(_ab_sessions),
-                "dang_chay": sum(1 for s in _ab_sessions.values() if s.alive), "file": AB_PATH}
+                "dang_chay": sum(1 for s in _ab_sessions.values() if s.alive), "file": AB_PATH, "ws": AB_TICKS.health()}
 
 
 
@@ -6416,6 +6743,13 @@ button{cursor:pointer}
 .acc .sub{grid-column:2/4;color:var(--mut);font-size:12px}
 .btn-add{border:1px dashed var(--line2);background:transparent;border-radius:12px;padding:11px;color:var(--mut);font-weight:600}
 .btn-add:hover{color:var(--tx);border-color:var(--mut)}
+.wsb{display:flex;align-items:center;gap:10px;margin:0 6px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surf);font-size:12.5px;line-height:1.35}
+.wsb .d{flex:none;width:10px;height:10px;border-radius:50%;background:var(--dim)}
+.wsb b{display:block;font-size:13px}
+.wsb small{display:block;color:var(--mut);font-size:11.5px}
+.wsb.live{border-color:rgba(93,224,178,.45)} .wsb.live .d{background:var(--up);animation:pulse2 1.8s infinite} .wsb.live b{color:var(--up)}
+.wsb.wait{border-color:rgba(233,196,106,.45)} .wsb.wait .d{background:var(--gold)} .wsb.wait b{color:var(--gold)}
+.wsb.dead{border-color:rgba(255,112,112,.45)} .wsb.dead .d{background:var(--dn)} .wsb.dead b{color:var(--dn)}
 .rail .foot{margin-top:auto;color:var(--dim);font-size:11.5px;padding:0 6px;display:none}
 
 .main{padding:22px clamp(16px,3vw,36px) 48px;display:flex;flex-direction:column;gap:22px;min-width:0;max-width:1280px;width:100%}
@@ -6573,6 +6907,7 @@ label.ck input{accent-color:var(--up);width:16px;height:16px}
 <div class="app" id="app" hidden>
   <aside class="rail">
     <div class="brand"><b>Auto cược</b><span>LC79 · Tài Xỉu MD5</span></div>
+    <div class="wsb" id="wsb" title="Trạng thái WebSocket dành riêng cho auto cược"><i class="d"></i><div><b>WS…</b><small>đang kiểm tra</small></div></div>
     <div class="acc-list" id="accs"></div>
     <button class="btn-add" id="addbtn">+ Thêm tài khoản</button>
     <div class="foot" id="railfoot"></div>
@@ -6619,8 +6954,20 @@ async function poll(){
 }
 function init(){ $('#addbtn').onclick=()=>{ADDING=true;LOGIN=null;PREFILL='';FORMKEY='';render()}; poll(); }
 
+function paintWs(){
+  const w=(S&&S.ws)||null, el=$('#wsb'); if(!el)return;
+  if(!w){return}
+  const t=w.mau==='live'?'WS LIVE · sẵn sàng':w.mau==='wait'?'WS đang chờ tick':w.mau==='off'?'WS tắt':'WS chưa sẵn sàng';
+  let sub='';
+  if(w.mau==='live')sub=`Sự kiện ${esc(w.state||'—')}${w.tick!=null?' · '+w.tick+'s':''}${w.id?' · vòng #'+w.id:''}`;
+  else sub=esc(w.msg||'');
+  if(w.mau!=='live'&&w.mau!=='off'&&w.fallback_quet)sub+=' · đang dùng quét dự phòng';
+  el.className='wsb '+(w.mau||'dead');
+  el.innerHTML=`<i class="d"></i><div><b>${t}</b><small>${sub}</small></div>`;
+}
 function render(){
   if(!S)return;
+  paintWs();
   const acc=filterMyAccs(S.sessions);
   if(!acc.length&&!ADDING)ADDING=true;
   $('#accs').innerHTML=acc.map(a=>`<button class="acc ${a.id===SEL&&!ADDING?'sel':''}" data-id="${a.id}">
@@ -6794,7 +7141,8 @@ function renderSession(s){
   }
   const f=S.feed;
   $('#feed').innerHTML=f.ok?`<span><span class="k">${esc(f.ban||'Tele68')}</span>Phiên ${f.phien?('#'+f.phien):'—'} ${sidePill(f.du_doan)}</span>
-    <span class="mut">Trước: ${f.phien_truoc?('#'+f.phien_truoc):'—'} ${sidePill(f.ket_qua_truoc)} ${dice(f.xuc_xac)}</span>`
+    <span class="mut">Trước: ${f.phien_truoc?('#'+f.phien_truoc):'—'} ${sidePill(f.ket_qua_truoc)} ${dice(f.xuc_xac)}</span>
+    ${f.ws&&f.ws.bat?(f.ws.live?`<span class="mut">Sự kiện: <b class="${f.ws.state==='RESULT'?'dn':'up'}">${esc(f.ws.state||'—')}</b>${f.ws.tick!=null?' · '+f.ws.tick+'s':''}</span>`:'<span class="gold">Socket chưa kết nối — dùng quét dự phòng</span>'):''}`
     :`<span class="dn">Nguồn dự đoán đang lỗi: ${esc(f.loi||'chưa có dữ liệu')} — auto cược sẽ không đặt ván mới.</span>`;
   $('#h_nick').textContent=s.nick||s.username;
   const chip=$('#h_chip');chip.className='chip '+s.status;chip.textContent=STATUS[s.status]||s.status;
@@ -7180,6 +7528,7 @@ def main():
     print(f"OFF SERVER  ->  {'DANG BAT (tool ngoai khong nhan duoc du doan, chi panel / admin nhan)' if offsrv_state()['off'] else 'tat'} · bat / tat o trang /api/admin (chi admin chinh) · file {OFFSRV_PATH}")
     print(f"PANEL HTML  ->  thiet bi phai duoc admin chinh duyet (khong can key, vao ca Sun + Hit) · file {PANEL_DEV_PATH} · toi da {PANEL_MAX_PENDING_PER_IP} yeu cau cho duyet / IP")
     print(f"AUTO CUOC   ->  {'BAT' if AB_ENABLED else 'TAT'} · http://{a.host}:{a.port}/tool/autocuoc · nguon du doan {AB_FEED_KEY} · luu mat khau {'CO (AUTOBET_SAVE_PW=1)' if AB_SAVE_PW else 'KHONG (chi RAM)'} · file {AB_PATH}")
+    print(f"AUTO CUOC WS ->  {('BAT · ' + AB_WS_URL + ' · ns ' + AB_WS_NS + ' · cuoc khi ' + AB_WS_BET_STATE + ' · khong cuoc khi ' + '/'.join(sorted(AB_WS_NOBET)) + ' · mat socket -> ' + ('quet du phong' if AB_WS_FALLBACK else 'KHONG cuoc')) if AB_TICKS.enabled else 'TAT (cuoc theo cach quet cu)'}")
     print(f"WR 100 phien ->  luu toi da {PERSIST_KEEP} van da cham · WR dung/sai xet {EVAL_WINDOW} van gan nhat")
     print(f"WR          ->  xet {WR_WINDOW} van gan nhat, trong so cao nhat x{WR_WEIGHT_NEWEST}, flip trong so {'BAT (cu nhat nang nhat)' if WR_FLIP_WEIGHT else 'TAT (moi nhat nang nhat)'}, trong so (cu -> moi): "
           + " · ".join(f"{w:.2f}" for w in wr_weights_full()))

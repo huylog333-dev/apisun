@@ -3750,7 +3750,7 @@ def _revenue_calc(d, now):
     return out
 
 
-def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
+def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None, bind=True):
     """(record, lỗi, đã_tồn_tại, game_của_key). Chỉ key loại 'user' còn hạn VÀ đúng game (nếu `game` được truyền) mới qua; sai game -> lỗi bắt đầu bằng WRONG_GAME_MSG, KHÔNG gắn thiết bị. Có HWID -> kiểm tra / gắn thiết bị (đủ chỗ mới gắn thêm) và ghi "lần dùng gần nhất";
     không có HWID mà HWID_REQUIRED bật -> từ chối. `ip` chỉ để ghi lại, không dùng để chặn."""
     k = _norm_key(k)
@@ -3768,7 +3768,9 @@ def _check_user_key(k, hw=None, ip="", ua="", alts=(), fresh=False, game=None):
         if not _game_ok(kg, game):
             return None, (f"{WRONG_GAME_MSG} {KEY_GAME_LABEL.get(kg, kg)} — không dùng được cho game {KEY_GAME_LABEL.get(game, game)}. "
                           f"Hãy dùng key {KEY_GAME_LABEL.get(game, game)} (hoặc xin admin tạo key {KEY_GAME_LABEL.get(game, game)})."), True, kg
-        if hw:
+        if not bind:                                     # bind=False (auto cược LC): KHÔNG giới hạn / gắn thiết bị — điện thoại, máy tính, nhiều máy đều vào được bằng cùng 1 key
+            ch = False
+        elif hw:
             ok, err, ch = _dev_use(r, hw, ip, ua, now, alts, fresh)
             if not ok:
                 return None, err, True, kg
@@ -6090,13 +6092,11 @@ def _ab_gate():
     Trả None nếu cho qua (và ghi flask_g.ab_key = key đang dùng), ngược lại trả Response."""
     hw, alts, hfresh = req_hw_ids(request.get_json(silent=True) if request.method == "POST" else None)
     ip = client_ip()
-    if _panel_banned(hw, alts, hfresh, ip):
-        abort(404)
     w = _rl_wait(ip)
     if w:
         return _json({"ok": False, "can_key": True, "loi": f"nhap sai qua nhieu, thu lai sau {w}s"}, 429)
     k = _norm_key(request.headers.get("X-User-Key", ""))
-    rec, err, exists, kg = _check_user_key(k, hw, ip, request.headers.get("User-Agent", ""), alts, hfresh, "autolc")
+    rec, err, exists, kg = _check_user_key(k, hw, ip, request.headers.get("User-Agent", ""), alts, hfresh, "autolc", bind=False)
     if not rec:
         if k and not exists:
             _rl_fail(ip)
@@ -6144,11 +6144,12 @@ def _ab_get(sid):
 
 
 @app.route("/tool/autocuoc")
+@app.route("/tool/autocuoc/")
+@app.route("/api/autocuoc")
+@app.route("/api/autocuoc/")
+@app.route("/autocuoc")
 def tool_autocuoc():
     """Chỉ trả MÀN NHẬP KEY (không chứa giao diện auto cược). Nhập đúng key -> trình duyệt gọi /tool/autocuoc/ui kèm key để nhận giao diện."""
-    hw, alts, hfresh = req_hw_ids()
-    if _panel_banned(hw, alts, hfresh, client_ip()):
-        abort(404)
     resp = Response(AB_SHELL.replace("/*__HWID_JS__*/", HWID_JS), content_type="text/html; charset=utf-8")
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["X-Robots-Tag"] = "noindex, nofollow"

@@ -214,9 +214,9 @@ AF_FLIP_HIGH_DEFAULT = 63
 #                          lệnh --af-band / --af-no-band · --af-low-min X · --af-low-max X · --af-high-min X · --af-high-max X
 AF_FLIP_BAND_DEFAULT = True
 AF_FLIP_LOW_MIN_DEFAULT = 20
-AF_FLIP_LOW_MAX_DEFAULT = 45
+AF_FLIP_LOW_MAX_DEFAULT = 40
 AF_FLIP_HIGH_MIN_DEFAULT = 57
-AF_FLIP_HIGH_MAX_DEFAULT = 75
+AF_FLIP_HIGH_MAX_DEFAULT = 83
 # ── CHỈ LOGIC BỊ BẺ MỚI VÀO NHÓM CAO / THẤP (Bước 2) — AF_GROUP_FLIPPED_ONLY + AF_GROUP_NEED_MAJORITY ─────────────
 #   AF_GROUP_FLIPPED_ONLY_DEFAULT  BẬT (mặc định): CHỈ logic ĐÃ BỊ BẺ (WR nằm TRONG vùng bẻ ở khối trên) mới được xếp vào nhóm CAO / THẤP
 #       (theo WR dùng sau bẻ). Logic KHÔNG bẻ (WR ngoài vùng bẻ) KHÔNG thuộc nhóm nào — mặc định ở chế độ ALL (panel hiện nhãn ALL).
@@ -263,7 +263,7 @@ AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
 AF_FLIP_FINAL_CAO_DEFAULT = True      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
 AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
-AF_FLIP_FINAL_ALL_DEFAULT = False      # True = bẻ final của chế độ ALL        (BẬT)
+AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
 AF_FLIP_LOW = _env_num("SUNVIW_AF_LOW", AF_FLIP_LOW_DEFAULT, float)
@@ -616,7 +616,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 300, "PERSIST_KEEP": 100,
 }))

@@ -30,6 +30,7 @@ Endpoint:
     GET /api/panel/status        -> panel hỏi trạng thái duyệt của thiết bị này (gửi yêu cầu lần đầu): {"status": "approved" | "pending" | "denied" | "limit"} (xem khối "DUYỆT THIẾT BỊ VÀO PANEL")
     GET /api/admin/panel (+ POST /approve · /deny · /remove · /ban · /unban) -> admin CHÍNH xem + duyệt / từ chối / gỡ quyền / BAN (danh sách đen: chặn cả IP + thiết bị khỏi /api/html, trả 404) thiết bị vào panel (mục "Duyệt thiết bị vào panel HTML" ở trang /api/admin)
     GET|POST /api/admin/offserver -> OFF SERVER (CHỈ admin chính, nút ở trang /api/admin): bật lên thì server + panel HTML vẫn chạy và cập nhật dự đoán bình thường (thiết bị đã duyệt / admin), còn TOOL NGOÀI gọi API dự đoán nhận 503 {"server_off": true} và không có tín hiệu. POST {"off": true|false}. Lưu file, còn sau restart (xem khối "OFF SERVER")
+    GET /api/admin/cuocstatus    -> (admin CHÍNH) bảng TOÀN BỘ tài khoản đang / đã dùng auto cược; bấm 1 dòng xem hồ sơ: chiến thuật đã chọn, số dư, tổng lãi/lỗ, thắng/thua, tổng đã cược, log + ván gần nhất; POST /api/admin/cuocstatus/action {id, act: stop|remove}
     GET /health                  -> trạng thái nền của Sun + Hit
     GET /api/admin               -> trang quản trị: MỘT ô nhập key, server tự nhận diện admin chính / admin phụ / key người dùng / key không tồn tại — tạo / xóa (tích chọn nhiều key) / xem key, MỌI key gắn HWID thiết bị (1 key dùng được N thiết bị), hiện lần dùng gần nhất, KHÔNG hiện ở trang chủ (xem khối "CONFIG KEY / ADMIN")
     POST /api/key/check          -> tool xác thực + GẮN THIẾT BỊ + KÍCH HOẠT (lần đầu dùng thành công mới bắt đầu tính hạn) cho key người dùng: {"key":"...","hwid":"..."} (hoặc header X-HWID) -> {"ok":true,"het_han":<epoch>,"con_lai_giay":N}
@@ -72,7 +73,7 @@ JSON /api/predict:
         CDT    tỉ lệ Tài có điều kiện theo (tổng tăng/giảm so với ván trước nữa, nhóm tổng ván trước) · cửa sổ 250
         NBMIX  Naive Bayes (3 kết quả gần nhất, nhóm tổng, xúc xắc max/min, số mặt khác nhau) · cửa sổ 250
         REGIME nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm (<=35% · 35-50% · 50-65% · >65%); học online P(ván sau ĐẢO | nhóm) trong 250 ván, co về 50% (m=8) -> đảo hoặc bệt theo dữ liệu
-        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=300) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
+        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=120) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
         SGDLR  hồi quy logistic online (12 kết quả gần nhất + 2 tổng gần nhất + độ dài đợt, L2, 2 epoch trên 300 ván gần nhất, huấn luyện lại mỗi ván) · khác họ mô hình: tuyến tính gộp nhiều tín hiệu yếu thay vì đếm theo ngữ cảnh
         CTW    Context Tree Weighting: trộn Bayes MỌI cây ngữ cảnh độ sâu <= 8 trên chuỗi Tài/Xỉu (ước lượng KT, tự co về 50% khi thiếu mẫu, trọng số do bằng chứng quyết định chứ không đặt tay) · cửa sổ 300 · QUA CỔNG tự chấm (xem ⚑)
         ARSUM  tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker / Levinson–Durbin, chọn p theo BIC) + tiền kiểm Ljung–Box 8 độ trễ; P(Tài) = P(tổng dự đoán + nhiễu > 10.5) · QUA CỔNG
@@ -377,7 +378,7 @@ BOOT_INFO = _boot_mark()
 
 
 HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sun15_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
-HIST_KEEP = 300            # CỬA SỔ TRƯỢT: chỉ lưu 300 phiên GẦN NHẤT (cả trong RAM lẫn file sun15_hist.json) — có phiên thứ 301 thì phiên cũ nhất (phiên 1) bị bỏ. Các logic dùng <= 250 ván, SGDLR / LSM / CONV3 / LAGAC / CTW / ARSUM dùng tới 300 ván (vừa đủ).
+HIST_KEEP = int(os.environ.get("SUNVIW_HIST_KEEP", "120") or 120)   # CỬA SỔ TRƯỢT 120 VÁN: chỉ giữ 120 phiên GẦN NHẤT (RAM + file) — có phiên thứ 121 thì phiên cũ nhất (phiên 1) bị bỏ. Mọi logic chỉ học trên tối đa 120 ván này (logic có cửa sổ 250 / 300 / 1500 tự co về 120). Đổi: env SUNVIW_HIST_KEEP
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
@@ -576,7 +577,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "ENABLED": True,
     "GID": "vgmn_100",
     "POLL_SEC": 3.0,
-    "HIST_KEEP": 300,
+    "HIST_KEEP": HIST_KEEP,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
@@ -603,7 +604,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "ENABLED": True,
     "GID": "vgmn_101",
     "POLL_SEC": 3.0,
-    "HIST_KEEP": 300,
+    "HIST_KEEP": HIST_KEEP,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
@@ -647,7 +648,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "ENABLED": True,
     "GID": "tele68_txmd5",
     "POLL_SEC": 3.0,
-    "HIST_KEEP": 300,
+    "HIST_KEEP": HIST_KEEP,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
@@ -708,7 +709,7 @@ GB68_PKT = {                                                                   #
 _GB68_BASE = {
     "ENABLED": True,
     "POLL_SEC": 1.0,
-    "HIST_KEEP": 300,
+    "HIST_KEEP": HIST_KEEP,
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": False,
     # WR có trọng số
@@ -4553,10 +4554,38 @@ dialog p{margin:0 0 18px}dialog form{margin:0}.da{display:flex;gap:8px;justify-c
 .ac-log .info{color:var(--tx)}.ac-log .win{color:#35d6a0}.ac-log .loss{color:#ff6b7d}.ac-log .warn,.ac-log .error{color:#f2b33d}
 .ac-del{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,107,125,.45);background:none;color:#ff6b7d;font-size:13px;cursor:pointer;margin-top:12px}
 .ac-del:hover{background:rgba(255,107,125,.1)}
+.st.nofund,.st.expired,.st.restart{background:#ff6b7d}.st.target,.st.wd_stop{background:#f2b33d}
+.okc{color:#35d6a0}.noc{color:#ff6b7d}
+.ac-wrap{overflow-x:auto;border:1px solid var(--ln);border-radius:14px;background:var(--bg)}
+.ac-tb{width:100%;border-collapse:collapse;font-size:14px;min-width:640px}
+.ac-tb th{text-align:left;font-size:12px;font-weight:600;color:var(--mu);padding:10px 14px;border-bottom:1px solid var(--ln);white-space:nowrap}
+.ac-tb td{padding:11px 14px;border-bottom:1px solid var(--ln);vertical-align:middle;font-variant-numeric:tabular-nums}
+.ac-tb tbody tr:last-child td{border-bottom:0}
+.ac-tb tbody tr{cursor:pointer;transition:background .12s}
+.ac-tb tbody tr:hover,.ac-tb tbody tr.sel{background:rgba(242,179,61,.07)}
+.ac-tb tbody tr:focus-visible{outline:2px solid var(--au);outline-offset:-2px}
+.ac-tb .r{text-align:right}
+.ac-tb .nm{font-weight:700;display:flex;align-items:center;gap:8px}
+.ac-tb .st{width:9px;height:9px;border-radius:50%;flex:none;background:#8f98bd}
+.ac-bd{display:inline-block;font-size:12px;font-weight:700;padding:2px 10px;border-radius:99px;border:1px solid var(--ln);color:var(--mu);white-space:nowrap}
+.ac-bd.running{color:#35d6a0;border-color:rgba(53,214,160,.5);background:rgba(53,214,160,.08)}
+.ac-bd.paused,.ac-bd.hold,.ac-bd.target,.ac-bd.wd_stop{color:#f2b33d;border-color:rgba(242,179,61,.5);background:rgba(242,179,61,.08)}
+.ac-bd.nofund,.ac-bd.error,.ac-bd.restart,.ac-bd.expired{color:#ff6b7d;border-color:rgba(255,107,125,.5);background:rgba(255,107,125,.08)}
+#acd{border:1px solid var(--ln);border-radius:18px;background:var(--pn);color:var(--tx);padding:0;width:min(720px,94vw);max-height:90vh}
+#acd::backdrop{background:rgba(0,0,0,.65);backdrop-filter:blur(3px)}
+.acd-in{padding:20px 22px;max-height:88vh;overflow:auto}
+.acd-hd{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.acd-hd>div{flex:1}.acd-hd h3{margin:0;font-size:19px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acd-in h4{margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.04em}
+.ac-ten{font-size:16px;font-weight:800;color:var(--au2);margin-bottom:6px}
+.ac-st{margin:0;padding-left:18px;font-size:13.5px;line-height:1.75;color:var(--tx)}
+.ac-log .bet,.ac-log .virt{color:var(--mu)}.ac-log .pause{color:#f2b33d}.ac-log .wd{color:#7fd6ff}
+.acd-ft{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
 </style></head><body>
 <div class="w" id="app"></div>
 <dialog id="dlg"><form method="dialog"><p id="dm"></p><div class="da"><button class="gh" value="no">Hủy</button><button class="go dgb" value="ok" id="dok">Xác nhận</button></div></form></dialog>
 <div id="ts"></div>
+<dialog id="acd"></dialog>
 <script>
 /*__HWID_JS__*/
 const $=s=>document.querySelector(s);
@@ -4628,54 +4657,83 @@ function renderOs(){
   <p class="mu s" style="margin:-6px 0 0">Bật: server và panel HTML vẫn chạy + cập nhật dự đoán như thường (chỉ thiết bị đã duyệt / admin nhận được), còn <b>tool ngoài</b> gọi API dự đoán sẽ nhận báo “server off” và không có tín hiệu. Hạn key khách vẫn chạy trong lúc off.${on&&OS.luc?` <b style="color:var(--no)">Bật lúc ${esc(fmt(OS.luc))}${OS.boi?' bởi '+esc(OS.boi):''}.</b>`:''}</p>`;
 }
 let RV=null;
-let AC_DATA=null,AC_SEL='';
+let AC_DATA=null,AC_SEL='',AC_F='all';
 async function loadAc(){
   if(!isMain())return;
-  const j=await api('/api/admin/cuocstatus'+(AC_SEL?'?id='+encodeURIComponent(AC_SEL):''));
+  const j=await api('/api/admin/cuocstatus');
   if(!S)return;
-  if(j.ok){AC_DATA=j;renderAc()}
+  if(j.ok){AC_DATA=j;renderAc();const dl=$('#acd');if(dl&&dl.open)renderAcd()}
 }
-const ST_LABEL={running:'Đang cược',paused:'Pause',hold:'Tạm dừng',ready:'Sẵn sàng',stopped:'Đã dừng',target:'Đạt lãi',nofund:'Hết số dư',wd_stop:'Đã rút',error:'Lỗi',restart:'Cần đăng nhập'};
+const ST_LABEL={running:'Đang cược',paused:'Pause · theo dõi ảo',hold:'Tạm dừng',ready:'Sẵn sàng',stopped:'Đã dừng',target:'Đạt mục tiêu lãi',nofund:'Hết số dư',wd_stop:'Đã rút',error:'Lỗi',restart:'Cần đăng nhập',expired:'Key hết hạn'};
 const fmtN=n=>Number(n||0).toLocaleString('vi-VN');
 const fmtNet=n=>{const s=Number(n||0);return (s>=0?'+':'')+fmtN(s)};
+const fmtT=t=>t?new Date(t*1000).toLocaleString('vi-VN'):'—';
+const fmtH=t=>t?new Date(t*1000).toLocaleTimeString('vi-VN'):'';
+const acKey=k=>k?(k.length>16?k.slice(0,7)+'…'+k.slice(-4):k):'—';
+const acSide=x=>x==='TAI'?'Tài':x==='XIU'?'Xỉu':'?';
+function acRows(){const ss=(AC_DATA&&AC_DATA.sessions)||[];return AC_F==='run'?ss.filter(s=>s.alive):AC_F==='stop'?ss.filter(s=>!s.alive):ss}
 function renderAc(){
   const el=$('#ac');if(!el)return;
   if(!AC_DATA){el.innerHTML='<h2>Trạng thái cược</h2><div class="s mu">Đang tải…</div>';return}
-  const d=AC_DATA,ss=d.sessions||[];
-  if(!ss.length){
-    el.innerHTML=`<div class="hd"><h2>Trạng thái cược</h2><div class="act"><button class="gh" id="acrf">${I.rf} Làm mới</button></div></div><div class="s mu" style="padding:20px 0 10px;text-align:center">Chưa có tài khoản nào đang cược${!d.bat?' (auto cược đang TẮT)':''}</div>`;
-    document.getElementById('acrf').onclick=()=>loadAc();
-    return;
-  }
-  const sel=ss.find(x=>x.id===AC_SEL)||ss[0];
-  el.innerHTML=`<div class="hd"><h2>Trạng thái cược <span class="mu s">${ss.length} tài khoản</span></h2><div class="act"><button class="gh" id="acrf">${I.rf} Làm mới</button></div></div>
-  <div class="ac-grid">${ss.map(s=>`<div class="ac-card${s.id===sel.id?' sel':''}" data-acid="${esc(s.id)}">
-    <div class="nm"><span class="st ${esc(s.status)}"></span>${esc(s.nick||s.username)}</div>
-    <div class="bal">${fmtN(s.balance)}</div>
-    <div class="net ${s.net>=0?'up':'dn'}">${fmtNet(s.net)} lãi/lỗ</div>
-    <div class="row3"><span>Thắng <b>${s.wins}</b></span><span>Thua <b>${s.losses}</b></span><span>${esc(ST_LABEL[s.status]||s.status)}</span></div>
-  </div>`).join('')}
-  </div>
-  ${sel?`<div class="ac-detail"><h3>${esc(sel.nick||sel.username)}</h3>
-  <div class="ac-stat">
-    <div><b>${fmtN(sel.balance)}</b><span>Số dư hiện tại</span></div>
-    <div><b class="${sel.net>=0?'':''}${sel.net>=0?'okc':'noc'}">${fmtNet(sel.net)}</b><span>Lãi / Lỗ</span></div>
-    <div><b>${fmtN(sel.current_bet)}</b><span>Cược hiện tại</span></div>
-    <div><b>${sel.wins}</b><span>Ván thắng</span></div>
-    <div><b>${sel.losses}</b><span>Ván thua</span></div>
-    <div><b>${fmtN(sel.total_bet)}</b><span>Tổng đã cược</span></div>
-  </div>
-  <div class="ac-cfg"><b>Cấu hình:</b> Cược gốc ${fmtN(sel.cfg.bet)} · Thua → ${sel.cfg.loss_mode==='x2'?'nhân đôi':sel.cfg.loss_mode==='reset'?'về gốc':'giữ nguyên'} · Thắng → ${sel.cfg.win_mode==='x2'?'nhân đôi':sel.cfg.win_mode==='reset'?'về gốc':'giữ nguyên'}${sel.cfg.wd_on?' · Tự rút '+esc(sel.cfg.wd_kind||''):''}${sel.cfg.target_on?' · Mục tiêu '+fmtN(sel.cfg.target):''}</div>
-  ${sel.logs&&sel.logs.length?`<b class="s">Log gần nhất:</b><ul class="ac-log">${sel.logs.slice().reverse().map(lg=>`<li class="${esc(lg.level||'info')}">[${esc(lg.t||'')}] ${esc(lg.msg||'')}</li>`).join('')}</ul>`:''}
-  </div>`:''}`;
-  document.getElementById('acrf').onclick=()=>{AC_SEL='';loadAc()};
-  document.querySelectorAll('[data-acid]').forEach(b=>b.onclick=()=>{AC_SEL=b.dataset.acid;loadAc()});
+  const all=AC_DATA.sessions||[],run=all.filter(s=>s.alive).length,rows=acRows();
+  const tb=all.reduce((n,s)=>n+s.balance,0),tn=all.reduce((n,s)=>n+s.net,0);
+  const chip=(f,t)=>`<button type="button" data-acf="${f}" class="${AC_F===f?'on':''}">${t}</button>`;
+  el.innerHTML=`<div class="hd"><h2>Trạng thái cược <span class="mu s">${all.length} tài khoản · ${run} đang cược</span></h2><div class="act"><button class="gh" id="acrf">${I.rf} Làm mới</button></div></div>
+  ${all.length?`<div class="stats"><div><b>${all.length}</b><span>Tổng tài khoản</span></div><div><b>${run}</b><span>Đang cược</span></div><div><b>${fmtN(tb)}</b><span>Tổng số dư</span></div><div><b class="${tn>=0?'okc':'noc'}">${fmtNet(tn)}</b><span>Tổng lãi / lỗ</span></div></div>
+  <div class="chips" style="margin:2px 0 10px">${chip('all','Tất cả ('+all.length+')')}${chip('run','Đang cược ('+run+')')}${chip('stop','Đã dừng ('+(all.length-run)+')')}</div>`:''}
+  ${rows.length?`<div class="ac-wrap"><table class="ac-tb"><thead><tr><th>Tài khoản</th><th>Key</th><th>Trạng thái</th><th class="r">Số dư</th><th class="r">Lãi / Lỗ</th><th class="r">Thắng / Thua</th><th class="r">Cược hiện tại</th></tr></thead><tbody>${rows.map(s=>`<tr data-acid="${esc(s.id)}" class="${s.id===AC_SEL?'sel':''}" tabindex="0">
+    <td><div class="nm"><span class="st ${esc(s.status)}"></span>${esc(s.nick||s.username)}</div><div class="mu s">@${esc(s.username)}</div></td>
+    <td class="mu s">${esc(acKey(s.owner))}</td>
+    <td><span class="ac-bd ${esc(s.status)}">${esc(ST_LABEL[s.status]||s.status)}</span></td>
+    <td class="r"><b>${fmtN(s.balance)}</b></td>
+    <td class="r ${s.net>=0?'okc':'noc'}"><b>${fmtNet(s.net)}</b></td>
+    <td class="r">${s.wins} / ${s.losses}</td>
+    <td class="r">${s.alive?fmtN(s.current_bet):'—'}</td></tr>`).join('')}</tbody></table></div><div class="mu s" style="margin-top:8px">Bấm vào một dòng để xem hồ sơ: chiến thuật, số dư, tổng lãi / lỗ…</div>`
+  :`<div class="s mu" style="padding:20px 0 10px;text-align:center">${all.length?'Không có tài khoản nào ở mục này':'Chưa có tài khoản nào dùng auto cược'}${!AC_DATA.bat?' (auto cược đang TẮT)':''}</div>`}`;
+  $('#acrf').onclick=async()=>{await loadAc();toast('Đã làm mới')};
+  el.querySelectorAll('[data-acf]').forEach(b=>b.onclick=()=>{AC_F=b.dataset.acf;renderAc()});
+  el.querySelectorAll('tr[data-acid]').forEach(r=>{const go=()=>{AC_SEL=r.dataset.acid;renderAc();openAcd()};r.onclick=go;r.onkeydown=e=>{if(e.key==='Enter')go()}});
 }
-async function loadAc(){
-  if(!isMain())return;
-  const j=await api('/api/admin/cuocstatus'+(AC_SEL?'?id='+encodeURIComponent(AC_SEL):''));
-  if(!S)return;
-  if(j.ok){AC_DATA=j;renderAc()}
+function openAcd(){const dl=$('#acd');renderAcd();if(!dl.open)dl.showModal()}
+function renderAcd(){
+  const dl=$('#acd'),s=((AC_DATA&&AC_DATA.sessions)||[]).find(x=>x.id===AC_SEL);
+  if(!s){if(dl.open)dl.close();return}
+  const old=dl.querySelector('.acd-in'),sc=old?old.scrollTop:0;
+  const stat=(v,l,c)=>`<div><b class="${c||''}">${v}</b><span>${l}</span></div>`;
+  dl.innerHTML=`<div class="acd-in">
+  <div class="acd-hd"><div style="min-width:0"><h3>${esc(s.nick||s.username)}</h3><div class="mu s">@${esc(s.username)} · Key ${esc(s.owner||'—')}</div></div><span class="ac-bd ${esc(s.status)}">${esc(ST_LABEL[s.status]||s.status)}</span><button type="button" class="gh" id="acx" aria-label="Đóng">✕</button></div>
+  <div class="ac-stat">
+    ${stat(fmtN(s.balance),'Số dư hiện tại')}
+    ${stat(fmtNet(s.net),'Tổng lãi / lỗ',s.net>=0?'okc':'noc')}
+    ${stat(fmtN(s.start_bal),'Vốn ban đầu')}
+    ${stat(fmtN(s.withdrawn),'Đã rút'+(s.wd_count?' ('+s.wd_count+' lệnh)':''))}
+    ${stat(fmtN(s.rounds),'Số ván đã cược')}
+    ${stat(s.wins,'Ván thắng','okc')}
+    ${stat(s.losses,'Ván thua','noc')}
+    ${stat(s.wr==null?'—':s.wr+'%','Tỉ lệ thắng')}
+    ${stat(fmtN(s.total_bet),'Tổng đã cược')}
+    ${stat(s.alive?fmtN(s.current_bet):'—','Cược hiện tại')}
+    ${stat(s.win_streak+' / '+s.loss_streak,'Chuỗi thắng / thua')}
+  </div>
+  <h4>Chiến thuật đã chọn</h4>
+  <div class="ac-ten">${esc(s.ten)}</div>
+  <ul class="ac-st">${(s.chien_thuat||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+  <div class="mu s" style="margin:6px 0 2px">Bắt đầu lúc ${esc(fmtT(s.t0))}${s.has_pw?'':' · không lưu mật khẩu (sau khi server khởi động lại cần đăng nhập lại)'}</div>
+  ${s.recent&&s.recent.length?`<h4>Ván gần nhất</h4><ul class="ac-log">${s.recent.map(p=>`<li class="${p.win===true?'win':p.win===false?'loss':'info'}">#${esc(p.phien)} · cược ${esc(acSide(p.side))} ${fmtN(p.amount)} → ${esc(acSide(p.res))} · ${p.win===true?'THẮNG':p.win===false?'THUA':'?'} ${fmtNet(p.pnl)}</li>`).join('')}</ul>`:''}
+  ${s.logs&&s.logs.length?`<h4>Log gần nhất</h4><ul class="ac-log">${s.logs.slice(0,15).map(lg=>`<li class="${esc(lg.kind||'info')}"><span class="mu">${esc(fmtH(lg.t))}</span> ${esc(lg.msg||'')}</li>`).join('')}</ul>`:''}
+  <div class="acd-ft">${s.alive?'<button type="button" class="ac-del" id="acstop">Dừng auto cược</button>':''}<button type="button" class="ac-del" id="acdel">Xóa tài khoản này</button></div>
+  </div>`;
+  const nw=dl.querySelector('.acd-in');if(nw)nw.scrollTop=sc;
+  $('#acx').onclick=()=>dl.close();
+  const nm=s.nick||s.username;
+  const st=$('#acstop');if(st)st.onclick=async()=>{
+    if(!await ask('Dừng auto cược của '+nm+'? Các ván đã đặt vẫn được tính kết quả.','Dừng'))return;
+    const j=await api('/api/admin/cuocstatus/action',{id:s.id,act:'stop'});
+    if(j.ok){await loadAc();toast('Đã dừng auto cược')}else toast(j.loi||'Lỗi',1)};
+  $('#acdel').onclick=async()=>{
+    if(!await ask('Xóa tài khoản '+nm+' khỏi danh sách? Đang chạy sẽ bị dừng trước; lịch sử lãi / lỗ của tài khoản này mất.','Xóa'))return;
+    const j=await api('/api/admin/cuocstatus/action',{id:s.id,act:'remove'});
+    if(j.ok){dl.close();AC_SEL='';await loadAc();toast('Đã xóa tài khoản')}else toast(j.loi||'Lỗi',1)};
 }
 async function loadRv(){
   if(!isMain())return;
@@ -4844,7 +4902,9 @@ document.addEventListener('toggle',e=>{const t=e.target;if(t.classList&&t.classL
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['k','un'].includes(e.target.id))login()});
 setInterval(()=>{if(S&&$('#tbl'))loadKeys()},60000);
 setInterval(()=>{if(S&&isMain()&&$('#pv'))loadPanel()},5000);   /* yêu cầu duyệt mới hiện nhanh (5s) */
-setInterval(()=>{if(S&&isMain()&&$('#os'))loadOs()},8000);       /* off server: đồng bộ nếu đổi từ tab / thiết bị admin khác */
+setInterval(()=>{if(S&&isMain()&&$('#os'))loadOs()},8000);
+setInterval(()=>{if(S&&isMain()&&$('#ac'))loadAc()},5000);       /* trạng thái cược: số dư / lãi lỗ cập nhật 5s */
+document.addEventListener('click',e=>{const d=$('#acd');if(d&&d.open&&e.target===d)d.close()});   /* bấm ra ngoài hồ sơ -> đóng */       /* off server: đồng bộ nếu đổi từ tab / thiết bị admin khác */
 if(S)loadKeys();else renderLogin();
 </script></body></html>
 """
@@ -5776,6 +5836,7 @@ class AbLedger:
         self.rounds = 0
         self.w = self.l = 0
         self.withdrawn = 0
+        self.staked = 0         # tổng tiền đã đặt cược (cộng dồn, không bị cắt như series)
         self.series = []        # mỗi ván đã chấm: {r, t, phien, side, res, amount, pnl, win, net, bal}
         self.t0 = time.time()
 
@@ -5784,6 +5845,7 @@ class AbLedger:
 
     def bet(self, side, amount, phien):
         self.balance -= amount
+        self.staked += amount
         self.rounds += 1
         return {"r": self.rounds, "phien": phien, "side": side, "amount": amount, "res": None, "pnl": -amount, "win": None}
 
@@ -5809,7 +5871,7 @@ class AbLedger:
 
     def to_dict(self):
         return {"balance": self.balance, "start_bal": self.start_bal, "nick": self.nick, "rounds": self.rounds,
-                "w": self.w, "l": self.l, "withdrawn": self.withdrawn, "series": self.series, "t0": self.t0}
+                "w": self.w, "l": self.l, "withdrawn": self.withdrawn, "staked": self.staked, "series": self.series, "t0": self.t0}
 
     @classmethod
     def from_dict(cls, d):
@@ -5818,6 +5880,7 @@ class AbLedger:
         o.rounds, o.w, o.l = int(d.get("rounds") or 0), int(d.get("w") or 0), int(d.get("l") or 0)
         o.withdrawn = int(d.get("withdrawn") or 0)
         o.series = [x for x in (d.get("series") or []) if isinstance(x, dict)][-AB_SERIES_KEEP:]
+        o.staked = int(d.get("staked") or sum(int(x.get("amount") or 0) for x in o.series))
         o.t0 = d.get("t0") or time.time()
         return o
 
@@ -6027,6 +6090,20 @@ class AbSession:
             self.log("warn" if reason in ("nofund", "error", "wd_stop", "expired") else "info", msg)
         ab_save(force=True)
 
+    def _zero_guard(self):
+        """Số dư về 0 -> DỪNG HẲN auto cược (kể cả đang pause / tạm dừng). Chỉ kết luận khi KHÔNG còn ván cược THẬT đang chờ kết quả
+        (tiền cược vừa bị trừ khỏi số dư nên all-in sẽ tạm về 0 — phải chờ kết quả: thắng thì số dư có lại)."""
+        if not self.alive:
+            return False
+        o = self.open
+        if o and o.get("entry") is not None:
+            return False
+        if self.ledger.balance > 0:
+            return False
+        self.hold = False
+        self.stop("nofund", "Số dư về 0 — đã dừng hẳn auto cược")
+        return True
+
     def _run(self):
         nxt = 0.0
         while self.alive:
@@ -6054,6 +6131,8 @@ class AbSession:
         return tb, latest, (dict(pend) if pend else None)
 
     def _tick(self):
+        if self._zero_guard():                                             # số dư về 0 -> dừng hẳn (chạy mỗi nhịp, trước mọi việc khác)
+            return
         if self.password and time.time() >= self._jwt_chk:                 # JWT sống 8 giờ -> tự đăng nhập lại khi còn < 15 phút (không đợi bị 401)
             self._jwt_chk = time.time() + 60
             ex = _ab_jwt_exp(self.jwt)
@@ -6073,6 +6152,7 @@ class AbSession:
                 if o.get("entry"):
                     o["entry"]["res"], o["entry"]["win"], o["entry"]["pnl"] = "?", None, 0
                     self.ledger.rounds -= 1
+                    self.ledger.staked -= int(o["entry"].get("amount") or 0)
                     self.log("warn", f"Phiên #{o['phien']} không có kết quả từ nguồn — đã bỏ qua ván, đồng bộ lại số dư")
                     self._sync_balance(o["phien"])
             return
@@ -6220,6 +6300,8 @@ class AbSession:
         ab_save()
         if check_target and self.alive and self.hit_target():              # quét số dư thật đạt ngưỡng lãi -> dừng hết + rút luôn
             self._finish_target()
+        if self.alive:
+            self._zero_guard()                                             # số dư thật về 0 -> dừng hẳn
 
     def _finish_target(self):
         """Đạt mục tiêu lãi: DỪNG TOÀN BỘ CƯỢC trước, rồi (nếu đã chọn) rút hết số dư về tài khoản đã chọn. Chỉ chạy 1 lần."""
@@ -6512,7 +6594,9 @@ def tool_autocuoc_login():
         return _json({"ok": False, "loi": "Tài khoản này đang chạy auto cược — chọn nó ở danh sách bên trái."}, 409)
     jwt, bal, nick, err = ab_login(u, p)
     if not jwt:
-        return _json({"ok": False, "loi": err}, 401)
+        if "Không kết nối" in str(err):                      # LC79 không phản hồi (KHÔNG phải sai mật khẩu)
+            return _json({"ok": False, "sai_tk": False, "loi": err}, 502)
+        return _json({"ok": False, "sai_tk": True, "loi": "Sai tài khoản hoặc mật khẩu"}, 400)   # KHÔNG dùng 401: 401 = key hỏng -> giao diện bị đá về màn nhập key
     with _ab_lock:
         if cur is None:
             cur = AbSession(u, p, jwt, bal, nick)
@@ -6547,7 +6631,7 @@ def tool_autocuoc_start():
         if real is None:
             real = s._login_money
     if real is None:
-        return _json({"ok": False, "loi": "Không lấy được số dư / phiên đăng nhập hết hạn — đăng nhập lại"}, 401)
+        return _json({"ok": False, "sai_tk": True, "loi": "Không lấy được số dư / phiên đăng nhập hết hạn — đăng nhập lại"}, 409)
     if b.get("reset") or not s.ledger.rounds:                # bắt đầu MỚI: vốn = số dư thật hiện tại, biểu đồ về 0
         s.ledger = AbLedger(real, s.nick)
         s.wd_count, s.logs, s.open, s.last_phien = 0, [], None, 0
@@ -6627,34 +6711,123 @@ def tool_autocuoc_wallets():
 
 
 
+def _ab_mask(s, keep=4):
+    s = str(s or "")
+    return ("•" * max(0, len(s) - keep) + s[-keep:]) if s else ""
+
+
+def ab_strategy(cfg):
+    """Mô tả CHIẾN THUẬT cược từ cấu hình -> {"ten": tên ngắn, "dong": [các dòng mô tả]} (hiện ở hồ sơ tài khoản trên trang admin)."""
+    c = cfg or {}
+    gi = lambda k, d=0: int(c.get(k) or d)
+    lm, wm = c.get("loss_mode", "keep"), c.get("win_mode", "keep")
+    act = {"keep": "giữ nguyên mức cược", "reset": "về cược gốc", "x2": "nhân đôi cược"}
+    dong = [f"Cược gốc {gi('bet'):,} / ván — theo dự đoán bàn Tele68 MD5"]
+    dong.append("Khi THUA → " + act.get(lm, str(lm)) + (" (gấp thếp / Martingale)" if lm == "x2" else ""))
+    if wm == "x2":
+        dong.append(f"Khi THẮNG → nhân đôi sau {gi('win_x2_streak', 1)} ván thắng liên tiếp" + (" · giữ x2 tới khi thua" if c.get("win_x2_keep") else " · thắng 1 ván x2 xong về cược gốc"))
+    else:
+        dong.append("Khi THẮNG → " + act.get(wm, str(wm)))
+    if c.get("loss_x2_on"):
+        dong.append(f"Thua {gi('loss_x2_streak', 3)} ván liên tiếp → nhân đôi một lần (thắng lại về gốc)")
+    if c.get("reduce_on"):
+        dong.append(f"Thua {gi('reduce_streak', 3)} ván liên tiếp → giảm cược xuống {gi('reduce_bet'):,}")
+    if c.get("pause_on"):
+        dong.append(f"Thua {gi('pause_streak', 5)} ván liên tiếp → pause (theo dõi ảo), thắng {gi('resume_wins')} ván liên tiếp thì cược lại")
+    if c.get("target_on") and gi("target") > 0:
+        tail = (" → dừng + tự rút về " + ("Momo" if c.get("wd_kind") == "momo" else "Ngân hàng")) if (c.get("target_wd") or c.get("wd_on")) else " → dừng cược"
+        dong.append(f"Mục tiêu lãi {gi('target'):,}" + tail)
+    dong.append("Số dư về 0 → tự dừng hẳn auto cược")
+    if lm == "x2":
+        ten = "Gấp thếp (x2 khi thua)"
+    elif wm == "x2":
+        ten = "Tăng cược khi thắng"
+    elif c.get("loss_x2_on"):
+        ten = "x2 một lần sau chuỗi thua"
+    elif lm == "reset" or wm == "reset":
+        ten = "Cược gốc, reset theo kết quả"
+    else:
+        ten = "Cược phẳng"
+    ex = [t for t, on in (("giảm cược", c.get("reduce_on")), ("pause", c.get("pause_on")), ("mục tiêu lãi", c.get("target_on") and gi("target") > 0)) if on]
+    if ex:
+        ten += " + " + " · ".join(ex)
+    return {"ten": ten, "dong": dong}
+
+
+def _ab_admin_view(s):
+    """Hồ sơ 1 tài khoản auto cược cho trang admin (KHÔNG có mật khẩu / JWT; số tài khoản rút bị che)."""
+    L = s.ledger
+    c = dict(s.cfg)
+    c["wd_number"] = _ab_mask(c.get("wd_number"))
+    c.pop("wd_name", None)
+    tong = L.w + L.l
+    st = ab_strategy(s.cfg)
+    return {
+        "id": s.sid, "username": s.username, "nick": s.nick or s.username, "owner": s.owner or "",
+        "status": s.status(), "alive": s.alive, "hold": s.hold, "paused": s.paused,
+        "balance": L.balance, "start_bal": L.start_bal, "net": L.net(), "withdrawn": L.withdrawn, "wd_count": s.wd_count,
+        "rounds": L.rounds, "wins": L.w, "losses": L.l, "wr": round(L.w / tong * 100, 1) if tong else None,
+        "total_bet": int(getattr(L, "staked", 0) or 0), "current_bet": s.current_bet,
+        "win_streak": s.win_streak, "loss_streak": s.loss_streak, "t0": int(L.t0 or 0), "has_pw": bool(s.password),
+        "ten": st["ten"], "chien_thuat": st["dong"], "cfg": c,
+        "recent": [{k: p.get(k) for k in ("phien", "side", "res", "amount", "pnl", "win", "t", "bal")} for p in list(L.series[-12:])[::-1]],
+        "logs": list(s.logs[-20:])[::-1],
+    }
+
+
+def _need_main_cuoc():
+    s, err = _need_admin()
+    if err:
+        return None, err
+    if s["r"] != "main":
+        return None, _json({"ok": False, "loi": "chi admin chinh moi xem duoc trang thai cuoc"}, 403)
+    return s, None
+
+
 @app.route("/api/admin/cuocstatus")
 def api_admin_cuocstatus():
-    """Trạng thái auto cược cho panel admin: danh sách session đang chạy + chi tiết."""
-    s, err = _need_admin()
+    """Trạng thái auto cược cho trang admin (CHỈ admin chính): TOÀN BỘ tài khoản đang / đã dùng auto cược + hồ sơ từng tài khoản (chiến thuật, số dư, tổng lãi/lỗ...)."""
+    s, err = _need_main_cuoc()
     if err:
         return err
     with _ab_lock:
         sess = list(_ab_sessions.values())
-    sid = request.args.get("id", "")
-    result = []
+    out = []
     for ss in sess:
-        entry = {
-            "id": ss.sid,
-            "username": ss.username,
-            "nick": ss.nick or ss.username,
-            "status": ss.status,
-            "balance": ss.balance,
-            "net": ss.net,
-            "total_bet": ss.total_bet,
-            "wins": ss.wins,
-            "losses": ss.losses,
-            "alive": ss.alive,
-            "current_bet": ss.current_bet,
-            "cfg": dict(ss.cfg),
-            "logs": list(ss.logs[-10:]) if sid == ss.sid else [],
-        }
-        result.append(entry)
-    return _json({"ok": True, "sessions": result, "bat": AB_ENABLED, "so_phien": len(sess)})
+        try:
+            out.append(_ab_admin_view(ss))
+        except Exception:  # noqa: BLE001 - 1 phiên lỗi không làm hỏng cả bảng
+            continue
+    out.sort(key=lambda x: (not x["alive"], -x["balance"]))
+    return _json({"ok": True, "sessions": out, "bat": AB_ENABLED, "so_phien": len(out), "dang_chay": sum(1 for x in out if x["alive"])})
+
+
+@app.route("/api/admin/cuocstatus/action", methods=["POST"])
+def api_admin_cuocstatus_action():
+    """Admin chính: dừng auto cược của 1 tài khoản ({"id","act":"stop"}) hoặc xoá hẳn tài khoản khỏi danh sách ({"id","act":"remove"} — đang chạy thì dừng trước)."""
+    s, err = _need_main_cuoc()
+    if err:
+        return err
+    b = request.get_json(silent=True) or {}
+    sid = str(b.get("id") or "")
+    with _ab_lock:
+        ss = _ab_sessions.get(sid)
+    if ss is None:
+        return _json({"ok": False, "loi": "Không thấy tài khoản"}, 404)
+    act = b.get("act")
+    if act == "stop":
+        if ss.alive:
+            ss.stop("stopped", "Admin đã dừng auto cược")
+    elif act == "remove":
+        if ss.alive:
+            ss.stop("stopped", "Admin đã xoá tài khoản")
+        with _ab_lock:
+            _ab_sessions.pop(sid, None)
+    else:
+        return _json({"ok": False, "loi": "Lệnh không hợp lệ"}, 400)
+    ab_save(force=True)
+    return _json({"ok": True})
+
 
 def ab_health():
     with _ab_lock:
@@ -6848,6 +7021,11 @@ label.ck input{accent-color:var(--up);width:16px;height:16px}
 .fld span{display:block;color:var(--mut);font-size:12.5px;margin-bottom:5px}
 .fld input{width:100%;background:var(--bg);border:1px solid var(--line2);border-radius:10px;padding:11px 13px}
 .fld input:focus{border-color:var(--sky);outline:0}
+.pwb{position:relative}
+.pwb input{padding-right:46px}
+.pwb .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;background:none;color:var(--mut);display:grid;place-items:center;border-radius:8px}
+.pwb .eye:hover{color:var(--tx)}
+.pwb .eye svg{width:20px;height:20px}
 .login .btn{width:100%;padding:12px}
 .login .msg{margin-top:12px;font-size:13px;min-height:18px}
 .note{margin-top:14px;font-size:12px;color:var(--dim)}
@@ -6905,7 +7083,7 @@ async function api(p,body){
   const o={headers:Object.assign({'Content-Type':'application/json','X-User-Key':ABKEY},HWID_HDR)};
   if(body!==undefined){o.method='POST';o.body=JSON.stringify(body)}
   const r=await fetch(BASE+p,o);let j={};try{j=await r.json()}catch(e){}
-  if(r.status===401||(r.status===403&&(j.sai_game||j.can_key))){ABK_BAD(j.loi);return j}   /* key hết hạn / bị xoá / sai game -> về màn nhập key */
+  if((r.status===401&&!j.sai_tk)||(r.status===403&&(j.sai_game||j.can_key))){ABK_BAD(j.loi);return j}   /* key hết hạn / bị xoá / sai game -> về màn nhập key */
   if(!r.ok&&!j.loi)j.loi='Lỗi '+r.status; j._st=r.status; return j;
 }
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toast._t);toast._t=setTimeout(()=>t.style.display='none',3200)}
@@ -6940,23 +7118,26 @@ function render(){
 async function poll_now(){const j=await api('state?id='+SEL);if(j.ok){S=j;render()}}
 
 /* ── đăng nhập ── */
+const EYE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.5 10.5 0 0 1 12 19c-6.4 0-10-7-10-7a18.6 18.6 0 0 1 4.06-5.06M9.9 4.24A9.9 9.9 0 0 1 12 5c6.4 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
 function renderLogin(){
   const m=$('#main'); const key='login'+(LOGIN?LOGIN.id:'');
   if(FORMKEY===key)return; FORMKEY=key;
   if(!LOGIN){
     m.innerHTML=`<section class="login"><h2>Thêm tài khoản LC79</h2><p class="lead">Đăng nhập để tool lấy số dư thật và đặt cược theo dự đoán của bàn Tele68 MD5.</p>
       <label class="fld"><span>Tên đăng nhập</span><input id="lu" value="${esc(PREFILL)}" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
-      <label class="fld"><span>Mật khẩu</span><input id="lp" type="password" autocomplete="current-password"></label>
+      <div class="fld"><span>Mật khẩu</span><div class="pwb"><input id="lp" type="password" autocomplete="current-password"><button type="button" class="eye" id="lpe" aria-label="Hiện mật khẩu" title="Hiện / ẩn mật khẩu">${EYE}</button></div></div>
       <button class="btn go" id="lgo">Đăng nhập</button><div class="msg dn" id="lmsg"></div>
       </section>`;
     const go=async()=>{
       const u=$('#lu').value.trim(),p=$('#lp').value; if(!u||!p){$('#lmsg').textContent='Nhập đủ tên đăng nhập và mật khẩu';return}
       $('#lgo').disabled=true;$('#lgo').textContent='Đang đăng nhập…';$('#lmsg').textContent='';
       const j=await api('login',{username:u,password:p});
-      if(!j.ok){$('#lgo').disabled=false;$('#lgo').textContent='Đăng nhập';$('#lmsg').textContent=j.loi||'Đăng nhập thất bại';return}
+      if(!j.ok){$('#lgo').disabled=false;$('#lgo').textContent='Đăng nhập';$('#lmsg').textContent=j.loi||'Đăng nhập thất bại';const pe=$('#lp');if(pe){pe.focus();pe.select()}return}
       lsAddAcc(u); LOGIN=j;SEL=j.id;FORMKEY='';F=null;render();
     };
     $('#lgo').onclick=go; $('#lp').onkeydown=e=>{if(e.key==='Enter')go()};
+    $('#lpe').onclick=()=>{const i=$('#lp'),sh=i.type==='password';i.type=sh?'text':'password';$('#lpe').innerHTML=sh?EYE_OFF:EYE;$('#lpe').setAttribute('aria-label',sh?'Ẩn mật khẩu':'Hiện mật khẩu');i.focus()};
     setTimeout(()=>{const e=PREFILL?$('#lp'):$('#lu');e&&e.focus()},50);
     return;
   }

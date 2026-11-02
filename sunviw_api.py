@@ -217,9 +217,9 @@ AF_FLIP_HIGH_DEFAULT = 63
 #                          lệnh --af-band / --af-no-band · --af-low-min X · --af-low-max X · --af-high-min X · --af-high-max X
 AF_FLIP_BAND_DEFAULT = True
 AF_FLIP_LOW_MIN_DEFAULT = 20
-AF_FLIP_LOW_MAX_DEFAULT = 40
-AF_FLIP_HIGH_MIN_DEFAULT = 57
-AF_FLIP_HIGH_MAX_DEFAULT = 83
+AF_FLIP_LOW_MAX_DEFAULT = 45
+AF_FLIP_HIGH_MIN_DEFAULT = 60
+AF_FLIP_HIGH_MAX_DEFAULT = 75
 # ── CHỈ LOGIC BỊ BẺ MỚI VÀO NHÓM CAO / THẤP (Bước 2) — AF_GROUP_FLIPPED_ONLY + AF_GROUP_NEED_MAJORITY ─────────────
 #   AF_GROUP_FLIPPED_ONLY_DEFAULT  BẬT (mặc định): CHỈ logic ĐÃ BỊ BẺ (WR nằm TRONG vùng bẻ ở khối trên) mới được xếp vào nhóm CAO / THẤP
 #       (theo WR dùng sau bẻ). Logic KHÔNG bẻ (WR ngoài vùng bẻ) KHÔNG thuộc nhóm nào — mặc định ở chế độ ALL (panel hiện nhãn ALL).
@@ -592,7 +592,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,   # CAO / THẤP tách riêng (đang bật cả 2 = giống _CT cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 300, "PERSIST_KEEP": 100,
 }))
@@ -611,7 +611,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 45, "AF_FLIP_HIGH_MIN": 60, "AF_FLIP_HIGH_MAX": 70,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 45, "AF_FLIP_HIGH_MIN": 60, "AF_FLIP_HIGH_MAX": 83,
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
@@ -619,7 +619,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": False,   # CAO / THẤP tách riêng (đang tắt cả 2 = giống cũ)
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 300, "PERSIST_KEEP": 100,
 }))
@@ -663,7 +663,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 9, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": False,
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))

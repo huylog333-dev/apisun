@@ -73,7 +73,7 @@ JSON /api/predict:
         CDT    tỉ lệ Tài có điều kiện theo (tổng tăng/giảm so với ván trước nữa, nhóm tổng ván trước) · cửa sổ 250
         NBMIX  Naive Bayes (3 kết quả gần nhất, nhóm tổng, xúc xắc max/min, số mặt khác nhau) · cửa sổ 250
         REGIME nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm (<=35% · 35-50% · 50-65% · >65%); học online P(ván sau ĐẢO | nhóm) trong 250 ván, co về 50% (m=8) -> đảo hoặc bệt theo dữ liệu
-        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=200) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
+        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=500) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
         SGDLR  hồi quy logistic online (12 kết quả gần nhất + 2 tổng gần nhất + độ dài đợt, L2, 2 epoch trên 300 ván gần nhất, huấn luyện lại mỗi ván) · khác họ mô hình: tuyến tính gộp nhiều tín hiệu yếu thay vì đếm theo ngữ cảnh
         CTW    Context Tree Weighting: trộn Bayes MỌI cây ngữ cảnh độ sâu <= 8 trên chuỗi Tài/Xỉu (ước lượng KT, tự co về 50% khi thiếu mẫu, trọng số do bằng chứng quyết định chứ không đặt tay) · cửa sổ 300 · QUA CỔNG tự chấm (xem ⚑)
         ARSUM  tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker / Levinson–Durbin, chọn p theo BIC) + tiền kiểm Ljung–Box 8 độ trễ; P(Tài) = P(tổng dự đoán + nhiễu > 10.5) · QUA CỔNG
@@ -378,7 +378,7 @@ BOOT_INFO = _boot_mark()
 
 
 HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sun15_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
-HIST_KEEP = int(os.environ.get("SUNVIW_HIST_KEEP", "200") or 200)   # CỬA SỔ TRƯỢT 200 VÁN: chỉ giữ 200 phiên GẦN NHẤT (RAM + file) — có phiên thứ 201 thì phiên cũ nhất (phiên 1) bị bỏ. Mọi logic chỉ học trên tối đa 200 ván này (logic có cửa sổ 250 / 300 / 1500 tự co về 200). Đổi: env SUNVIW_HIST_KEEP
+HIST_KEEP = int(os.environ.get("SUNVIW_HIST_KEEP", "500") or 500)   # CỬA SỔ TRƯỢT 500 VÁN: chỉ giữ 500 phiên GẦN NHẤT (RAM + file) — có phiên thứ 501 thì phiên cũ nhất (phiên 1) bị bỏ. Mọi logic chỉ học trên tối đa 500 ván này (logic có cửa sổ 250 / 300 dùng đủ, LAGAC tối đa 1500 cũng dùng đủ). Đổi: env SUNVIW_HIST_KEEP
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 

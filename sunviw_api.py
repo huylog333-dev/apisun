@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SUNVIW - API JSON.  SUN: 15 LOGIC DỰ ĐOÁN (SEQ15) dựa trên CHUỖI TÀI/XỈU + XÚC XẮC + TỔNG gần nhất (KHÔNG dùng MD5) · HITCLUB: 2 bàn (TX thường + TX MD5) dùng cùng bộ 15 logic
+SUNVIW - API JSON.  SUN: 13 LOGIC DỰ ĐOÁN (SEQ13v4) dựa trên CHUỖI TÀI/XỈU + XÚC XẮC + TỔNG gần nhất (KHÔNG dùng MD5) · HITCLUB: 2 bàn (TX thường + TX MD5) dùng cùng bộ 13 logic
 
 Chạy:
     pip install flask
@@ -44,7 +44,7 @@ JSON /api/predict:
     {
       "ok": true,
       "phien": 12346,            # phiên được dự đoán (n)
-      "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của 15 logic SUN; nếu BẬT bẻ final thì = đảo ngược final)
+      "du_doan": "TÀI",          # TÀI | XỈU  (mặc định = final của 13 logic SUN; nếu BẬT bẻ final thì = đảo ngược final)
       "be_final": false,         # trạng thái bẻ final đang áp dụng (false = tắt, mặc định)
       "do_tin_cay": 58.4,        # % = trung bình WR CÓ TRỌNG SỐ của các logic đang dùng trong WR_WINDOW ván gần nhất (null nếu chưa chấm ván nào)
                                  #     trọng số: ván mới nhất = WR_WEIGHT_NEWEST (cao nhất), ván cũ giảm dần nhưng có sàn WR_FLOOR (xem "CONFIG WR CÓ TRỌNG SỐ")
@@ -65,31 +65,30 @@ JSON /api/predict:
       "trong_so_wr": {...}                                   # số ván xét + bảng trọng số (cũ nhất -> mới nhất) đang áp dụng
 
 
-🧠 15 LOGIC CỦA SUN (SEQ15 · thuần chuỗi Tài/Xỉu + xúc xắc + tổng + số phiên, KHÔNG dùng MD5):
-    Mỗi logic là một thuật toán tự học ONLINE trên lịch sử các phiên đã quét (không dùng MD5, không dùng số phiên). Mỗi ván tính lại từ lịch sử, KHÔNG nhìn trước kết quả:
-        MKT2   Markov bậc 2 (2 kết quả gần nhất) + nhóm tổng ván trước · cửa sổ 250 ván
-        PPM6   PPM: trộn có trọng số các bậc 1..6, tin cậy theo số mẫu · cửa sổ 250
-        CT2    tỉ lệ Tài có điều kiện theo (nhóm tổng ván trước, nhóm tổng ván trước nữa) · co về 50% (m=6) · cửa sổ 250
-        CDT    tỉ lệ Tài có điều kiện theo (tổng tăng/giảm so với ván trước nữa, nhóm tổng ván trước) · cửa sổ 250
-        NBMIX  Naive Bayes (3 kết quả gần nhất, nhóm tổng, xúc xắc max/min, số mặt khác nhau) · cửa sổ 250
-        REGIME nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm (<=35% · 35-50% · 50-65% · >65%); học online P(ván sau ĐẢO | nhóm) trong 250 ván, co về 50% (m=8) -> đảo hoặc bệt theo dữ liệu
-        LAGAC  tự tương quan độ trễ 1..16 của chuỗi Tài/Xỉu (cửa sổ = toàn bộ lịch sử đang giữ, tối đa 1500; hiện HIST_KEEP=500) + KIỂM ĐỊNH TỔNG THỂ kiểu Ljung–Box (Σz² > 26.3 = mức 95%): chỉ khi chuỗi "không ngẫu nhiên" mới bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì BỎ PHIẾU TRẮNG (xem ⚑) · bắt phụ thuộc xa (lag 7..16) mà PPM6 (bậc <= 6) không thấy
-        SGDLR  hồi quy logistic online (12 kết quả gần nhất + 2 tổng gần nhất + độ dài đợt, L2, 2 epoch trên 300 ván gần nhất, huấn luyện lại mỗi ván) · khác họ mô hình: tuyến tính gộp nhiều tín hiệu yếu thay vì đếm theo ngữ cảnh
-        CTW    Context Tree Weighting: trộn Bayes MỌI cây ngữ cảnh độ sâu <= 8 trên chuỗi Tài/Xỉu (ước lượng KT, tự co về 50% khi thiếu mẫu, trọng số do bằng chứng quyết định chứ không đặt tay) · cửa sổ 300 · QUA CỔNG tự chấm (xem ⚑)
-        ARSUM  tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker / Levinson–Durbin, chọn p theo BIC) + tiền kiểm Ljung–Box 8 độ trễ; P(Tài) = P(tổng dự đoán + nhiễu > 10.5) · QUA CỔNG
-        SELKEY 12 khoá ngữ cảnh (chuỗi Tài/Xỉu · tổng · xúc xắc) -> chọn khoá có LOO log-loss tốt hơn tỉ lệ chung nhất (kiểm định z bắt cặp, ngưỡng 2.64 = Bonferroni 5% cho 12 khoá); không khoá nào đạt -> BỎ PHIẾU TRẮNG · thay CMM
-        LSM    khớp hậu tố dài nhất: tìm chỗ trong lịch sử khớp >= 14 ván liền với chuỗi hiện tại (trùng do may ≈ 2%), bỏ phiếu theo kết quả ngay sau các chỗ khớp · bắt cầu lặp dài hơn bậc 6/8 của PPM6/CTW · không có khớp đủ dài -> BỎ PHIẾU TRẮNG
-        DECAYMIX trộn Bayes (fixed-share) 11 chuyên gia: thiên lệch Tài/Xỉu + bệt/đảo với 5 chu kỳ quên (6-12-25-50-100 ván) + chuyên gia 50/50 · QUA CỔNG tự chấm 100 ván (z >= 1.64) · thay EWMA + BOCPD
-        CONV3  phân phối RIÊNG từng viên xúc xắc -> tích chập ra P(tổng >= 11) · cổng χ²(15) >= 30.6 VÀ |P(Tài) - 0.5| >= 0.03 mới bỏ phiếu (xúc xắc lệch mà không tạo lợi thế Tài/Xỉu thì im)
-        BLREV  hồi quy logistic Bayes (Newton/IRLS, 250 ván): 8 kết quả gần nhất + 2 tổng + độ dài đợt · hệ số phạt ridge TỰ CHỌN theo bằng chứng (MacKay) -> ngẫu nhiên thì hệ số co về 0 · nâng cấp của SGDLR · LOGIC THƯỜNG (luôn bỏ phiếu)
-    ⚙ Bản SEQ15v2: BỎ EWMA · CMM · PERIOD · BOCPD · HMM2 (backtest mô phỏng: HMM2 / BOCPD kích hoạt ~0% ván, EWMA yếu nhất nhóm thường, CMM trùng họ CT2/CDT/MKT2, PERIOD báo nhầm ~8% ván trên chuỗi ngẫu nhiên) và THÊM SELKEY · LSM · DECAYMIX · CONV3 · BLREV -> vẫn 15 logic (SỐ LẺ). Nhóm logic THƯỜNG giờ có 8 (MKT2 · PPM6 · CT2 · CDT · NBMIX · REGIME · SGDLR · BLREV) nên có thể hoà 4-4: hoà -> phá bằng phiếu SUN_TIE_LOGIC (mặc định PPM6). Hoà ở nhóm CAO/THẤP của AF cũng phá bằng logic này (env SUNVIW_TIE_LOGIC).
-    ⚠ ĐỔI BỘ LOGIC -> SUN_SIG đổi thành SEQ15v2: các ván đã chấm của bộ cũ (file sun15_persist / hit15_*.json) bị bỏ khi load, WR / AF của mọi bàn bắt đầu lại từ các ván được chấm lại bằng bộ mới (rebuild từ lịch sử xúc xắc đang giữ).
-    ⚑ PHIẾU TRẮNG: LAGAC / CTW / ARSUM / SELKEY / LSM / DECAYMIX / CONV3 chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê. Lúc không kích hoạt, phiếu của chúng = ĐA SỐ của 8 logic thường (SUN_ABSTAIN) thay vì "theo ván trước" như các logic khác -> không biến thành 7 phiếu "copy ván trước".
-    ⚑ CỔNG TỰ CHẤM (CTW · ARSUM · DECAYMIX): mô hình tự dự đoán lại các ván gần nhất (CTW/ARSUM: SUN_GATE_N = 60 ván, z >= SUN_GATE_Z = 2.0 · env SUNVIW_GATE_Z · DECAYMIX: 100 ván, z >= 1.64) bằng dữ liệu TRƯỚC từng ván (không nhìn trước đáp án), so log-loss với đồng xu 50/50; chỉ được bỏ phiếu khi lợi thế đạt ngưỡng. Không đạt -> phiếu trắng. SELKEY / CONV3 dùng cổng thống kê riêng (xem mô tả từng logic).
-    ⚠ Backtest mô phỏng 13 kịch bản x 6 chuỗi x 200 dự đoán (ngẫu nhiên · bệt · đảo · đổi chế độ · lag 3 · lag 7 · chu kỳ theo phiên · tổng AR · đặc trưng xúc xắc · xúc xắc lệch · XOR lag 1-4 · mẫu lặp · đổi chế độ bệt/đảo): trên chuỗi NGẪU NHIÊN SELKEY / LSM / DECAYMIX / CONV3 kích hoạt ~0-1% ván, mọi logic ≈ 50% · khi dữ liệu có cấu trúc, 4 logic này kích hoạt ~4-6% ván với độ chính xác ~57-58% (cổng nghiêm nên ít kích hoạt) · BLREV ≈ cao nhất nhóm logic thường · không có lợi thế trên RNG công bằng.
-    ⚠ Đánh đổi khi bỏ PERIOD: mất khả năng bắt chu kỳ THEO SỐ PHIÊN (PERIOD mạnh nhất khi nguồn có chu kỳ cố định theo phiên). LSM chỉ phủ phần mẫu lặp theo CHUỖI (kích hoạt ~55% ván trên chuỗi lặp mẫu), không phủ chu kỳ theo số phiên.
-    Chưa đủ lịch sử cho một logic -> logic đó tạm theo kết quả ván trước. WR / AF / CAO-THẤP / bẻ final GIỮ NGUYÊN như bản trước (chỉ bỏ ZF).
-    ⚠ Backtest trên data thật (457 ván) + 40 chuỗi ngẫu nhiên đối chứng: KHÔNG tìm thấy logic nào có lợi thế đứng vững ngoài mẫu -> xem báo cáo backtest đi kèm.
+🧠 13 LOGIC CỦA SUN (SEQ13v4 · thuần chuỗi Tài/Xỉu + xúc xắc + tổng, KHÔNG dùng MD5):
+    Mỗi logic là một thuật toán tự học ONLINE trên lịch sử các phiên đã quét (không dùng MD5, không dùng số phiên). Mỗi ván tính lại từ lịch sử, KHÔNG nhìn trước kết quả.
+    ⚑ MỖI LOGIC CÓ CỬA SỔ DỮ LIỆU RIÊNG (LOGIC_WIN · env SUNVIW_WIN_<TÊN>): chỉ đọc đúng số ván GẦN NHẤT mà nó mạnh nhất, mọi ván trong cửa sổ trọng số NHƯ NHAU (không decay).
+    ⚑ CẢ 13 LOGIC LUÔN BỎ PHIẾU (không cổng thống kê, không phiếu trắng) — tham số nhạy (hệ số phạt · băng thông · bậc mô hình) do DỮ LIỆU chọn nên chuỗi ngẫu nhiên thì co về 50% chứ không bịa cấu trúc.
+        PPM6   (250 ván) PPM: trộn có trọng số các bậc 1..6, tin cậy theo số mẫu
+        REGIME (250) nhịp đảo cầu: tỉ lệ đảo cầu 20 ván gần nhất chia 4 nhóm; học online P(ván sau ĐẢO | nhóm), co về 50% -> đảo hoặc bệt theo dữ liệu
+        BLREV  (250) hồi quy logistic Bayes (IRLS): 8 kết quả gần nhất + 2 tổng + độ dài đợt · hệ số phạt ridge TỰ CHỌN theo bằng chứng (MacKay)
+        KNNH   (200) láng giềng gần nhất MỜ: so 6/10/14 ván cuối với mọi đoạn cùng độ dài (Hamming có trọng số), 15 đoạn gần nhất bỏ phiếu theo kết quả ngay sau
+        RUNCTX (200) hazard độ dài đợt có ngữ cảnh (độ dài đợt hiện tại + 2 đợt trước, back-off 4 tầng): >50% đợt kết thúc -> đảo, <50% -> bệt
+        DIEMK  (200) Markov mức TỪNG VIÊN xúc xắc (thấp/giữa/cao ván trước -> phân phối mặt ván sau) rồi nhân chập 3 viên ra P(tổng >= 11)
+        BAL    (200) "cân cầu": độ lệch Tài-Xỉu cửa sổ 8/16/32/64 ván -> hệ số hồi quy ridge học trên lịch sử (âm = hồi quy về trung bình, dương = đà)
+      ── 6 logic MỚI ở SEQ13v4 ──
+        CMIXL  (500) Context Mixing kiểu PAQ: 9 mô hình con (bậc 1·2·3·4·6·8 · RUNCTX · nhóm tổng · MATCH khớp 12 ván cuối) trộn bằng hồi quy logistic ridge, hệ số co về trung bình đều, α theo bằng chứng
+        SPARSE (500) 257 mô hình TRỄ THƯA (1 trễ ∈ 1..16 · 2 trễ ∈ 1..16 · 3 trễ ∈ 1..10), đếm bằng bitset + popcount, bằng chứng leave-one-out, trung bình Bayes theo exp(bằng chứng) — bắt cầu cách quãng / XOR lag mà PPM không thấy
+        HMM3   (400) Markov ẩn 3 trạng thái (Baum–Welch MAP, 2 khởi tạo cố định: 'dính' + 'chu trình'): lọc forward ra chế độ hiện tại -> P(Tài) ván sau
+        TOTK   (400) hồi quy hạt nhân Nadaraya–Watson trên TỔNG xúc xắc (tổng ván trước · cặp 2 tổng · tổng 3 ván) x 4 băng thông chọn bằng LOO + trung bình Bayes — dùng độ lớn tổng mà nhị phân Tài/Xỉu bỏ đi
+        SPEC   (400) ngoại suy phổ Fourier: 3 đỉnh phổ mạnh nhất (chu kỳ 2..W/3, tinh chỉnh tần số + pha) ngoại suy tới ván kế -> bắt chu kỳ cố định kể cả khi có nhiễu chen
+        CPSEG  (300) phát hiện điểm đổi chế độ (phân đoạn nhị phân, LR Bernoulli > 3·ln N, trên chuỗi Tài/Xỉu + chuỗi đảo cầu) rồi Markov bậc 2 trên đoạn hiện tại với co phân cấp (đoạn -> cửa sổ -> bậc 1 -> tỉ lệ chung)
+    ⚙ Bản SEQ13v4: BỎ CTW · SELKEY · LSM · DECAYMIX · CONV3 (5 logic KÉN qua cổng — kích hoạt ~0-6% ván nên phần lớn thời gian chỉ lặp lại đa số) · TVBIAS · RLSFF (trùng họ BAL / BLREV), và THÊM CMIXL · SPARSE · HMM3 · TOTK · SPEC · CPSEG -> 13 logic, TẤT CẢ luôn bỏ phiếu.
+      13 là số LẺ nên đa số tất cả logic không hoà; nhóm CAO/THẤP của AF có thể chẵn và hoà -> phá hoà bằng phiếu SUN_TIE_LOGIC (mặc định PPM6) như cũ. WR không còn decay: WR_WEIGHT_NEWEST = WR_FLOOR = 1.0 (mọi ván trong cửa sổ WR nặng như nhau; giá trị cũ 1.4 / 0.75 / decay 0.95).
+    ⚠ ĐỔI BỘ LOGIC -> SUN_SIG đổi thành SEQ13v4: các ván đã chấm của bộ cũ (file sun15_persist / hit15_*.json) bị bỏ khi load, WR / AF của mọi bàn bắt đầu lại từ các ván được chấm lại bằng bộ mới (rebuild từ lịch sử xúc xắc đang giữ).
+    ⚠ HIST_KEEP mặc định nâng 200 -> 600 ván để cửa sổ 400 / 500 có đủ dữ liệu (file lịch sử cũ chỉ có ≤200 ván -> CMIXL / SPARSE / HMM3 / TOTK / SPEC / CPSEG dùng hết số ván đang có và đầy cửa sổ dần theo thời gian quét). Đổi: env SUNVIW_HIST_KEEP.
+    ⚠ Logic mới chưa có backtest trên data thật. Trên RNG công bằng mọi logic ≈ 50% (kiểm tra mô phỏng: chuỗi ngẫu nhiên 46-53%); khi nguồn CÓ cấu trúc, mỗi logic mới thắng đúng sở trường (SPARSE trên XOR lag, SPEC trên chu kỳ cố định, CPSEG/HMM3 trên đổi chế độ, CMIXL trên cầu Markov bậc cao).
+    Chưa đủ lịch sử cho một logic -> logic đó tạm theo kết quả ván trước. WR / AF / CAO-THẤP / bẻ final GIỮ NGUYÊN như bản trước (chỉ bỏ decay WR).
 
 🔀 AF = AUTO-FLIP + CAO/THẤP (port từ SUNVIW_9logics_autoflip_auto.html) — cách chốt final của SUN (mặc định BẬT · khối "CONFIG AF"):
     Bước 1 (bẻ logic):  WR có trọng số của từng logic (cùng WR_WINDOW ván / trọng số như cách cũ của SUN). WR < AF_FLIP_LOW (37%) hoặc > AF_FLIP_HIGH (63%) -> ĐẢO phiếu logic đó
@@ -98,10 +97,10 @@ JSON /api/predict:
                         Vùng chỉnh bằng AF_FLIP_LOW_MIN/MAX · AF_FLIP_HIGH_MIN/MAX (env SUNVIW_AF_LOW_MIN... · cờ --af-low-min...) · tắt: --af-no-band hoặc SUNVIW_AF_BAND=0 (về ngưỡng 37/63 cũ)
     Bước 2 (CAO/THẤP):  ⚙ CHỈ logic ĐÃ BỊ BẺ (WR trong vùng bẻ) mới vào nhóm CAO/THẤP; logic không bẻ mặc định ALL (không thuộc nhóm nào) — AF_GROUP_FLIPPED_ONLY (--af-no-group-flipped = tắt).
                         ⚙ ĐỔI CHẾ ĐỘ DỄ HƠN (AF_SWITCH, mặc định BẬT · --af-no-switch = tắt): xoay quanh 3 chế độ ALL · THẤP · CAO. Mỗi logic bỏ 1 phiếu: nhóm CAO -> CAO · nhóm THẤP -> THẤP · logic không bẻ -> ALL (tổng 15 phiếu).
-                        Tool NHỚ chế độ ván trước: chế độ KHÁC chỉ cần >= AF_SWITCH_NEED = 6/15 phiếu là đổi (bản gốc phải đa số 8/15). Đang ALL -> CAO / THẤP đủ 4 phiếu là sang · đang CAO -> ALL / THẤP đủ 4 phiếu là sang · đang THẤP -> ALL / CAO đủ 4 phiếu là sang.
+                        Tool NHỚ chế độ ván trước: chế độ KHÁC chỉ cần >= AF_SWITCH_NEED = 6/13 phiếu là đổi (bản gốc phải đa số 7/13). Đang ALL -> CAO / THẤP đủ 4 phiếu là sang · đang CAO -> ALL / THẤP đủ 4 phiếu là sang · đang THẤP -> ALL / CAO đủ 4 phiếu là sang.
                         Không chế độ khác nào đủ 4 phiếu -> giữ chế độ hiện tại · nhiều chế độ cùng đủ 4 -> lấy chế độ nhiều phiếu nhất (bằng nhau -> giữ chế độ hiện tại, tránh nhảy qua lại).
-                        ⚙ ƯU TIÊN KHI 2 CHẾ ĐỘ CÒN LẠI CÙNG ĐỦ PHIẾU (AF_SWITCH_PRIO, mặc định BẬT · --af-no-switch-prio = tắt): không so số phiếu nữa mà theo chế độ VÁN TRƯỚC: ván trước ALL -> CAO · ván trước CAO -> ALL · ván trước THẤP -> CAO. Chỉ 1 chế độ đủ phiếu -> đổi sang chế độ đó như thường. Khi bật, AF_GROUP_NEED_MAJORITY (8/15) không còn tác dụng. --af-switch-need N đổi số phiếu.
-                        ⚙ (Khi AF_SWITCH TẮT — cách gốc) Nhóm CAO/THẤP được chọn phải có >= ĐA SỐ toàn bộ logic (n//2+1 = 8/15); ít hơn -> dùng chế độ ALL — AF_GROUP_NEED_MAJORITY (--af-no-group-majority = tắt).
+                        ⚙ ƯU TIÊN KHI 2 CHẾ ĐỘ CÒN LẠI CÙNG ĐỦ PHIẾU (AF_SWITCH_PRIO, mặc định BẬT · --af-no-switch-prio = tắt): không so số phiếu nữa mà theo chế độ VÁN TRƯỚC: ván trước ALL -> CAO · ván trước CAO -> ALL · ván trước THẤP -> CAO. Chỉ 1 chế độ đủ phiếu -> đổi sang chế độ đó như thường. Khi bật, AF_GROUP_NEED_MAJORITY (7/13) không còn tác dụng. --af-switch-need N đổi số phiếu.
+                        ⚙ (Khi AF_SWITCH TẮT — cách gốc) Nhóm CAO/THẤP được chọn phải có >= ĐA SỐ toàn bộ logic (n//2+1 = 7/13); ít hơn -> dùng chế độ ALL — AF_GROUP_NEED_MAJORITY (--af-no-group-majority = tắt).
                         WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP. Nhóm nào ĐÔNG hơn thì chỉ vote trong nhóm đó (chế độ CAO / THẤP); bằng nhau -> vote tất cả (chế độ ALL).
     Bước 3 (bẻ chế độ): WR của CHẾ ĐỘ đang chạy trong AF_MODE_WINDOW (7) ván gần nhất của chế độ đó < AF_MODE_BELOW (45%) -> ĐẢO final (không theo đa số nữa);
                         từ 45% trở lên -> theo bình thường. Đang bẻ THẤP mà ván sau lên CAO thì xét lại WR của CAO. Chưa đủ AF_MODE_MIN ván của chế độ đó -> không bẻ.
@@ -126,7 +125,7 @@ JSON /api/predict:
 
 🎯 HITCLUB (GAME 3 · 2 BÀN) — port từ hittxthuong.js / hittxmd5.js (khối "CONFIG HITCLUB" + phần "HITCLUB" ở giữa file):
     Bàn TX THƯỜNG (gid vgmn_100, cmd 1008 + 1003) và bàn TX MD5 (gid vgmn_101, cmd 2006): mỗi bàn một poller (mặc định 3s), tự tích lũy lịch sử xúc xắc.
-    Dự đoán = bộ 15 logic SEQ15 + AF + WR có trọng số như SUN, nhưng mỗi bàn đọc CONFIG RIÊNG (HIT_TXTHUONG_CFG / HIT_TXMD5_CFG — hiện đang bằng mặc định của SUN) -> chỉnh bàn nào chỉ ảnh hưởng bàn đó.
+    Dự đoán = bộ 13 logic SEQ13v4 + AF + WR có trọng số như SUN, nhưng mỗi bàn đọc CONFIG RIÊNG (HIT_TXTHUONG_CFG / HIT_TXMD5_CFG — hiện đang bằng mặc định của SUN) -> chỉnh bàn nào chỉ ảnh hưởng bàn đó.
     Data lưu RIÊNG: <DATA_DIR>/hit15_txthuong.json và <DATA_DIR>/hit15_txmd5.json (mỗi file = lịch sử xúc xắc + các ván đã chấm của bàn đó). Panel /api/html có thêm 2 tab "Hit Thường" · "Hit MD5".
     Tắt: HITCLUB=0 hoặc --no-hit. Đổi config không sửa file: biến môi trường HITTXTHUONG_<TÊN> / HITTXMD5_<TÊN> (vd. HITTXMD5_AF_ENABLED=0).
 
@@ -182,7 +181,7 @@ def _env_num(name, default, cast):
 #   Port từ SUNVIW_9logics_autoflip_auto.html. WR từng logic = WR CÓ TRỌNG SỐ của SUN (WR_WINDOW / WR_DECAY / WR_FLOOR / WR_WEIGHT_NEWEST / WR_FLIP_WEIGHT).
 #   Bước 1  bẻ logic     : WR < AF_FLIP_LOW -> đảo phiếu logic · WR > AF_FLIP_HIGH -> đảo phiếu logic (WR dùng = 100 − WR). Chưa đủ AF_MIN_GAMES ván -> không bẻ, vote tất cả.
 #   Bước 2  CAO / THẤP   : WR dùng > 50% -> nhóm CAO · < 50% -> nhóm THẤP · nhóm đông hơn được vote (CHẾ ĐỘ CAO / THẤP) · bằng nhau -> vote tất cả (ALL) · pool hoà phiếu -> đa số tất cả logic.
-#                          AF_SWITCH BẬT (mặc định): thay "nhóm đông hơn thắng + đa số 8/15" bằng ĐỔI CHẾ ĐỘ DỄ HƠN — nhớ chế độ ván trước, chế độ khác đủ AF_SWITCH_NEED (6/15) phiếu là đổi (xem khối ĐỔI CHẾ ĐỘ DỄ HƠN bên dưới).
+#                          AF_SWITCH BẬT (mặc định): thay "nhóm đông hơn thắng + đa số 7/13" bằng ĐỔI CHẾ ĐỘ DỄ HƠN — nhớ chế độ ván trước, chế độ khác đủ AF_SWITCH_NEED (6/13) phiếu là đổi (xem khối ĐỔI CHẾ ĐỘ DỄ HƠN bên dưới).
 #   Bước 3  bẻ chế độ    : WR của chế độ đang chạy trong AF_MODE_WINDOW ván gần nhất CỦA CHẾ ĐỘ ĐÓ < AF_MODE_BELOW -> đảo final · ≥ AF_MODE_BELOW -> theo bình thường.
 #                          Cần đủ AF_MODE_MIN ván của chế độ đó mới xét bẻ. CAO / THẤP / ALL đều có chuỗi ván riêng (hv / lv / av lưu trong từng ván đã chấm) — WR của từng chế độ xét RIÊNG, chế độ nào < AF_MODE_BELOW thì chế độ đó bị bẻ khi được chọn.
 #                          ⛔ MẶC ĐỊNH ĐANG TẮT (AF_MODE_FLIP_DEFAULT = False): bước 3 bị bỏ qua -> final = kết quả sau bước 2 (CAO / THẤP / ALL), không bị đảo theo WR chế độ.
@@ -227,8 +226,8 @@ AF_FLIP_HIGH_MAX_DEFAULT = 65
 #       (theo WR dùng sau bẻ). Logic KHÔNG bẻ (WR ngoài vùng bẻ) KHÔNG thuộc nhóm nào — mặc định ở chế độ ALL (panel hiện nhãn ALL).
 #       TẮT: như bản trước — mọi logic đều được chia CAO (WR dùng > 50%) / THẤP (< 50%).
 #   AF_GROUP_NEED_MAJORITY_DEFAULT BẬT (mặc định): nhóm CAO / THẤP được chọn (nhóm đông hơn) phải có SỐ LOGIC >= ĐA SỐ của TOÀN BỘ logic
-#       (n // 2 + 1 · vd 15 logic -> cần >= 8). Ít hơn đa số -> bỏ nhóm, dùng chế độ ALL (vote tất cả logic sau bẻ logic).
-#       Vd ảnh panel: chỉ 4/15 logic bị bẻ (2 CAO + 2 THẤP) -> không nhóm nào đủ 8 logic -> chế độ ALL thay vì CAO.
+#       (n // 2 + 1 · vd 13 logic -> cần >= 8). Ít hơn đa số -> bỏ nhóm, dùng chế độ ALL (vote tất cả logic sau bẻ logic).
+#       Vd ảnh panel: chỉ 4/13 logic bị bẻ (2 CAO + 2 THẤP) -> không nhóm nào đủ 8 logic -> chế độ ALL thay vì CAO.
 #       TẮT: nhóm đông hơn luôn được chọn dù chỉ có 1-2 logic.
 #   Đổi mà không sửa file: env SUNVIW_AF_GROUP_FLIPPED=1|0 · SUNVIW_AF_GROUP_MAJORITY=1|0
 #                          lệnh --af-group-flipped / --af-no-group-flipped · --af-group-majority / --af-no-group-majority
@@ -238,23 +237,23 @@ AF_GROUP_NEED_MAJORITY_DEFAULT = True
 #   Xoay quanh 3 chế độ ALL · THẤP · CAO. Mỗi logic "bỏ phiếu" cho 1 chế độ: logic nhóm CAO -> phiếu CAO · nhóm THẤP -> phiếu THẤP · logic không thuộc nhóm nào (không bẻ) -> phiếu ALL.
 #   Tổng luôn = số logic (vd 15): phiếu ALL + phiếu CAO + phiếu THẤP = 15.
 #   AF_SWITCH_DEFAULT BẬT (mặc định): chế độ có NHỚ chế độ của ván trước (đang ALL / CAO / THẤP) rồi mới xét đổi:
-#       · Chế độ KHÁC có >= AF_SWITCH_NEED phiếu (mặc định 6/15) -> ĐỔI sang chế độ đó (bản gốc phải 8/15 = đa số mới đổi sang CAO / THẤP).
+#       · Chế độ KHÁC có >= AF_SWITCH_NEED phiếu (mặc định 6/13) -> ĐỔI sang chế độ đó (bản gốc phải 7/13 = đa số mới đổi sang CAO / THẤP).
 #           vd đang ALL: CAO được 4 phiếu -> sang CAO · THẤP được 4 phiếu -> sang THẤP.   vd đang CAO: ALL hoặc THẤP được 4 phiếu -> sang ALL / THẤP.   (tương tự khi đang THẤP)
 #       · Không chế độ khác nào đủ AF_SWITCH_NEED phiếu -> GIỮ chế độ hiện tại.
 #       · Nhiều chế độ cùng đủ phiếu (kể cả chế độ hiện tại) -> chọn chế độ NHIỀU phiếu nhất (tránh nhảy qua nhảy lại mỗi ván); bằng nhau ở đầu bảng -> giữ chế độ hiện tại.
 #       · Chế độ đang giữ là CAO / THẤP mà nhóm đó không còn logic nào -> không có ai để vote, tạm dùng ALL ván này.
-#       Khi BẬT: AF_GROUP_NEED_MAJORITY (đa số 8/15) KHÔNG còn tác dụng — ngưỡng 6/15 thay cho nó.
-#   TẮT : quay về cách gốc (không nhớ chế độ cũ · nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số 8/15 nếu AF_GROUP_NEED_MAJORITY bật).
+#       Khi BẬT: AF_GROUP_NEED_MAJORITY (đa số 7/13) KHÔNG còn tác dụng — ngưỡng 6/13 thay cho nó.
+#   TẮT : quay về cách gốc (không nhớ chế độ cũ · nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số 7/13 nếu AF_GROUP_NEED_MAJORITY bật).
 #   Ván đầu / ván cũ chưa lưu chế độ -> coi chế độ trước là ALL.
 #   Đổi mà không sửa file: env SUNVIW_AF_SWITCH=1|0 · SUNVIW_AF_SWITCH_NEED     lệnh --af-switch / --af-no-switch · --af-switch-need N
-#   AF_SWITCH_LEAD_DEFAULT = False (mặc định): chỉ cần chế độ khác đủ AF_SWITCH_NEED phiếu là đổi, KỂ CẢ khi chế độ đang chạy nhiều phiếu hơn (đúng ý "chỉ cần 6/15").
+#   AF_SWITCH_LEAD_DEFAULT = False (mặc định): chỉ cần chế độ khác đủ AF_SWITCH_NEED phiếu là đổi, KỂ CẢ khi chế độ đang chạy nhiều phiếu hơn (đúng ý "chỉ cần 6/13").
 #       Hệ quả: khi cả 2 chế độ cùng >= AF_SWITCH_NEED phiếu thì ván sau có thể đổi ngược lại (vd ALL 9 · CAO 4: ALL -> CAO, rồi CAO -> ALL ...) — chế độ đổi nhiều hơn.
-#       True = êm hơn: chế độ mới còn phải DẪN ĐẦU duy nhất (nhiều phiếu hơn cả chế độ đang chạy) mới đổi. Lưu ý: 15 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu,
-#       nên với True mọi AF_SWITCH_NEED <= 5 cho kết quả GIỐNG HỆT nhau (6/15 không dễ hơn 7/15).   env SUNVIW_AF_SWITCH_LEAD · lệnh --af-switch-lead / --af-no-switch-lead
+#       True = êm hơn: chế độ mới còn phải DẪN ĐẦU duy nhất (nhiều phiếu hơn cả chế độ đang chạy) mới đổi. Lưu ý: 13 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu,
+#       nên với True mọi AF_SWITCH_NEED <= 5 cho kết quả GIỐNG HỆT nhau (6/13 không dễ hơn 7/15).   env SUNVIW_AF_SWITCH_LEAD · lệnh --af-switch-lead / --af-no-switch-lead
 AF_SWITCH_DEFAULT = True
 AF_SWITCH_NEED_DEFAULT = 6
 AF_SWITCH_LEAD_DEFAULT = False
-#   AF_SWITCH_PRIO_DEFAULT BẬT (mặc định): khi đang ở 1 chế độ mà CẢ 2 chế độ còn lại đều đủ AF_SWITCH_NEED phiếu (vd 6/15) thì chọn theo ƯU TIÊN dựa trên chế độ VÁN TRƯỚC (không so số phiếu):
+#   AF_SWITCH_PRIO_DEFAULT BẬT (mặc định): khi đang ở 1 chế độ mà CẢ 2 chế độ còn lại đều đủ AF_SWITCH_NEED phiếu (vd 6/13) thì chọn theo ƯU TIÊN dựa trên chế độ VÁN TRƯỚC (không so số phiếu):
 #       · ván trước ALL  -> ưu tiên CAO      · ván trước CAO -> ưu tiên ALL      · ván trước THẤP -> ưu tiên CAO
 #       Chỉ 1 chế độ đủ phiếu -> đổi sang chế độ đó như bình thường · không chế độ nào đủ -> giữ chế độ hiện tại.  Chỉ có tác dụng khi AF_SWITCH bật và AF_SWITCH_LEAD tắt.
 #       TẮT: quay về cách cũ (cả 2 cùng đủ phiếu -> lấy chế độ nhiều phiếu hơn, bằng nhau -> giữ chế độ hiện tại).   env SUNVIW_AF_SWITCH_PRIO=1|0 · lệnh --af-switch-prio / --af-no-switch-prio
@@ -266,8 +265,8 @@ AF_MODE_BELOW_DEFAULT = 45
 AF_MODE_FLIP_DEFAULT = False          # BƯỚC 3 (bẻ final theo WR chế độ): False = TẮT · True = BẬT
 AF_FLIP_FINAL_DEFAULT = False
 AF_FLIP_FINAL_CT_DEFAULT = False       # True = bẻ final của chế độ CAO / THẤP  (BẬT theo yêu cầu: bẻ CAO/THẤP + bẻ ALL)
-AF_FLIP_FINAL_CAO_DEFAULT = True      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
-AF_FLIP_FINAL_THAP_DEFAULT = False     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
+AF_FLIP_FINAL_CAO_DEFAULT = False      # True = CHỈ bẻ final của chế độ CAO   (TÁCH RIÊNG khỏi THẤP)
+AF_FLIP_FINAL_THAP_DEFAULT = True     # True = CHỈ bẻ final của chế độ THẤP  (TÁCH RIÊNG khỏi CAO) — vd theo CAO nhưng bẻ THẤP: CAO=False · THAP=True
 AF_FLIP_FINAL_ALL_DEFAULT = True      # True = bẻ final của chế độ ALL        (BẬT)
 
 AF_ENABLED = _env_bool("SUNVIW_AF", AF_ENABLED_DEFAULT)
@@ -283,7 +282,7 @@ AF_GROUP_NEED_MAJORITY = _env_bool("SUNVIW_AF_GROUP_MAJORITY", AF_GROUP_NEED_MAJ
 AF_SWITCH = _env_bool("SUNVIW_AF_SWITCH", AF_SWITCH_DEFAULT)                                     # đổi chế độ ALL / CAO / THẤP dễ hơn: chỉ cần AF_SWITCH_NEED phiếu (thay vì đa số)
 AF_SWITCH_LEAD = _env_bool("SUNVIW_AF_SWITCH_LEAD", AF_SWITCH_LEAD_DEFAULT)                      # True = chế độ mới còn phải dẫn đầu duy nhất mới đổi (êm hơn)
 AF_SWITCH_PRIO = _env_bool("SUNVIW_AF_SWITCH_PRIO", AF_SWITCH_PRIO_DEFAULT)                      # True = 2 chế độ còn lại cùng đủ phiếu -> ưu tiên theo chế độ ván trước (ALL->CAO · CAO->ALL · THẤP->CAO)
-AF_SWITCH_NEED = _env_num("SUNVIW_AF_SWITCH_NEED", AF_SWITCH_NEED_DEFAULT, int)                 # số phiếu (trên tổng số logic) để đổi sang chế độ khác (mặc định 6/15)
+AF_SWITCH_NEED = _env_num("SUNVIW_AF_SWITCH_NEED", AF_SWITCH_NEED_DEFAULT, int)                 # số phiếu (trên tổng số logic) để đổi sang chế độ khác (mặc định 6/13)
 AF_MIN_GAMES =_env_num("SUNVIW_AF_MIN", AF_MIN_GAMES_DEFAULT, int)
 AF_MODE_WINDOW = _env_num("SUNVIW_AF_MODE_WINDOW", AF_MODE_WINDOW_DEFAULT, int)
 AF_MODE_MIN = _env_num("SUNVIW_AF_MODE_MIN", AF_MODE_MIN_DEFAULT, int)
@@ -378,7 +377,7 @@ BOOT_INFO = _boot_mark()
 
 
 HIST_PATH = os.environ.get("SUNVIW_HIST", _data_path("sun15_hist.json"))   # lịch sử các phiên đã quét (tool tự tích lũy)
-HIST_KEEP = int(os.environ.get("SUNVIW_HIST_KEEP", "500") or 500)   # CỬA SỔ TRƯỢT 500 VÁN: chỉ giữ 500 phiên GẦN NHẤT (RAM + file) — có phiên thứ 501 thì phiên cũ nhất (phiên 1) bị bỏ. Mọi logic chỉ học trên tối đa 500 ván này (logic có cửa sổ 250 / 300 dùng đủ, LAGAC tối đa 1500 cũng dùng đủ). Đổi: env SUNVIW_HIST_KEEP
+HIST_KEEP = int(os.environ.get("SUNVIW_HIST_KEEP", "600") or 600)   # CỬA SỔ TRƯỢT 600 VÁN: chỉ giữ 600 phiên GẦN NHẤT (RAM + file) — có phiên thứ 601 thì phiên cũ nhất bị bỏ. Mỗi logic đọc cửa sổ riêng LOGIC_WIN (≤ 500) trong số này. Đổi: env SUNVIW_HIST_KEEP
 POLL_SEC = 3.0             # chu kỳ quét upstream (giống AUTO_INTERVAL_MS của HTML)
 WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR (dưới mức này -> đa số 21 logic)
 
@@ -416,9 +415,9 @@ WR_MIN_GAMES = 1           # số ván đã chấm tối thiểu để dùng WR 
 #   Cách chia nhóm giữ nguyên: WR < 50% -> nhóm THẤP · WR ≥ 50% -> nhóm CAO, nhóm THẤP đông hơn thì theo nhóm THẤP,
 #   còn lại theo nhóm CAO; nhóm được chọn hoà phiếu -> theo đa số tất cả logic.
 WR_WINDOW = 13             # số ván gần nhất dùng để tính WR
-WR_DECAY = 0.95           # tốc độ giảm trọng số khi ván cũ dần (nhỏ = phản ứng nhanh)
-WR_FLOOR = 0.75            # sàn trọng số của ván cũ so với ván mới nhất (lớn = nhớ cầu cũ nhiều)
-WR_WEIGHT_NEWEST = 1.4    # trọng số ván mới nhất (ĐÃ ÁP DỤNG vào tính WR; 1.00 = hành vi bản gốc)
+WR_DECAY = 0.95           # (vô tác dụng khi WR_FLOOR = WR_WEIGHT_NEWEST)
+WR_FLOOR = 1.0            # SEQ13v4: BỎ decay -> sàn = trọng số ván mới nhất = 1.0 => MỌI ván trong WR_WINDOW nặng như nhau (bản cũ: DECAY 0.95 · FLOOR 0.75 · NEWEST 1.4 — muốn bật lại: đặt 0.75 / 1.4 ở đây và ở các khối CONFIG từng bàn bên dưới)
+WR_WEIGHT_NEWEST = 1.0    # trọng số ván mới nhất (= WR_FLOOR -> không decay)
 # dạng Fraction để tính/so sánh chính xác (dùng trong wr_weights)
 _W_DECAY = Fraction(str(WR_DECAY))
 _W_FLOOR = Fraction(str(WR_FLOOR))
@@ -484,7 +483,7 @@ class TableCfg:
         self.__dict__.setdefault("AF_FLIP_FINAL_CAO", False)    # công tắc bẻ final RIÊNG chế độ CAO (thiếu -> không bẻ)
         self.__dict__.setdefault("AF_FLIP_FINAL_THAP", False)   # công tắc bẻ final RIÊNG chế độ THẤP (thiếu -> không bẻ)
         self.__dict__.setdefault("AF_SWITCH", True)             # đổi chế độ ALL / CAO / THẤP dễ hơn (xem khối ĐỔI CHẾ ĐỘ DỄ HƠN)
-        self.__dict__.setdefault("AF_SWITCH_NEED", 6)           # số phiếu để đổi sang chế độ khác (6/15)
+        self.__dict__.setdefault("AF_SWITCH_NEED", 6)           # số phiếu để đổi sang chế độ khác (6/13)
         self.__dict__.setdefault("AF_SWITCH_PRIO", True)        # 2 chế độ còn lại cùng đủ phiếu -> ưu tiên theo chế độ ván trước (ALL->CAO · CAO->ALL · THẤP->CAO)
         self.__dict__.setdefault("AF_SWITCH_LEAD", False)       # True = chế độ mới còn phải dẫn đầu duy nhất mới đổi (êm hơn) · False = chỉ cần đủ AF_SWITCH_NEED phiếu
         self.normalize()
@@ -528,7 +527,7 @@ HIST_MAX = 300             # trần số ván lịch sử cho ?hist=N và ô nh�
 #   Nguồn = HTTP polling: quét API Hit mỗi POLL_SEC giây, tự tích lũy lịch sử (giống cách SUN tích lũy).
 #       TX THƯỜNG : cmd 1008 nhả sid · cmd 1003 nhả xúc xắc -> ghép sid + xúc xắc (y như file JS)
 #       TX MD5    : cmd 2006 nhả luôn sid + xúc xắc
-#   Dự đoán = ĐÚNG bộ 15 logic SEQ15 + AF + WR có trọng số của SUN (dùng chung hàm), nhưng mỗi bàn ĐỌC CONFIG RIÊNG ở 2 khối dưới đây.
+#   Dự đoán = ĐÚNG bộ 13 logic SEQ13v4 + AF + WR có trọng số của SUN (dùng chung hàm), nhưng mỗi bàn ĐỌC CONFIG RIÊNG ở 2 khối dưới đây.
 #   ► Hiện 2 khối đang BẰNG giá trị mặc định hiện tại của SUN (copy lúc ghép). Sửa khối bàn nào CHỈ ảnh hưởng bàn đó — không đụng SUN hay bàn còn lại.
 #   ► Ý nghĩa từng thông số giống hệt tên ở các khối "CONFIG AF" · "CONFIG WR CÓ TRỌNG SỐ" · "CONFIG BẺ FINAL" phía trên (AF_* · WR_* · FLIP_FINAL · EVAL_WINDOW · PERSIST_KEEP).
 #   Thông số riêng của bàn:
@@ -581,7 +580,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
-    "WR_WINDOW": 17, "WR_DECAY": 0.95, "WR_FLOOR": 0.75, "WR_WEIGHT_NEWEST": 1.4, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    "WR_WINDOW": 17, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
     # bẻ final (dùng khi AF tắt)
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
@@ -590,7 +589,7 @@ HIT_TXTHUONG_CFG = TableCfg("hittxthuong", _hit_env("HITTXTHUONG_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/13 phiếu (thay vì đa số 7/13) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
@@ -608,7 +607,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
-    "WR_WINDOW": 13, "WR_DECAY": 0.95, "WR_FLOOR": 0.75, "WR_WEIGHT_NEWEST": 1.4, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    "WR_WINDOW": 13, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
     # bẻ final (dùng khi AF tắt)
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
@@ -617,7 +616,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/13 phiếu (thay vì đa số 7/13) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (mặc định TẮT)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 13, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
@@ -634,7 +633,7 @@ HIT_TXMD5_CFG = TableCfg("hittxmd5", _hit_env("HITTXMD5_", {
 #   Khác các game kia (chỉ trả 1 phiên mới nhất): API này trả CẢ DANH SÁCH {"list":[{id, resultTruyenThong, dices:[a,b,c], point}, ...]} (~105 phiên, phiên ĐẦU = MỚI NHẤT).
 #   Cách tool làm:
 #       · Mỗi lần quét: đọc TOÀN BỘ list, chỉ LƯU THÊM các phiên CHƯA có trong data (phiên đã học giữ nguyên) -> tích lũy tối đa HIST_KEEP phiên.
-#       · Dự đoán = phiên MỚI NHẤT + 1 (bộ 15 logic SEQ15 + AF + WR như SUN/Hit, đọc config RIÊNG ở khối dưới).
+#       · Dự đoán = phiên MỚI NHẤT + 1 (bộ 13 logic SEQ13v4 + AF + WR như SUN/Hit, đọc config RIÊNG ở khối dưới).
 #       · Dự đoán được giữ trong file data (trường "pending") cho tới khi API trả ra kết quả đúng phiên đó -> khi phiên đó xuất hiện, tool so sánh & chấm ĐÚNG / SAI (vào lich_su + WR/AF).
 #   Endpoint: GET /api/predicttele68txmd5 (?hist=N · ?detail=1) · file data tele68_txmd5.json · tab "Tele68 MD5" ở /api/html · key game TELE68 (tiền tố TELE-)
 #   Đổi mà không sửa file: TELE68_API_URL (URL đầy đủ, vd khi token `at=` đổi) · TELE68_ENABLED=0 (tắt) · TELE68_TXMD5_PATH · TELE68_REFERER (thêm header Referer/Origin nếu server đòi)
@@ -652,22 +651,22 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
-    "WR_WINDOW": 10, "WR_DECAY": 0.95, "WR_FLOOR": 0.75, "WR_WEIGHT_NEWEST": 1.4, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    "WR_WINDOW": 10, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
     # bẻ final (dùng khi AF tắt)
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 25, "AF_FLIP_LOW_MAX": 38, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 68,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 20, "AF_FLIP_LOW_MAX": 35, "AF_FLIP_HIGH_MIN": 55, "AF_FLIP_HIGH_MAX": 68,
     "AF_MIN_GAMES": 7,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/15 phiếu (thay vì đa số 8/15) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 6, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/13 phiếu (thay vì đa số 7/13) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 9, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": True, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,
     # đánh giá đúng/sai + số ván lưu
-    "EVAL_WINDOW": 500, "PERSIST_KEEP": 500,
+    "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))
 
 
@@ -684,7 +683,7 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
 #       POST /api/spy-68gb-md5   (cùng payload, thêm "hash")                                                                       -> bàn MD5
 #       Bảo mật: đặt GB68_INGEST_TOKEN thì phải gửi kèm header X-Ingest-Token (hoặc ?token=) · KHÔNG đặt thì chỉ nhận request từ chính máy chạy sunviw (127.0.0.1).
 #       Spy trình duyệt chạy ở máy khác -> đặt GB68_INGEST_TOKEN rồi gửi POST tới https://<domain>/api/spy-68gb?token=<TOKEN>.
-#   Dự đoán = ĐÚNG bộ 15 logic SEQ15 + AF + WR của SUN (dùng chung hàm), mỗi bàn đọc CONFIG RIÊNG ở 2 khối dưới. Ý nghĩa thông số giống hệt các khối CONFIG AF / WR phía trên.
+#   Dự đoán = ĐÚNG bộ 13 logic SEQ13v4 + AF + WR của SUN (dùng chung hàm), mỗi bàn đọc CONFIG RIÊNG ở 2 khối dưới. Ý nghĩa thông số giống hệt các khối CONFIG AF / WR phía trên.
 #   Thông số riêng: CONSEC_CHECK=False vì spy có thể bỏ lỡ phiên (mất kết nối) và số phiên MD5 chỉ 5 chữ số -> coi 2 phiên đứng cạnh nhau trong lịch sử là liền nhau.
 #   Kết quả Tài/Xỉu tính theo TỔNG (>= 11 = Tài, như mọi game khác); bộ ba (Bão) vẫn tính theo tổng.
 #   Đổi mà không sửa file: GB68_ENABLED=0 (tắt cả 2 bàn) · GB68HU_<TÊN> / GB68MD5_<TÊN> ghi đè thông số (vd. GB68MD5_AF_ENABLED=0 · GB68HU_WR_WINDOW=17) · GB68_HU_PATH / GB68_MD5_PATH đổi file lưu.
@@ -713,7 +712,7 @@ _GB68_BASE = {
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": False,
     # WR có trọng số
-    "WR_WINDOW": 13, "WR_DECAY": 0.95, "WR_FLOOR": 0.75, "WR_WEIGHT_NEWEST": 1.4, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    "WR_WINDOW": 13, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
     # bẻ final (dùng khi AF tắt)
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
@@ -743,7 +742,7 @@ GB68_MD5_CFG = TableCfg("gb68md5", _hit_env("GB68MD5_", dict(_GB68_BASE, GID="gb
 #   Nút này CHỈ làm sạch phần HIỂN THỊ: danh sách "lich_su" + số liệu đúng/sai (tool_dung_sai_*, % đúng, chuỗi ✅❌ trên panel).
 #   Cách làm: lưu 1 MỐC phiên cho từng game (SUN / HIT thường / HIT MD5) — ván có phiên <= mốc bị ẩn khỏi lịch sử / thống kê hiển thị.
 #   KHÔNG xóa / sửa bất cứ dữ liệu nào khác: lịch sử xúc xắc (hist) · các ván đã chấm + vote từng logic (graded) · key / IP / cấu hình.
-#   -> 15 logic SUN (và các bàn Hit), WR có trọng số, AF (CAO/THẤP, WR chế độ), do_tin_cay, du_doan của phiên đang dự đoán: GIỮ NGUYÊN 100%, vì chúng vẫn đọc đủ dữ liệu cũ.
+#   -> 13 logic SUN (và các bàn Hit), WR có trọng số, AF (CAO/THẤP, WR chế độ), do_tin_cay, du_doan của phiên đang dự đoán: GIỮ NGUYÊN 100%, vì chúng vẫn đọc đủ dữ liệu cũ.
 #   Mốc lưu file riêng nên còn sau khi restart / deploy (cần Volume như các file khác trên Railway).
 #   HIST_CLEAR_ENABLED_DEFAULT  True = cho xóa · False = tắt hẳn tính năng (endpoint trả 403)  (env SUNVIW_HIST_CLEAR=1|0)
 #   HIST_CLEAR_PATH             file lưu mốc (env SUNVIW_HISTCLEAR_PATH)
@@ -796,35 +795,33 @@ def vote_result(preds):
 
 
 def compute_all(hist):
-    """Vote của 15 logic SUN cho phiên KẾ TIẾP, từ lịch sử `hist` (cũ -> mới; mỗi phần tử có actual / total / d1 d2 d3 / phien). Thứ tự = SUN_NAMES.
-    Logic bình thường chưa đủ lịch sử / không có tín hiệu -> theo kết quả ván trước. Logic trong SUN_ABSTAIN (LAGAC, CTW, ARSUM, SELKEY, LSM, DECAYMIX, CONV3) chỉ kích hoạt khi thấy cấu trúc có ý nghĩa thống kê;
-    không kích hoạt -> phiếu = ĐA SỐ của các logic bình thường (không biến thành phiếu "copy ván trước")."""
+    """Vote của 13 logic SUN (SEQ13v4) cho phiên KẾ TIẾP, từ lịch sử `hist` (cũ -> mới; mỗi phần tử có actual / total / d1 d2 d3 / phien). Thứ tự = SUN_NAMES.
+    MỖI LOGIC CHỈ ĐỌC LOGIC_WIN[tên] VÁN GẦN NHẤT (cửa sổ mạnh nhất của logic đó, mọi ván trọng số như nhau). Cả 13 logic LUÔN bỏ phiếu (không cổng, không phiếu trắng):
+    chưa đủ lịch sử cho một logic (hoặc logic lỗi) -> logic đó tạm theo kết quả ván trước."""
     S = {"y": [1 if r["actual"] == TAI else 0 for r in hist], "t": [int(r["total"]) for r in hist],
          "d": [(r["d1"], r["d2"], r["d3"]) for r in hist],
          "p": [int(r["phien"]) for r in hist]}              # số phiên
-    fb = S["y"][-1] if S["y"] else 0
+    n = len(S["y"])
+    fb = S["y"][-1] if n else 0
+    cache = {}
     out = []
     for nm, fn in SUN_LOGICS:
+        W = LOGIC_WIN.get(nm, 0)
+        if W and n > W:
+            Sw = cache.get(W)
+            if Sw is None:
+                Sw = cache[W] = {k: v[-W:] for k, v in S.items()}
+        else:
+            Sw = S
         try:
-            v = fn(S)
+            v = fn(Sw)
         except Exception:  # noqa: BLE001 - 1 logic lỗi không được làm sập cả dự đoán
             v = None
-        if v is None and nm in SUN_ABSTAIN:
-            out.append(None)                                # phiếu trắng thật: điền sau bằng đa số
-        else:
-            out.append(TAI if (fb if v is None else v) == 1 else XIU)
-    reg = [o for (nm, _f), o in zip(SUN_LOGICS, out) if nm not in SUN_ABSTAIN]
-    nt, nx = sum(1 for o in reg if o == TAI), sum(1 for o in reg if o == XIU)
-    if nt != nx:
-        maj = TAI if nt > nx else XIU
-    else:                                                   # 8 logic thường (chẵn) có thể hoà 4-4 -> phá hoà bằng phiếu logic SUN_TIE_LOGIC (mặc định PPM6); không có thì theo ván trước
-        ti = SUN_NAMES.index(SUN_TIE_LOGIC) if SUN_TIE_LOGIC in SUN_NAMES else -1
-        tv = out[ti] if ti >= 0 else None
-        maj = tv if tv in (TAI, XIU) else (TAI if fb == 1 else XIU)
-    return [maj if o is None else o for o in out]
+        out.append(TAI if (fb if v is None else v) == 1 else XIU)
+    return out
 
 
-# ─── 15 LOGIC CỦA SUN (thuần Python, tự học online từ lịch sử — mô tả ở docstring đầu file) ───
+# ─── 13 LOGIC CỦA SUN (thuần Python, tự học online từ lịch sử — mô tả ở docstring đầu file) ───
 from collections import defaultdict
 
 
@@ -844,20 +841,6 @@ def _win_counts(n, keyfn, y, W, start):
     return cnt
 
 
-def lg_mk(S, k, W, extra=None):
-    y, t, d = S["y"], S["t"], S["d"]
-    n = len(y)
-    if n < k + 1:
-        return None
-    if extra == "t1":
-        key = lambda j: tuple(y[j - k:j]) + (_tb1(t[j - 1]),)
-    else:
-        key = lambda j: tuple(y[j - k:j])
-    c = _win_counts(n, key, y, W, k)
-    n0, n1 = c[key(n)] if key(n) in c else (0, 0)
-    return _vote01(n1, n0, y[-1])
-
-
 def lg_ppm(S, K, W, alpha):
     y = S["y"]
     n = len(y)
@@ -875,56 +858,7 @@ def lg_ppm(S, K, W, alpha):
     return 1 if s > 0 else 0 if s < 0 else y[-1]
 
 
-def _f_t2(S, j):
-    t = S["t"]
-    return (_tb1(t[j - 1]), _tb1(t[j - 2]))
-
-
-def _f_dtt(S, j):
-    t = S["t"]
-    df = t[j - 1] - t[j - 2]
-    return ((df > 0) - (df < 0), _tb1(t[j - 1]))
-
-
-def lg_cond(S, featfn, W, m=6.0):
-    y = S["y"]
-    n = len(y)
-    if n < 5:
-        return None
-    key = lambda j: featfn(S, j)
-    c = _win_counts(n, key, y, W, 4)
-    n0, n1 = c[key(n)] if key(n) in c else (0, 0)
-    rate = (n1 + 0.5 * m) / (n0 + n1 + m)
-    return 1 if rate > 0.5 else 0 if rate < 0.5 else y[-1]
-
-
-def lg_nb(S, featfns, W, a=1.0):
-    y = S["y"]
-    n = len(y)
-    if n < 6:
-        return None
-    tabs = [defaultdict(lambda: [0, 0]) for _ in featfns]
-    prior = [0, 0]
-    for j in range(max(5, n - W), n):
-        for q, f in enumerate(featfns):
-            tabs[q][f(S, j)][y[j]] += 1
-        prior[y[j]] += 1
-    s = math.log((prior[1] + 1) / (prior[0] + 1))
-    for q, f in enumerate(featfns):
-        k = f(S, n)
-        n0, n1 = tabs[q][k] if k in tabs[q] else (0, 0)
-        s += math.log((n1 + a) / (prior[1] + 2 * a)) - math.log((n0 + a) / (prior[0] + 2 * a))
-    return 1 if s > 0 else 0 if s < 0 else y[-1]
-
-
-_nb_y3 = lambda S, j: tuple(S["y"][j - 3:j])
-_nb_t1b = lambda S, j: _tb1(S["t"][j - 1])
-_nb_max = lambda S, j: max(S["d"][j - 1])
-_nb_min = lambda S, j: min(S["d"][j - 1])
-_nb_dist = lambda S, j: len(set(S["d"][j - 1]))
-
-
-# ── logic thêm ở bản SEQ14/SEQ15 (REGIME · LAGAC · SGDLR; EWMA · PERIOD đã bị loại ở SEQ15v2). Trả 1 = TÀI · 0 = XỈU · None = bỏ phiếu trắng (compute_all -> theo kết quả ván trước) ──
+# ── logic thêm ở bản SEQ14/SEQ13v4 (REGIME; LAGAC · SGDLR · ARSUM · EWMA · PERIOD đã bị loại). Trả 1 = TÀI · 0 = XỈU · None = bỏ phiếu trắng (compute_all -> theo kết quả ván trước) ──
 def lg_regime(S, K=20, W=250, m=8.0):
     """REGIME: nhịp đảo cầu của K ván gần nhất chia 4 nhóm; học online P(ván sau ĐẢO | nhóm) trong W ván (co về 50%, m=8). Rate > 50% -> đảo cầu · < 50% -> bệt."""
     y = S["y"]
@@ -950,366 +884,6 @@ def lg_regime(S, K=20, W=250, m=8.0):
     if rate < 0.5:
         return y[-1]
     return None
-
-
-def lg_lagac(S, K=16, W=1500, crit=26.3):
-    """LAGAC: tự tương quan độ trễ k = 1..K của chuỗi Tài/Xỉu trong W ván gần nhất. z_k = (số lần y[i] == y[i-k] - m/2) / (0.5·√m).
-    Kiểm định tổng thể (kiểu Ljung–Box): Σ z_k² > crit (= χ²(K) mức 95%) mới coi chuỗi là KHÔNG ngẫu nhiên và bỏ phiếu theo Σ z_k × (kết quả cách k ván); không thì None (phiếu trắng)."""
-    y = S["y"]
-    n = len(y)
-    N = min(n, W)
-    if N < 80:
-        return None
-    ys = y[n - N:]
-    sc = chi = 0.0
-    for k in range(1, K + 1):
-        m = N - k
-        ag = 0
-        for i in range(k, N):
-            if ys[i] == ys[i - k]:
-                ag += 1
-        z = (ag - m / 2.0) / (0.5 * math.sqrt(m))
-        chi += z * z
-        sc += z * (1 if ys[N - k] == 1 else -1)
-    if chi < crit:
-        return None
-    return 1 if sc > 0 else 0 if sc < 0 else None
-
-
-def lg_sgdlr(S, W=300, ep=2, lr=0.05, lam=0.02, NL=12):
-    """SGDLR: hồi quy logistic online (SGD, L2) trên 300 ván gần nhất, huấn luyện lại mỗi ván.
-    Đặc trưng: 1 (bias) · 12 kết quả gần nhất (±1) · 2 tổng gần nhất (chuẩn hoá) · độ dài đợt hiện tại có dấu (cắt ở 8)."""
-    y, t = S["y"], S["t"]
-    n = len(y)
-    lo = max(NL + 2, n - W)
-    if n - lo < 60:
-        return None
-
-    def feat(j):
-        f = [1.0] + [2.0 * y[j - k] - 1.0 for k in range(1, NL + 1)]
-        f += [(t[j - 1] - 10.5) / 3.4, (t[j - 2] - 10.5) / 3.4]
-        r = 1
-        while r < 8 and j - 1 - r >= 0 and y[j - 1 - r] == y[j - 1]:
-            r += 1
-        f.append((2.0 * y[j - 1] - 1.0) * r / 8.0)
-        return f
-
-    X = [feat(j) for j in range(lo, n)]
-    Yv = y[lo:n]
-    w = [0.0] * len(X[0])
-    for _ in range(ep):
-        for x, yy in zip(X, Yv):
-            z = sum(a * b for a, b in zip(w, x))
-            pr = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, z))))
-            e = yy - pr
-            w = [wi + lr * (e * xi - lam * wi) for wi, xi in zip(w, x)]
-    z = sum(a * b for a, b in zip(w, feat(n)))
-    return 1 if z > 0 else 0 if z < 0 else None
-
-
-# ── 2 logic còn lại của nhóm "qua cổng tự chấm" (CTW · ARSUM; BOCPD · HMM2 đã bị loại ở SEQ15v2 vì cổng quá khắt -> kích hoạt ~0%) ──────────────────────────────────────────────────────────────
-# Cả 2 CHỈ bỏ phiếu khi QUA "CỔNG TỰ CHẤM": mô hình tự dự đoán lại SUN_GATE_N ván gần nhất bằng dữ liệu TRƯỚC từng ván (không nhìn trước đáp án),
-# lấy log-loss trừ log-loss của đồng xu 50/50, và chỉ được bỏ phiếu khi trung bình lợi thế đạt z >= SUN_GATE_Z. Không đạt -> None (phiếu trắng, SUN_ABSTAIN điền đa số logic thường).
-SUN_GATE_Z = _env_num("SUNVIW_GATE_Z", 2.0, float)
-SUN_GATE_N = 60
-_LN2 = math.log(2.0)
-_LN_HALF = -_LN2
-
-
-def _gate_pass(qs, ys, G=None, zc=None):
-    """qs[i] = P(Tài) mô hình dự đoán cho ván i (chỉ dùng dữ liệu trước ván i) · ys[i] = kết quả thật (1 = Tài). True nếu G ván cuối cho lợi thế log-loss z >= zc so với đồng xu."""
-    G = SUN_GATE_N if G is None else G
-    zc = SUN_GATE_Z if zc is None else zc
-    m = min(len(qs), len(ys), G)
-    if m < 30:
-        return False
-    sm = sq = 0.0
-    for q, yy in zip(qs[-m:], ys[-m:]):
-        q = min(max(q, 1e-6), 1.0 - 1e-6)
-        d = math.log(q if yy else 1.0 - q) + _LN2
-        sm += d
-        sq += d * d
-    mean = sm / m
-    var = (sq - m * mean * mean) / (m - 1)
-    if var <= 1e-12:
-        return False
-    return mean / math.sqrt(var / m) >= zc
-
-
-# ── CTW: Context Tree Weighting (Willems–Shtarkov–Tjalkens) trên chuỗi Tài/Xỉu ──
-# Nút ở độ sâu k = k kết quả gần nhất (mới nhất đứng đầu). Mỗi nút giữ (số 0, số 1, log P_KT, log P_w) với P_w = ½·P_KT + ½·P_w(con 0)·P_w(con 1) (lá: P_w = P_KT).
-def _ctw_walk(nodes, ctx, D, sym, commit):
-    """Đi từ lá (độ sâu D) lên gốc với ký hiệu `sym` được thêm vào; trả log P_w(gốc). commit=True thì ghi lại các nút trên đường đi."""
-    child = 0.0
-    for k in range(D, -1, -1):
-        key = ctx[:k]
-        nd = nodes.get(key)
-        a, b, lpe, _ = nd if nd else (0, 0, 0.0, 0.0)
-        lpe += math.log(((b if sym else a) + 0.5) / (a + b + 1.0))
-        if sym:
-            b += 1
-        else:
-            a += 1
-        if k == D:
-            lpw = lpe
-        else:
-            sib = nodes.get(key + (1 - ctx[k],))
-            x, v = lpe, child + (sib[3] if sib else 0.0)
-            m = x if x > v else v
-            lpw = _LN_HALF + m + math.log(math.exp(x - m) + math.exp(v - m))
-        if commit:
-            nodes[key] = (a, b, lpe, lpw)
-        child = lpw
-    return child
-
-
-def _ctw_q1(nodes, ctx, D):
-    """P(kết quả kế = Tài | quá khứ) = P_w(quá khứ, 1) / P_w(quá khứ)."""
-    root = nodes.get(())
-    return math.exp(_ctw_walk(nodes, ctx, D, 1, False) - (root[3] if root else 0.0))
-
-
-def lg_ctw(S, D=8, W=300):
-    y = S["y"]
-    n = len(y)
-    N = min(n, W)
-    if N < D + SUN_GATE_N + 30:
-        return None
-    ys = y[n - N:]
-    nodes, qs = {}, []
-    for i in range(D, N):                                   # 1 lượt duy nhất: dự đoán TRƯỚC khi học ván i -> chính là walk-forward
-        ctx = tuple(ys[i - 1 - k] for k in range(D))
-        qs.append(_ctw_q1(nodes, ctx, D))
-        _ctw_walk(nodes, ctx, D, ys[i], True)
-    if not _gate_pass(qs, ys[D:]):
-        return None
-    q = _ctw_q1(nodes, tuple(ys[N - 1 - k] for k in range(D)), D)
-    return 1 if q > 0.5 else 0 if q < 0.5 else None
-
-
-# ── ARSUM: tự hồi quy AR(p<=8) trên TỔNG 3-18 (Yule–Walker giải bằng Levinson–Durbin, chọn p theo BIC) ──
-def lg_arsum(S, W=300, P=8):
-    y, tt = S["y"], S["t"]
-    n = len(y)
-    N = min(n, W)
-    G = SUN_GATE_N
-    if N < 150:
-        return None
-    s = [float(v) for v in tt[n - N:]]
-    ys = y[n - N:]
-    Ntr = N - G                                                     # hệ số học trên Ntr ván đầu · G ván cuối = tập chấm cổng (ngoài mẫu)
-    mu = sum(s[:Ntr]) / Ntr
-    c = [v - mu for v in s[:Ntr]]
-    g = [sum(c[i] * c[i + k] for i in range(Ntr - k)) / Ntr for k in range(P + 1)]
-    if g[0] <= 1e-9:
-        return None
-    if Ntr * (Ntr + 2.0) * sum((g[k] / g[0]) ** 2 / (Ntr - k) for k in range(1, P + 1)) < 15.51:    # Ljung–Box 8 độ trễ, χ²(8) mức 95%
-        return None
-    phi, v = [], g[0]
-    best = (Ntr * math.log(v), 0, [], v)                            # (BIC, p, hệ số, phương sai nhiễu)
-    for m in range(1, P + 1):
-        k = (g[m] - sum(phi[j] * g[m - 1 - j] for j in range(m - 1))) / v
-        phi = [phi[j] - k * phi[m - 2 - j] for j in range(m - 1)] + [k]
-        v *= 1.0 - k * k
-        if v <= 1e-9:
-            break
-        bic = Ntr * math.log(v) + m * math.log(Ntr)
-        if bic < best[0]:
-            best = (bic, m, list(phi), v)
-    _b, p, phi, v = best
-    if p == 0:
-        return None
-    sd = max(math.sqrt(v), 1.0)
-
-    def pred(i):                                                    # P(tổng ván i > 10.5 = Tài) từ p tổng liền trước
-        sh = mu + sum(phi[k] * (s[i - 1 - k] - mu) for k in range(p))
-        return 0.5 * math.erfc((10.5 - sh) / sd / math.sqrt(2.0))
-
-    if not _gate_pass([pred(i) for i in range(Ntr, N)], ys[Ntr:], G):
-        return None
-    q = pred(N)
-    return 1 if q > 0.5 else 0 if q < 0.5 else None
-
-
-# ── 5 logic thêm ở bản SEQ15v2 (SELKEY · LSM · DECAYMIX · CONV3 · BLREV) — thay EWMA · CMM · PERIOD · BOCPD · HMM2 ──────────────────────
-# Nguyên tắc chung: 4 logic đầu CHỈ bỏ phiếu khi có BẰNG CHỨNG thống kê (không thì None -> phiếu trắng, SUN_ABSTAIN điền đa số logic thường); BLREV luôn bỏ phiếu như SGDLR nhưng tự co hệ số về 0 khi dữ liệu ngẫu nhiên.
-# Backtest mô phỏng (13 kịch bản x 6 chuỗi): chuỗi ngẫu nhiên -> SELKEY / LSM / DECAYMIX / CONV3 kích hoạt ~0-1% ván; BLREV 100% ván nhưng ≈ 50% trên chuỗi ngẫu nhiên (như mọi logic thường).
-_SELKEY_KEYS = [
-    lambda S, j: (S["y"][j - 1],),                                                                  # 1 ván trước
-    lambda S, j: tuple(S["y"][j - 2:j]),                                                            # 2 ván trước
-    lambda S, j: tuple(S["y"][j - 3:j]),                                                            # 3 ván trước
-    lambda S, j: (S["t"][j - 1],),                                                                  # tổng ván trước (chính xác, 3..18)
-    lambda S, j: (_tb1(S["t"][j - 1]), _tb1(S["t"][j - 2])),                                        # nhóm tổng 2 ván trước
-    lambda S, j: (min(S["d"][j - 1]), max(S["d"][j - 1])),                                          # xúc xắc nhỏ nhất / lớn nhất ván trước
-    lambda S, j: (len(set(S["d"][j - 1])), S["y"][j - 1]),                                          # số mặt khác nhau (đôi / bộ ba) + kết quả ván trước
-    lambda S, j: (max(S["d"][j - 1]), S["y"][j - 1]),
-    lambda S, j: ((S["t"][j - 1] - S["t"][j - 2]) > 0, (S["t"][j - 1] - S["t"][j - 2]) < 0, _tb1(S["t"][j - 1])),   # tổng tăng / giảm + nhóm tổng
-    lambda S, j: (sum(S["y"][j - 4:j]),),                                                           # số Tài trong 4 ván trước
-    lambda S, j: (sum(S["y"][j - 8:j]), S["y"][j - 1]),                                             # số Tài trong 8 ván trước + ván trước
-    lambda S, j: (S["t"][j - 1] % 2, S["y"][j - 1]),                                                # chẵn / lẻ tổng ván trước + ván trước
-]
-
-
-def lg_selkey(S, W=250, m=4.0, zc=2.64, minn=120):
-    """SELKEY: trong 12 khoá ngữ cảnh (chuỗi Tài/Xỉu · tổng · xúc xắc) chọn khoá có LOO log-loss tốt hơn tỉ lệ chung nhiều nhất (kiểm định z BẮT CẶP).
-    zc = 2.64 = ngưỡng một phía Bonferroni mức 5% cho 12 khoá (chống \"chọn trúng khoá may mắn\"). Không khoá nào đạt -> None (phiếu trắng).
-    Khoá thắng thì P(Tài | khoá) co về tỉ lệ chung (m=4). Thay CMM: một mô hình tự chọn khoá + tự im khi không khoá nào có ích."""
-    y = S["y"]
-    n = len(y)
-    if n < minn:
-        return None
-    lo = max(9, n - W)
-    idx = range(lo, n)
-    P = sum(y[j] for j in idx)
-    T = len(idx)
-    base_ll = []
-    for j in idx:
-        q = (P - y[j] + 1.0) / (T - 1 + 2.0)
-        base_ll.append(math.log(q if y[j] else 1 - q))
-    best = None
-    for ki, kf in enumerate(_SELKEY_KEYS):
-        keys = [kf(S, j) for j in idx]
-        cnt = defaultdict(lambda: [0, 0])
-        for kk, j in zip(keys, idx):
-            cnt[kk][y[j]] += 1
-        diffs = []
-        for kk, j in zip(keys, idx):
-            c0, c1 = cnt[kk]
-            if y[j]:
-                c1 -= 1
-            else:
-                c0 -= 1
-            pg = (P - y[j] + 1.0) / (T - 1 + 2.0)
-            q = (c1 + m * pg) / (c0 + c1 + m)
-            diffs.append(math.log(q if y[j] else 1 - q) - base_ll[len(diffs)])
-        mean = sum(diffs) / T
-        var = sum((x - mean) ** 2 for x in diffs) / (T - 1)
-        if var <= 1e-12:
-            continue
-        z = mean / math.sqrt(var / T)
-        if best is None or z > best[0]:
-            best = (z, ki, cnt)
-    if best is None or best[0] < zc:
-        return None
-    _z, ki, cnt = best
-    k = _SELKEY_KEYS[ki](S, n)
-    if k not in cnt:
-        return None
-    c0, c1 = cnt[k]
-    pg = (P + 1.0) / (T + 2.0)
-    q = (c1 + m * pg) / (c0 + c1 + m)
-    return 1 if q > 0.5 else 0 if q < 0.5 else None
-
-
-def lg_lsm(S, W=300, Lmin=14):
-    """LSM: khớp hậu tố dài nhất. Tìm mọi chỗ trong lịch sử mà chuỗi Tài/Xỉu trước đó KHỚP với chuỗi hiện tại tối thiểu Lmin = 14 ván liền (xác suất trùng do may với 300 ván ≈ 2%),
-    rồi bỏ phiếu theo kết quả ngay sau các chỗ khớp (trọng số = độ dài khớp). Bắt cầu lặp dài hơn mức PPM6 (bậc 6) / CTW (bậc 8) thấy. Không có chỗ khớp đủ dài -> None (phiếu trắng).
-    ⚠ Chỉ có ích khi nguồn lặp lại mẫu; trên RNG công bằng chỉ kích hoạt ~1-3% ván và khi đó ≈ 50%."""
-    y = S["y"]
-    n = len(y)
-    ys = y[max(0, n - W):]
-    N = len(ys)
-    if N < 80:
-        return None
-    v1 = v0 = 0.0
-    for i in range(1, N):                                   # i = vị trí ván KẾ TIẾP của 1 lần xuất hiện cũ (hậu tố kết thúc tại i-1)
-        L = 0
-        while L < i and L < 40 and ys[i - 1 - L] == ys[N - 1 - L]:
-            L += 1
-        if L >= Lmin:
-            if ys[i]:
-                v1 += L
-            else:
-                v0 += L
-    if v1 == v0:
-        return None
-    return 1 if v1 > v0 else 0
-
-
-def lg_decaymix(S, W=250, hs=(6, 12, 25, 50, 100), share=0.03, G=100, zc=1.64):
-    """DECAYMIX: trộn Bayes (fixed-share) 11 chuyên gia — 5 chuyên gia thiên lệch Tài/Xỉu + 5 chuyên gia bệt/đảo (mỗi loại với chu kỳ quên 6 · 12 · 25 · 50 · 100 ván) + 1 chuyên gia 50/50.
-    Trọng số tự dồn vào chuyên gia đang đúng -> theo kịp đổi chế độ mà không cần đoán trước chu kỳ. CỔNG: mô hình tự dự đoán lại G = 100 ván gần nhất (không nhìn trước đáp án),
-    chỉ được bỏ phiếu khi lợi thế log-loss so với đồng xu 50/50 đạt z >= 1.64 (một phía 5%); không đạt -> None (phiếu trắng). Thay EWMA + BOCPD (cổng cũ 60 ván / z>=2 quá khắt nên gần như không bao giờ kích hoạt)."""
-    y = S["y"]
-    n = len(y)
-    if n < 120:
-        return None
-    ys = y[max(0, n - W):]
-    N = len(ys)
-    K = len(hs)
-    lam = [0.5 ** (1.0 / h) for h in hs]
-    a = [0.0] * K
-    m = [0.0] * K                                           # thiên lệch: số Tài / tổng (quên mũ)
-    s_ = [0.0] * K
-    r_ = [0.0] * K                                          # bệt/đảo: số lần GIỐNG ván trước / tổng (quên mũ)
-    E = 2 * K + 1
-    w = [1.0 / E] * E
-
-    def preds(prev):
-        ps = [(a[k] + 1.0) / (m[k] + 2.0) for k in range(K)]
-        for k in range(K):
-            if prev is None:
-                ps.append(0.5)
-            else:
-                q = (s_[k] + 1.0) / (r_[k] + 2.0)
-                ps.append(q if prev == 1 else 1.0 - q)
-        ps.append(0.5)
-        return ps
-
-    prev = None
-    qs, yl = [], []
-    for t in range(N):
-        ps = preds(prev)
-        if t >= 20:
-            qs.append(sum(wi * p for wi, p in zip(w, ps)))
-            yl.append(ys[t])
-            yy = ys[t]
-            w = [wi * (p if yy else 1.0 - p) for wi, p in zip(w, ps)]
-            z = sum(w)
-            w = [(1.0 - share) * wi / z + share / E for wi in w]
-        for k in range(K):
-            a[k] = a[k] * lam[k] + ys[t]
-            m[k] = m[k] * lam[k] + 1.0
-            if prev is not None:
-                s_[k] = s_[k] * lam[k] + (1.0 if ys[t] == prev else 0.0)
-                r_[k] = r_[k] * lam[k] + 1.0
-        prev = ys[t]
-    if not _gate_pass(qs, yl, G, zc):
-        return None
-    q = sum(wi * p for wi, p in zip(w, preds(prev)))
-    return 1 if q > 0.5 else 0 if q < 0.5 else None
-
-
-def lg_conv3(S, W=300, crit=30.6, m0=3.0, eff=0.03):
-    """CONV3: phân phối RIÊNG từng viên xúc xắc (vị trí 1 · 2 · 3, 6 mặt) trong W ván -> tích chập ra P(tổng >= 11). Ước lượng thiên lệch hiệu quả hơn đếm Tài/Xỉu nhị phân.
-    CỔNG 2 LỚP: (1) χ²(15) tổng 3 viên >= 30.6 (mức 1%) mới coi xúc xắc không đều; (2) |P(Tài) - 0.5| >= 0.03 mới bỏ phiếu (xúc xắc lệch nhưng không tạo lợi thế Tài/Xỉu thì phiếu chỉ là tung đồng xu).
-    Không đạt -> None (phiếu trắng). ⚠ Vô dụng nếu xúc xắc đều hoặc nguồn sinh xúc xắc ngược từ tổng."""
-    d = S["d"]
-    n = len(d)
-    if n < 120:
-        return None
-    seg = d[max(0, n - W):]
-    N = len(seg)
-    pm = []
-    chi = 0.0
-    for pos in range(3):
-        c = [0] * 6
-        for x in seg:
-            c[x[pos] - 1] += 1
-        e = N / 6.0
-        chi += sum((v - e) ** 2 / e for v in c)
-        pm.append([(v + m0 / 6.0) / (N + m0) for v in c])
-    if chi < crit:
-        return None
-    pt = 0.0
-    for i in range(6):
-        for j in range(6):
-            for k in range(6):
-                if i + j + k + 3 >= 11:
-                    pt += pm[0][i] * pm[1][j] * pm[2][k]
-    if abs(pt - 0.5) < eff:
-        return None
-    return 1 if pt > 0.5 else 0
 
 
 def _gj_solve(A, b):
@@ -1391,30 +965,801 @@ def lg_blrev(S, W=250, NL=8, iters=5):
     return 1 if z > 0 else 0 if z < 0 else None
 
 
+# ── 4 logic giữ lại từ SEQ13v4 (KNNH · RUNCTX · DIEMK · BAL; TVBIAS · RLSFF đã bỏ ở SEQ13v4) ──────────────────────
+# Nguyên tắc chung: cả 4 là logic THƯỜNG — LUÔN bỏ phiếu (không có cổng thống kê, không phiếu trắng). Thiếu bằng chứng -> mô hình tự co về prior rồi vẫn lấy dấu của xác suất;
+# chỉ khi chưa đủ lịch sử (n < ~30-40 ván) mới trả None -> compute_all cho theo kết quả ván trước. Trên chuỗi ngẫu nhiên mọi logic ≈ 50% (không logic nào tạo lợi thế trên RNG công bằng).
+def _sgn_vote(s, eps=1e-12):
+    return 1 if s > eps else 0 if s < -eps else None
+
+
+def lg_knnh(S, Ls=(6, 10, 14), K=15, W=200):
+    """KNNH: láng giềng gần nhất MỜ trên chuỗi Tài/Xỉu. Với mỗi độ dài đoạn L ∈ (6, 10, 14): so L ván cuối với MỌI đoạn L ván trong cửa sổ bằng khoảng cách Hamming có trọng số
+    (ván càng gần càng nặng; +0.5 nếu nhóm tổng ván trước khác), lấy K đoạn gần nhất, bỏ phiếu theo kết quả NGAY SAU mỗi đoạn với trọng số 1/(1+khoảng cách). Trung bình 3 độ dài -> dấu.
+    Khớp MỜ (không đòi khớp chính xác) nên luôn có láng giềng để bỏ phiếu."""
+    y, t = S["y"], S["t"]
+    n = len(y)
+    if n < 30:
+        return None
+    tq = _tb1(t[n - 1])
+    tot, used = 0.0, 0
+    for L in Ls:
+        lo = max(L, n - W)
+        if n - lo < 20:
+            continue
+        q = y[n - L:n]
+        wp = [1.0 + i / float(L) for i in range(L)]                 # ván càng gần (cuối đoạn) trọng số càng cao
+        cand = []
+        for j in range(lo, n):
+            d = 0.5 if _tb1(t[j - 1]) != tq else 0.0
+            base = j - L
+            for i in range(L):
+                if y[base + i] != q[i]:
+                    d += wp[i]
+            cand.append((d, -j, y[j]))                              # hoà khoảng cách -> ưu tiên đoạn mới hơn
+        cand.sort()
+        sw = sv = 0.0
+        for d, _nj, yy in cand[:K]:
+            w = 1.0 / (1.0 + d)
+            sw += w
+            sv += w * (2 * yy - 1)
+        if sw > 0:
+            tot += sv / sw
+            used += 1
+    if not used:
+        return None
+    return _sgn_vote(tot)
+
+
+def lg_runctx(S, cl=7, cp=4, m=4.0):
+    """RUNCTX: mô hình hazard theo ĐỘ DÀI ĐỢT có ngữ cảnh. Mỗi bước trong lịch sử: 'đợt đang dài l ván (cắt ở 7), 2 đợt trước dài p1 / p2 (cắt ở 4)' -> đợt có KẾT THÚC ở bước này không.
+    Hazard ước lượng theo 4 tầng back-off (l,p1,p2) -> (l,p1) -> (l) -> chung, mỗi tầng co về tầng dưới (m=4) nên ngữ cảnh ít mẫu tự dựa vào tầng thô hơn.
+    P(đợt kết thúc ngay ván này) > 50% -> ĐẢO cầu, < 50% -> BỆT. Bắt cầu 1-1, 2-2, 1-2-1, 2-1-2… ở tầng độ dài đợt (PPM6 chỉ thấy 6 ký tự liền nhau)."""
+    y = S["y"]
+    n = len(y)
+    if n < 30:
+        return None
+    runs = []
+    for v in y:
+        if runs and runs[-1][0] == v:
+            runs[-1][1] += 1
+        else:
+            runs.append([v, 1])
+    kl = len(runs) - 1
+    c3 = defaultdict(lambda: [0, 0])
+    c2 = defaultdict(lambda: [0, 0])
+    c1 = defaultdict(lambda: [0, 0])
+    c0 = [0, 0]
+    for k, (_s, ln) in enumerate(runs):
+        p1 = min(runs[k - 1][1], cp) if k >= 1 else 0
+        p2 = min(runs[k - 2][1], cp) if k >= 2 else 0
+        for l in range(1, ln + 1):
+            if k == kl and l == ln:                                 # bước hiện tại của đợt đang chạy = câu hỏi, chưa có đáp án
+                break
+            e = 1 if l == ln else 0                                 # 1 = đợt kết thúc sau l ván
+            lc = min(l, cl)
+            c3[(lc, p1, p2)][e] += 1
+            c2[(lc, p1)][e] += 1
+            c1[lc][e] += 1
+            c0[e] += 1
+    p1q = min(runs[-2][1], cp) if len(runs) >= 2 else 0
+    p2q = min(runs[-3][1], cp) if len(runs) >= 3 else 0
+    lq = min(runs[-1][1], cl)
+    h = (c0[1] + 1.0) / (c0[0] + c0[1] + 2.0)
+    for tbl, key in ((c1, lq), (c2, (lq, p1q)), (c3, (lq, p1q, p2q))):
+        a = tbl[key] if key in tbl else (0, 0)
+        h = (a[1] + m * h) / (a[0] + a[1] + m)
+    if h > 0.5:
+        return 1 - y[-1]
+    if h < 0.5:
+        return y[-1]
+    return None
+
+
+def lg_diemk(S, W=200, m=6.0):
+    """DIEMK: Markov mức TỪNG VIÊN xúc xắc. Mỗi viên (3 vị trí) có bảng 'mức viên đó ván trước (thấp 1-2 · giữa 3-4 · cao 5-6) -> phân phối mặt 1..6 ván sau', học trong W ván,
+    làm mịn Dirichlet về phân phối chung của viên đó (m=6). Nhân chập 3 phân phối -> P(tổng >= 11). Đi đường KHÁC với CT2/CDT cũ (gom nhóm tổng làm mất thông tin từng viên)
+    và với bản gom nhóm tổng cũ (mất thông tin từng viên)."""
+    d = S["d"]
+    n = len(d)
+    if n < 30:
+        return None
+    try:
+        lv = lambda v: 0 if v <= 2 else 1 if v <= 4 else 2
+        lo = max(1, n - W)
+        dists = []
+        for k in range(3):
+            cnt = [[0] * 7 for _ in range(3)]
+            mg = [0] * 7
+            for j in range(lo, n):
+                v = int(d[j][k])
+                if not 1 <= v <= 6:
+                    return None
+                cnt[lv(int(d[j - 1][k]))][v] += 1
+                mg[v] += 1
+            tm = float(sum(mg))
+            mp = [(mg[v] + 1.0) / (tm + 6.0) for v in range(1, 7)]
+            c = cnt[lv(int(d[n - 1][k]))]
+            tc = float(sum(c))
+            dists.append([(c[v] + m * mp[v - 1]) / (tc + m) for v in range(1, 7)])
+    except (TypeError, ValueError, IndexError):
+        return None
+    pt = 0.0
+    for a in range(6):
+        for b in range(6):
+            pab = dists[0][a] * dists[1][b]
+            for c_ in range(6):
+                if a + b + c_ + 3 >= 11:
+                    pt += pab * dists[2][c_]
+    return _sgn_vote(pt - 0.5, 1e-9)
+
+
+def lg_bal(S, wins=(8, 16, 32, 64), minn=30):
+    """BAL: 'cân cầu' — độ lệch Tài-Xỉu (z-score) trong cửa sổ 8 / 16 / 32 / 64 ván gần nhất. Với mỗi cửa sổ, học TRÊN LỊCH SỬ hệ số hồi quy ridge: độ lệch cửa sổ đó -> kết quả ván sau
+    (hệ số âm = hồi quy về trung bình / nhà cái cân bằng, dương = đà tiếp tục). Điểm = Σ hệ số × độ lệch hiện tại -> dấu. Dấu của hệ số do dữ liệu quyết định, không đặt tay;
+    RNG độc lập thì hệ số ≈ 0 và logic chỉ bỏ phiếu theo nhiễu nhỏ."""
+    y = S["y"]
+    n = len(y)
+    if n < 40:
+        return None
+    c = [0]
+    for v in y:
+        c.append(c[-1] + v)
+    score, used = 0.0, 0
+    for w in wins:
+        N = n - w
+        if N < minn:
+            continue
+        sd = 0.5 * math.sqrt(w)
+        f = [(c[j] - c[j - w] - w / 2.0) / sd for j in range(w, n)]
+        tg = y[w:n]
+        yb = sum(tg) / float(N)
+        fb = sum(f) / float(N)                                      # TRUNG TÂM hoá cả độ lệch lẫn kết quả: logic chỉ đo 'lệch hơn mức thường lệ', thiên lệch cố định để các logic khác (CMIXL · SPARSE) lo
+        sxy = sum((fi - fb) * (yy - yb) for fi, yy in zip(f, tg))
+        sxx = sum((fi - fb) ** 2 for fi in f)
+        beta = sxy / (sxx + 1.0 * N)                                # ridge: co hệ số về 0 khi tín hiệu yếu
+        score += beta * ((c[n] - c[n - w] - w / 2.0) / sd - fb)
+        used += 1
+    if not used:
+        return None
+    return _sgn_vote(score, 1e-12)
+
+
+# ── 6 logic MỚI ở bản SEQ13v4 (CMIXL · SPARSE · HMM3 · TOTK · SPEC · CPSEG) — thay CTW · SELKEY · LSM · DECAYMIX · CONV3 · TVBIAS · RLSFF ──────────────────────────────
+# Nguyên tắc chung: (1) LUÔN bỏ phiếu (dấu của xác suất/dự báo, không cổng thống kê, không phiếu trắng) — chỉ khi chưa đủ lịch sử mới trả None -> theo ván trước;
+# (2) mọi ván trong cửa sổ có TRỌNG SỐ NHƯ NHAU (không decay) — "cửa sổ" do LOGIC_WIN cắt trong compute_all (mỗi logic đọc đúng số ván mà nó mạnh nhất);
+# (3) không đặt tay tham số nhạy: hệ số phạt / băng thông / bậc mô hình do DỮ LIỆU chọn (evidence · leave-one-out · log-likelihood) -> chuỗi ngẫu nhiên thì co về 50% chứ không bịa cấu trúc.
+_pc = int.bit_count if hasattr(int, "bit_count") else (lambda x: bin(x).count("1"))      # popcount
+
+
+def _loo_ll(n0, n1, a=1.0):
+    """Log-likelihood LEAVE-ONE-OUT của 1 ngữ cảnh có n0 ván Xỉu / n1 ván Tài (bộ ước lượng Beta(a,a)): mỗi ván được dự đoán bằng phần còn lại của ngữ cảnh đó."""
+    n = n0 + n1
+    if n == 0:
+        return 0.0
+    den = n - 1.0 + 2.0 * a
+    s = 0.0
+    if n1:
+        s += n1 * math.log((n1 - 1.0 + a) / den)
+    if n0:
+        s += n0 * math.log((n0 - 1.0 + a) / den)
+    return s
+
+
+def _ridge_logit(X, Yv, w0, iters=4, alpha0=5.0, a_min=0.5, a_max=2000.0):
+    """Hồi quy logistic ridge (Newton/IRLS) với PRIOR TRUNG TÂM w0 (phạt α|w−w0|², bias w[0] không phạt). α tự chọn theo bằng chứng (MacKay: α = γ/|w−w0|²).
+    Khác BLREV: hệ số co về w0 (vd. 'trung bình đều các mô hình') chứ không co về 0 -> không có bằng chứng thì kết quả = trung bình các đầu vào."""
+    d = len(w0)
+    w = list(w0)
+    alpha = alpha0
+    for _ in range(iters):
+        H = [[0.0] * d for _ in range(d)]
+        g = [0.0] * d
+        for x, yy in zip(X, Yv):
+            z = 0.0
+            for a_ in range(d):
+                z += w[a_] * x[a_]
+            z = max(-30.0, min(30.0, z))
+            p = 1.0 / (1.0 + math.exp(-z))
+            sv = p * (1.0 - p)
+            e = yy - p
+            for a_ in range(d):
+                xa = x[a_]
+                g[a_] += e * xa
+                sa = sv * xa
+                Ha = H[a_]
+                for b_ in range(a_, d):
+                    Ha[b_] += sa * x[b_]
+        for a_ in range(d):
+            for b_ in range(a_):
+                H[a_][b_] = H[b_][a_]
+        for a_ in range(1, d):
+            g[a_] -= alpha * (w[a_] - w0[a_])
+            H[a_][a_] += alpha
+        H[0][0] += 1e-6
+        dw = _gj_solve(H, g)
+        if dw is None:
+            return None
+        w = [wi + di for wi, di in zip(w, dw)]
+        ww = sum((w[a_] - w0[a_]) ** 2 for a_ in range(1, d))
+        if ww > 1e-9:
+            tr = sum(1.0 / H[a_][a_] for a_ in range(1, d))
+            gamma = max(0.0, (d - 1) - alpha * tr)
+            alpha = min(max(gamma / ww, a_min), a_max)
+    return w
+
+
+# ── 1) CMIXL — Context Mixing Logistic (kiểu PAQ): nhiều mô hình ngữ cảnh + match model, trộn bằng hồi quy logistic ─────────────────────────────────────────────────────
+def lg_cmixl(S, W=500, burn=60):
+    """CMIXL: 'trộn ngữ cảnh' kiểu PAQ/cmix trên chuỗi Tài/Xỉu. 9 mô hình con, mỗi mô hình học ONLINE (đếm dần theo thứ tự thời gian, ván j chỉ thấy ván < j) rồi đưa ra stretch(P(Tài)):
+    bậc 1 · 2 · 3 · 4 · 6 · 8 (ngữ cảnh = k kết quả gần nhất) · RUNCTX (ván trước + độ dài đợt hiện tại + độ dài đợt trước) · TỔNG (nhóm tổng 2 ván trước) · MATCH (tìm lần xuất hiện gần nhất của 12 ván cuối,
+    dự đoán theo ván nằm sau nó; độ tin cậy theo độ dài khớp học online). Bộ trộn = hồi quy logistic ridge trên chính các dự đoán ĐÃ-LÀ-OUT-OF-SAMPLE đó (ván nào cũng nặng như nhau),
+    hệ số co về TRUNG BÌNH ĐỀU 1/9 (không có bằng chứng thì ≈ trung bình các mô hình) và độ phạt α tự chọn theo bằng chứng MacKay. Cửa sổ 500 ván. Luôn bỏ phiếu.
+    Mạnh: bắt cùng lúc cầu ngắn (bậc thấp) · cầu dài lặp (match/bậc 8) · nhịp đợt (RUNCTX) mà không phải đoán 'bậc nào đúng' — bộ trộn tự chọn. Yếu: nhiều mô hình -> cần ≥ 100 ván (tốt nhất ≥ 300) mới có bằng chứng; nguồn thật sự ngẫu nhiên thì ≈ 50%."""
+    y, t = S["y"], S["t"]
+    n = len(y)
+    if n < 100:
+        return None
+    burn = min(burn, max(20, n // 8))
+    J0 = 12
+    ORD = (1, 2, 3, 4, 6, 8)
+    cn1 = [[0] * (1 << k) for k in ORD]
+    cn0 = [[0] * (1 << k) for k in ORD]
+    masks = [(1 << k) - 1 for k in ORD]
+    rc = {}                                                     # RUNCTX: (ván trước, độ dài đợt cắt 8, độ dài đợt trước cắt 4) -> [n0, n1]
+    tc = {}                                                     # TỔNG: nhóm tổng 2 ván trước -> [n0, n1]
+    tb = [_tb1(v) for v in t]
+    last = {}                                                   # 12 ván cuối (số nguyên 12 bit) -> chỉ số ván nằm NGAY SAU lần xuất hiện gần nhất
+    mh = [0] * 10
+    mt = [0] * 10
+    h = 0
+    run, prun = 0, 0
+    for i in range(J0):
+        h = (h << 1) | y[i]
+        if i and y[i] == y[i - 1]:
+            run += 1
+        else:
+            prun, run = run, 1
+    X, Yv = [], []
+    feats = None
+    for j in range(J0, n + 1):
+        f = [1.0]
+        for oi in range(6):
+            cx = h & masks[oi]
+            f.append(math.log((cn1[oi][cx] + 1.0) / (cn0[oi][cx] + 1.0)))
+        rk = (y[j - 1], run if run < 8 else 8, prun if prun < 4 else 4)
+        r = rc.get(rk)
+        f.append(math.log((r[1] + 1.0) / (r[0] + 1.0)) if r else 0.0)
+        tk = tb[j - 1] * 4 + tb[j - 2]
+        r = tc.get(tk)
+        f.append(math.log((r[1] + 1.0) / (r[0] + 1.0)) if r else 0.0)
+        p = last.get(h)
+        pred, mb = -1, 0
+        if p is not None:
+            ln_ = 12
+            while ln_ < 32 and p - 1 - ln_ >= 0 and y[p - 1 - ln_] == y[j - 1 - ln_]:
+                ln_ += 1
+            mb = ln_ >> 2
+            pred = y[p]
+            rr = (mh[mb] + 1.0) / (mt[mb] + 2.0)
+            sv = math.log(rr / (1.0 - rr))
+            f.append(sv if pred else -sv)
+        else:
+            f.append(0.0)
+        if j == n:
+            feats = f
+            break
+        yy = y[j]
+        if j >= J0 + burn:
+            X.append(f)
+            Yv.append(yy)
+        for oi in range(6):
+            cx = h & masks[oi]
+            if yy:
+                cn1[oi][cx] += 1
+            else:
+                cn0[oi][cx] += 1
+        r = rc.get(rk)
+        if r is None:
+            r = rc[rk] = [0, 0]
+        r[yy] += 1
+        r = tc.get(tk)
+        if r is None:
+            r = tc[tk] = [0, 0]
+        r[yy] += 1
+        if pred >= 0:
+            mt[mb] += 1
+            if pred == yy:
+                mh[mb] += 1
+        last[h] = j
+        h = ((h << 1) | yy) & 0xFFF
+        if yy == y[j - 1]:
+            run += 1
+        else:
+            prun, run = run, 1
+    if len(X) < 50 or feats is None:
+        return None
+    d = len(feats)
+    w0 = [0.0] + [1.0 / (d - 1)] * (d - 1)
+    w = _ridge_logit(X, Yv, w0)
+    if w is None:
+        return None
+    return _sgn_vote(sum(a * b for a, b in zip(w, feats)), 1e-12)
+
+
+# ── 2) SPARSE — mô hình trễ THƯA, trung bình Bayes (BMA) bằng bitset + popcount ───────────────────────────────────────────────────────────────────────────────────────────
+def lg_sparse(S, W=500, L1=16, L3=10, a=1.0):
+    """SPARSE: thay vì ngữ cảnh 'k ván liền nhau' (PPM) — xét mọi tập TRỄ THƯA: 1 trễ ∈ 1..16 (16 mô hình) · 2 trễ ∈ 1..16 (120) · 3 trễ ∈ 1..10 (120) + mô hình rỗng (tỉ lệ chung) = 257 mô hình.
+    Ví dụ {2,5}: 'ván cách 2 và cách 5 ván trước -> ván này' (bắt cầu có nhịp cách quãng / chu kỳ mà PPM không thấy vì bị ván xen giữa che). Mỗi mô hình = bảng đếm Tài/Xỉu theo giá trị các trễ đó trong W=500 ván
+    (đếm bằng bitset + popcount nên cả 257 mô hình chỉ vài ms). Bằng chứng mỗi mô hình = log-likelihood LEAVE-ONE-OUT (đã tự phạt độ phức tạp: mô hình nhiều ngữ cảnh mà chỉ khớp nhiễu sẽ bị trừ điểm);
+    prior chia ĐỀU theo số trễ (rỗng / 1 / 2 / 3 trễ mỗi nhóm 1/4, rồi chia đều trong nhóm). Dự đoán = trung bình Bayes P(Tài) theo trọng số exp(bằng chứng). Luôn bỏ phiếu (dấu của P − 0.5).
+    Mạnh: bắt chu kỳ/nhịp cách quãng, bù cho PPM6 (liền kề) và RUNCTX (độ dài đợt). Yếu: trên nguồn ngẫu nhiên vẫn có 'người thắng do may' trong 257 mô hình — LOO + prior nhóm chỉ giảm chứ không loại bỏ."""
+    y = S["y"]
+    n = len(y)
+    lo = max(L1, n - W)
+    N = n - lo
+    if N < 80:
+        return None
+    full = (1 << N) - 1
+    mk = lambda seq: int("".join(map(str, seq)), 2)
+    T = mk(y[lo:n])
+    B = [None] * (L1 + 1)
+    for l_ in range(1, L1 + 1):
+        B[l_] = mk(y[lo - l_:n - l_])
+    P1 = [None] + [(B[l_] ^ full, B[l_]) for l_ in range(1, L1 + 1)]       # P1[l][v] = tập vị trí mà ván cách l ván có giá trị v
+    qb = [None] + [y[n - l_] for l_ in range(1, L1 + 1)]                    # giá trị các trễ tại thời điểm cần dự đoán
+    a2 = 2.0 * a
+    n1_all = _pc(T)
+    n0_all = N - n1_all
+    cand = [(math.log(0.25) + _loo_ll(n0_all, n1_all, a), (n1_all + a) / (N + a2))]
+    g1 = float(L1)
+    g2 = L1 * (L1 - 1) / 2.0
+    g3 = L3 * (L3 - 1) * (L3 - 2) / 6.0
+    lp1, lp2, lp3 = math.log(0.25 / g1), math.log(0.25 / g2), math.log(0.25 / g3)
+
+    for l1 in range(1, L1 + 1):
+        ll, pq = 0.0, 0.5
+        for v in (0, 1):
+            m = P1[l1][v]
+            nn = _pc(m)
+            k1 = _pc(m & T)
+            ll += _loo_ll(nn - k1, k1, a)
+            if v == qb[l1]:
+                pq = (k1 + a) / (nn + a2)
+        cand.append((lp1 + ll, pq))
+        for l2 in range(l1 + 1, L1 + 1):
+            sets2 = []
+            ll, pq = 0.0, 0.5
+            for v1 in (0, 1):
+                for v2 in (0, 1):
+                    m = P1[l1][v1] & P1[l2][v2]
+                    sets2.append(m)
+                    nn = _pc(m)
+                    k1 = _pc(m & T)
+                    ll += _loo_ll(nn - k1, k1, a)
+                    if v1 == qb[l1] and v2 == qb[l2]:
+                        pq = (k1 + a) / (nn + a2)
+            cand.append((lp2 + ll, pq))
+            if l2 <= L3:
+                for l3 in range(l2 + 1, L3 + 1):
+                    ll, pq = 0.0, 0.5
+                    for i4 in range(4):
+                        m4 = sets2[i4]
+                        for v3 in (0, 1):
+                            m = m4 & P1[l3][v3]
+                            nn = _pc(m)
+                            k1 = _pc(m & T)
+                            ll += _loo_ll(nn - k1, k1, a)
+                            if (i4 >> 1) == qb[l1] and (i4 & 1) == qb[l2] and v3 == qb[l3]:
+                                pq = (k1 + a) / (nn + a2)
+                    cand.append((lp3 + ll, pq))
+    mx = max(c[0] for c in cand)
+    sw = sq = 0.0
+    for lw, pq in cand:
+        wgt = math.exp(lw - mx)
+        sw += wgt
+        sq += wgt * pq
+    return _sgn_vote(sq / sw - 0.5, 1e-12)
+
+
+# ── 3) HMM3 — Hidden Markov 3 trạng thái (Baum–Welch, MAP) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def _hmm_forward(ys, A, e):
+    """Forward có chuẩn hoá. Trả (list alpha-chuẩn-hoá, list hệ số c, log-likelihood)."""
+    a00, a01, a02, a10, a11, a12, a20, a21, a22 = A[0][0], A[0][1], A[0][2], A[1][0], A[1][1], A[1][2], A[2][0], A[2][1], A[2][2]
+    e0, e1, e2 = e
+    q0, q1, q2 = 1.0 - e0, 1.0 - e1, 1.0 - e2
+    y0 = ys[0]
+    f0 = (e0 if y0 else q0) / 3.0
+    f1 = (e1 if y0 else q1) / 3.0
+    f2 = (e2 if y0 else q2) / 3.0
+    c = f0 + f1 + f2
+    f0, f1, f2 = f0 / c, f1 / c, f2 / c
+    al = [(f0, f1, f2)]
+    cs = [c]
+    ll = math.log(c)
+    for t in range(1, len(ys)):
+        yy = ys[t]
+        g0 = (f0 * a00 + f1 * a10 + f2 * a20) * (e0 if yy else q0)
+        g1 = (f0 * a01 + f1 * a11 + f2 * a21) * (e1 if yy else q1)
+        g2 = (f0 * a02 + f1 * a12 + f2 * a22) * (e2 if yy else q2)
+        c = g0 + g1 + g2
+        if c < 1e-300:
+            c = 1e-300
+        f0, f1, f2 = g0 / c, g1 / c, g2 / c
+        al.append((f0, f1, f2))
+        cs.append(c)
+        ll += math.log(c)
+    return al, cs, ll
+
+
+def _hmm_fit(ys, A, e, iters, tol=0.01):
+    """Baum–Welch MAP: prior Dirichlet(1) cho từng hàng chuyển trạng thái (+1 giả-đếm) và Beta(2,2) cho xác suất phát Tài (+1/+1) -> không bao giờ suy biến về 0/1."""
+    T = len(ys)
+    A = [r[:] for r in A]
+    e = list(e)
+    prev = -1e300
+    al = cs = None
+    ll = prev
+    for _ in range(iters):
+        al, cs, ll = _hmm_forward(ys, A, e)
+        if ll - prev < tol:
+            break
+        prev = ll
+        a00, a01, a02, a10, a11, a12, a20, a21, a22 = A[0][0], A[0][1], A[0][2], A[1][0], A[1][1], A[1][2], A[2][0], A[2][1], A[2][2]
+        e0, e1, e2 = e
+        q0, q1, q2 = 1.0 - e0, 1.0 - e1, 1.0 - e2
+        b0 = b1 = b2 = 1.0                                      # beta chuẩn hoá của bước cuối
+        x00 = x01 = x02 = x10 = x11 = x12 = x20 = x21 = x22 = 0.0
+        sg0 = sg1 = sg2 = 0.0
+        sy0 = sy1 = sy2 = 0.0
+        yy = ys[T - 1]
+        f0, f1, f2 = al[T - 1]
+        sg0 += f0
+        sg1 += f1
+        sg2 += f2
+        if yy:
+            sy0 += f0
+            sy1 += f1
+            sy2 += f2
+        for t in range(T - 2, -1, -1):
+            yn = ys[t + 1]
+            c = cs[t + 1]
+            u0 = (e0 if yn else q0) * b0 / c
+            u1 = (e1 if yn else q1) * b1 / c
+            u2 = (e2 if yn else q2) * b2 / c
+            f0, f1, f2 = al[t]
+            x00 += f0 * u0
+            x01 += f0 * u1
+            x02 += f0 * u2
+            x10 += f1 * u0
+            x11 += f1 * u1
+            x12 += f1 * u2
+            x20 += f2 * u0
+            x21 += f2 * u1
+            x22 += f2 * u2
+            b0 = a00 * u0 + a01 * u1 + a02 * u2
+            b1 = a10 * u0 + a11 * u1 + a12 * u2
+            b2 = a20 * u0 + a21 * u1 + a22 * u2
+            g0, g1, g2 = f0 * b0, f1 * b1, f2 * b2
+            sg0 += g0
+            sg1 += g1
+            sg2 += g2
+            if ys[t]:
+                sy0 += g0
+                sy1 += g1
+                sy2 += g2
+        X = ((x00 * a00, x01 * a01, x02 * a02), (x10 * a10, x11 * a11, x12 * a12), (x20 * a20, x21 * a21, x22 * a22))
+        A = []
+        for r in X:
+            s = r[0] + r[1] + r[2] + 3.0
+            A.append([(r[0] + 1.0) / s, (r[1] + 1.0) / s, (r[2] + 1.0) / s])
+        e = [(sy0 + 1.0) / (sg0 + 2.0), (sy1 + 1.0) / (sg1 + 2.0), (sy2 + 1.0) / (sg2 + 2.0)]
+    al, cs, ll = _hmm_forward(ys, A, e)
+    return A, e, al, ll
+
+
+def lg_hmm3(S, W=400, iters=10):
+    """HMM3: mô hình Markov ẩn 3 trạng thái (mỗi trạng thái có xác suất ra Tài riêng + ma trận chuyển trạng thái 3x3), học bằng Baum–Welch MAP trên W=400 ván (mọi ván trọng số như nhau).
+    2 điểm khởi tạo CỐ ĐỊNH (deterministic): (a) 'chế độ dính' — 3 trạng thái nghiêng Xỉu / giữa / nghiêng Tài, ở lâu trong mỗi trạng thái; (b) 'chu trình' — 3 trạng thái luân phiên theo vòng (bắt cầu 1-1 / nhịp 3);
+    lấy cái có likelihood cao hơn. Dự đoán = lọc forward ra phân phối trạng thái hiện tại -> chuyển 1 bước -> P(Tài) -> dấu của P − 0.5. Luôn bỏ phiếu.
+    Mạnh: bắt 'chế độ' ẩn thay đổi (lúc bệt, lúc đảo, lúc lệch Tài…) mà các mô hình ngữ cảnh cố định không có khái niệm 'đang ở chế độ nào'; prior MAP nên không suy biến. Yếu: EM có thể kẹt cực trị địa phương
+    (đã giảm bằng 2 khởi tạo) và trên nguồn ngẫu nhiên 3 trạng thái chỉ fit nhiễu -> ≈ 50%."""
+    y = S["y"]
+    n = len(y)
+    if n < 100:
+        return None
+    best = None
+    for A0, e0 in (([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]], (0.3, 0.5, 0.7)),
+                   ([[0.15, 0.7, 0.15], [0.15, 0.15, 0.7], [0.7, 0.15, 0.15]], (0.2, 0.8, 0.5))):
+        r = _hmm_fit(y, A0, e0, iters)
+        if best is None or r[3] > best[3]:
+            best = r
+    A, e, al, _ll = best
+    f = al[-1]
+    p = 0.0
+    for j in range(3):
+        p += e[j] * (f[0] * A[0][j] + f[1] * A[1][j] + f[2] * A[2][j])
+    return _sgn_vote(p - 0.5, 1e-12)
+
+
+# ── 4) TOTK — hồi quy hạt nhân (Nadaraya–Watson) trên TỔNG xúc xắc, băng thông chọn bằng LOO + BMA ───────────────────────────────────────────────────────────────────────────
+def _smooth1d(arr, ker):
+    V = len(arr)
+    R = len(ker) - 1
+    out = [0.0] * V
+    for c in range(V):
+        s = 0.0
+        for d_ in range(-R, R + 1):
+            i = c + d_
+            if 0 <= i < V:
+                s += ker[abs(d_)] * arr[i]
+        out[c] = s
+    return out
+
+
+def lg_totk(S, W=400, m=2.0):
+    """TOTK: hồi quy hạt nhân trên TỔNG xúc xắc (3..18) — 'tổng gần đây ở gần mức nào thì ván sau hay ra Tài hay Xỉu', dùng thông tin mà nhị phân Tài/Xỉu (PPM/CMIXL) vứt đi (tổng 10 và 3 cùng là Xỉu).
+    3 bộ đặc trưng: (a) tổng ván trước · (b) cặp (tổng ván trước, tổng ván trước nữa) · (c) tổng 3 ván gần nhất. Mỗi bộ x 4 băng thông Gauss (hẹp -> rộng ≈ tỉ lệ chung) = 12 ước lượng NW:
+    P(Tài | ngữ cảnh) = (Σ K·y + m·p0)/(Σ K + m), m = 2 co về tỉ lệ chung p0. Băng thông KHÔNG đặt tay: bằng chứng mỗi ước lượng = log-likelihood LEAVE-ONE-OUT trên W=400 ván (công thức đóng, ván nào cũng nặng như nhau),
+    dự đoán = trung bình Bayes theo exp(bằng chứng). Luôn bỏ phiếu. Mạnh: dùng được cả độ lớn tổng (nguồn có 'đà' theo mức tổng); LOO tự chọn băng thông. Yếu: nếu cầu chỉ phụ thuộc Tài/Xỉu thì chẳng thêm gì so với PPM6."""
+    y, t = S["y"], S["t"]
+    n = len(y)
+    if n < 60:
+        return None
+    tt = [min(18, max(3, int(v))) - 3 for v in t]               # 0..15
+    j0 = 3
+    N = n - j0
+    n1_all = sum(y[j0:n])
+    p0 = (n1_all + 1.0) / (N + 2.0)
+    V1, V3 = 16, 46
+    # đếm ô
+    g1_n, g1_1 = [0.0] * V1, [0.0] * V1
+    g2_n = [[0.0] * V1 for _ in range(V1)]
+    g2_1 = [[0.0] * V1 for _ in range(V1)]
+    g3_n, g3_1 = [0.0] * V3, [0.0] * V3
+    for j in range(j0, n):
+        yy = y[j]
+        a_, b_ = tt[j - 1], tt[j - 2]
+        s3 = a_ + b_ + tt[j - 3]
+        g1_n[a_] += 1.0
+        g2_n[a_][b_] += 1.0
+        g3_n[s3] += 1.0
+        if yy:
+            g1_1[a_] += 1.0
+            g2_1[a_][b_] += 1.0
+            g3_1[s3] += 1.0
+    qa, qb_ = tt[n - 1], tt[n - 2]
+    qs = qa + qb_ + tt[n - 3]
+
+    def kern(h, V):
+        R = min(V - 1, int(math.ceil(3.0 * h)))
+        return [math.exp(-0.5 * (i / h) ** 2) for i in range(R + 1)]
+
+    def loo_cells(cells, p0_, m_):
+        """cells: list (n_c, n1_c, S_c, S1_c) -> LOO log-lik của ước lượng NW (đã bỏ chính ván đó khỏi tổng hạt nhân: S-1, S1-y)."""
+        ll = 0.0
+        for nc, k1, Sc, S1c in cells:
+            if nc <= 0.0:
+                continue
+            den = Sc - 1.0 + m_
+            if k1 > 0.0:
+                ll += k1 * math.log((S1c - 1.0 + m_ * p0_) / den)
+            k0 = nc - k1
+            if k0 > 0.0:
+                ll += k0 * math.log(((Sc - S1c) - 1.0 + m_ * (1.0 - p0_)) / den)
+        return ll
+
+    cand = []
+    for h in (0.6, 1.2, 2.5, 6.0):
+        ker = kern(h, V1)
+        # (a) 1D tổng ván trước
+        S_n, S_1 = _smooth1d(g1_n, ker), _smooth1d(g1_1, ker)
+        ll = loo_cells([(g1_n[c], g1_1[c], S_n[c], S_1[c]) for c in range(V1)], p0, m)
+        cand.append((ll, (S_1[qa] + m * p0) / (S_n[qa] + m)))
+        # (b) 2D (tổng ván trước, tổng ván trước nữa) — tách biến: làm mịn theo hàng rồi theo cột
+        r_n = [_smooth1d(row, ker) for row in g2_n]
+        r_1 = [_smooth1d(row, ker) for row in g2_1]
+        cols_n = [_smooth1d([r_n[a][b] for a in range(V1)], ker) for b in range(V1)]     # cols_n[b][a]
+        cols_1 = [_smooth1d([r_1[a][b] for a in range(V1)], ker) for b in range(V1)]
+        cells = []
+        for a in range(V1):
+            for b in range(V1):
+                if g2_n[a][b] > 0.0:
+                    cells.append((g2_n[a][b], g2_1[a][b], cols_n[b][a], cols_1[b][a]))
+        ll = loo_cells(cells, p0, m)
+        cand.append((ll, (cols_1[qb_][qa] + m * p0) / (cols_n[qb_][qa] + m)))
+        # (c) 1D tổng 3 ván (đơn vị lớn hơn ≈ √3 lần)
+        ker3 = kern(h * 1.7, V3)
+        S_n, S_1 = _smooth1d(g3_n, ker3), _smooth1d(g3_1, ker3)
+        ll = loo_cells([(g3_n[c], g3_1[c], S_n[c], S_1[c]) for c in range(V3)], p0, m)
+        cand.append((ll, (S_1[qs] + m * p0) / (S_n[qs] + m)))
+    mx = max(c[0] for c in cand)
+    sw = sq = 0.0
+    for ll, q in cand:
+        wgt = math.exp(ll - mx)
+        sw += wgt
+        sq += wgt * q
+    return _sgn_vote(sq / sw - 0.5, 1e-12)
+
+
+# ── 5) SPEC — ngoại suy phổ DFT (chu kỳ ẩn) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+_FFT_TW = {}
+
+
+def _fft(a):
+    """FFT radix-2 lặp tại chỗ (len(a) là luỹ thừa của 2), thuần Python."""
+    n = len(a)
+    tw = _FFT_TW.get(n)
+    if tw is None:
+        tw = _FFT_TW[n] = [complex(math.cos(-2.0 * math.pi * k / n), math.sin(-2.0 * math.pi * k / n)) for k in range(n // 2)]
+    j = 0
+    for i in range(1, n):
+        bit = n >> 1
+        while j & bit:
+            j ^= bit
+            bit >>= 1
+        j ^= bit
+        if i < j:
+            a[i], a[j] = a[j], a[i]
+    ln_ = 2
+    while ln_ <= n:
+        half = ln_ >> 1
+        step = n // ln_
+        for i in range(0, n, ln_):
+            k = 0
+            for q in range(i, i + half):
+                u = a[q]
+                v = a[q + half] * tw[k]
+                a[q] = u + v
+                a[q + half] = u - v
+                k += step
+        ln_ <<= 1
+    return a
+
+
+def lg_spec(S, W=400, K=3):
+    """SPEC: tìm chu kỳ ẩn bằng phổ Fourier. Lấy W=400 ván (Tài=+1/Xỉu=−1, trừ trung bình), DFT có đệm 0 (kích thước luỹ thừa 2 ≥ 2W), lấy K=3 đỉnh phổ mạnh nhất có chu kỳ 2..W/3 (≥ 3 chu kỳ trong cửa sổ, nên không nhầm xu hướng với chu kỳ),
+    tinh chỉnh tần số bằng nội suy parabol quanh đỉnh rồi ước lượng biên độ + pha đúng tại tần số đó (Goertzel), cộng K sóng sin NGOẠI SUY tới ván kế tiếp -> dấu. Luôn bỏ phiếu (dấu của tổng sóng).
+    Mạnh: bắt chu kỳ cố định (bệt 3 – đảo 3, nhịp 7/11/13 ván…) kể cả khi bị nhiễu chen — thứ mà mô hình ngữ cảnh (PPM/CMIXL) không tổng quát hoá được. Yếu: nguồn ngẫu nhiên thì đỉnh phổ chỉ là nhiễu
+    (K đỉnh lớn nhất của nhiễu luôn tồn tại) -> ≈ 50%; chu kỳ trôi pha / đổi giữa chừng thì ngoại suy sai."""
+    y = S["y"]
+    n = len(y)
+    if n < 60:
+        return None
+    mu = sum(y) / float(n)
+    x = [v - mu for v in y]
+    M = 1
+    while M < 2 * n:
+        M <<= 1
+    a = [complex(v, 0.0) for v in x] + [0j] * (M - n)
+    X = _fft(a)
+    half = M // 2
+    Pw = [X[k].real * X[k].real + X[k].imag * X[k].imag for k in range(half)]
+    kmin = max(2, int(math.ceil(3.0 * M / n)))
+    peaks = [k for k in range(kmin, half - 1) if Pw[k] >= Pw[k - 1] and Pw[k] > Pw[k + 1]]
+    if not peaks:
+        return None
+    peaks.sort(key=lambda k: -Pw[k])
+    xhat = 0.0
+    for k in peaks[:K]:
+        m1, m0, p1 = math.sqrt(Pw[k - 1]), math.sqrt(Pw[k]), math.sqrt(Pw[k + 1])
+        den = m1 - 2.0 * m0 + p1
+        dl = 0.5 * (m1 - p1) / den if den < -1e-12 else 0.0
+        f = (k + max(-0.5, min(0.5, dl))) / M
+        rot = complex(math.cos(-2.0 * math.pi * f), math.sin(-2.0 * math.pi * f))
+        cur = 1.0 + 0j
+        z = 0j
+        for v in x:
+            z += v * cur
+            cur *= rot
+        th = 2.0 * math.pi * f * n
+        xhat += (2.0 / n) * (z * complex(math.cos(th), math.sin(th))).real
+    return _sgn_vote(xhat, 1e-12)
+
+
+# ── 6) CPSEG — phát hiện điểm đổi chế độ + Markov bậc 2 co phân cấp ────────────────────────────────────────────────────────────────────────────────────────────────────────
+def _bern_ll(k, m):
+    """Log-likelihood cực đại của m phép thử Bernoulli có k lần '1'."""
+    if m <= 0 or k <= 0 or k >= m:
+        return 0.0
+    return k * math.log(k / m) + (m - k) * math.log((m - k) / m)
+
+
+def _binseg(c, a, b, minseg, pen, out):
+    """Phân đoạn nhị phân trên chuỗi 0/1 có prefix-sum c (c[i] = tổng x[0..i-1]): tìm điểm cắt s ∈ [a+minseg, b−minseg] tối đa hoá LR Bernoulli; nhận nếu LR > pen rồi đệ quy 2 nửa."""
+    stack = [(a, b)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2 * minseg:
+            continue
+        whole = _bern_ll(c[hi] - c[lo], hi - lo)
+        best, bs = 0.0, -1
+        for s in range(lo + minseg, hi - minseg + 1):
+            g = _bern_ll(c[s] - c[lo], s - lo) + _bern_ll(c[hi] - c[s], hi - s) - whole
+            if g > best:
+                best, bs = g, s
+        if bs >= 0 and best > pen:
+            out.append(bs)
+            stack.append((lo, bs))
+            stack.append((bs, hi))
+
+
+def lg_cpseg(S, W=300, minseg=20, m=4.0):
+    """CPSEG: 'chế độ' đổi thì chỉ phần SAU điểm đổi mới có giá trị. Bước 1: phân đoạn nhị phân tìm điểm đổi chế độ trên 2 chuỗi — (i) Tài/Xỉu (tỉ lệ Tài đổi) và (ii) chỉ báo ĐẢO CẦU (nhịp đảo đổi) —
+    nhận điểm cắt khi tỉ số likelihood Bernoulli > 3·ln(W) (phạt kiểu BIC cho 2 tham số thêm), đoạn tối thiểu 20 ván; lấy điểm đổi MỚI NHẤT. Bước 2: Markov bậc 2 trên đoạn hiện tại với CO PHÂN CẤP:
+    đoạn hiện tại (ngữ cảnh 2 ván) -> toàn cửa sổ W=300 (ngữ cảnh 2 ván) -> toàn cửa sổ (ngữ cảnh 1 ván) -> tỉ lệ chung (mỗi tầng co về tầng trên với giả-đếm m=4), nên đoạn ngắn tự dựa vào thống kê cả cửa sổ.
+    Luôn bỏ phiếu. Mạnh: phản ứng nhanh khi nguồn đổi chế độ nhưng KHÔNG vứt dữ liệu cũ một cách mù quáng (shrink); là logic duy nhất tự nhận biết 'đã đổi chế độ' bằng kiểm định. Yếu: điểm đổi cuối cửa sổ (< 20 ván) chưa phát hiện được."""
+    y = S["y"]
+    n = len(y)
+    if n < 80:
+        return None
+    pen = 3.0 * math.log(n)
+    cps = []
+    c = [0]
+    for v in y:
+        c.append(c[-1] + v)
+    _binseg(c, 0, n, minseg, pen, cps)
+    alt = [0] + [1 if y[i] != y[i - 1] else 0 for i in range(1, n)]
+    c2 = [0]
+    for v in alt:
+        c2.append(c2[-1] + v)
+    _binseg(c2, 1, n, minseg, pen, cps)
+    st = max(cps) if cps else 0
+    st = max(st, 2)
+    # đếm
+    w2 = [[0, 0] for _ in range(4)]
+    w1 = [[0, 0] for _ in range(2)]
+    s2 = [[0, 0] for _ in range(4)]
+    g0 = g1 = 0
+    for j in range(2, n):
+        yy = y[j]
+        k2 = 2 * y[j - 2] + y[j - 1]
+        w2[k2][yy] += 1
+        w1[y[j - 1]][yy] += 1
+        if j >= st:
+            s2[k2][yy] += 1
+        if yy:
+            g1 += 1
+        else:
+            g0 += 1
+    pg = (g1 + 1.0) / (g0 + g1 + 2.0)
+    q1 = y[n - 1]
+    q2 = 2 * y[n - 2] + y[n - 1]
+    p1 = (w1[q1][1] + m * pg) / (w1[q1][0] + w1[q1][1] + m)
+    p2 = (w2[q2][1] + m * p1) / (w2[q2][0] + w2[q2][1] + m)
+    ps = (s2[q2][1] + m * p2) / (s2[q2][0] + s2[q2][1] + m)
+    return _sgn_vote(ps - 0.5, 1e-12)
+
+
+# ── CỬA SỔ DỮ LIỆU RIÊNG CỦA TỪNG LOGIC (SEQ13v4): mỗi logic CHỈ ĐỌC đúng số ván GẦN NHẤT mà nó mạnh nhất (compute_all cắt lịch sử trước khi gọi) ───────────────────────────────
+# Lý do: logic nhẹ/ngắn hạn (PPM6 · KNNH · RUNCTX…) càng đọc nhiều ván cũ càng bị pha loãng bởi chế độ cũ; logic mô hình-dày (CMIXL · SPARSE) cần nhiều ván mới đủ bằng chứng.
+# Mọi ván trong cửa sổ có trọng số NHƯ NHAU (không decay). Đổi từng logic bằng env SUNVIW_WIN_<TÊN> (vd. SUNVIW_WIN_PPM6=300); chạy tune_windows.py trên data thật để tìm cửa sổ tốt nhất cho từng logic.
+# Lịch sử tool giữ HIST_KEEP (mặc định 600) ván — cửa sổ lớn hơn số ván đang có thì logic đọc hết số ván đang có.
+LOGIC_WIN_DEFAULT = (("PPM6", 250), ("REGIME", 250), ("BLREV", 250), ("KNNH", 200), ("RUNCTX", 200), ("DIEMK", 200), ("BAL", 200),
+                     ("CMIXL", 500), ("SPARSE", 500), ("HMM3", 400), ("TOTK", 400), ("SPEC", 400), ("CPSEG", 300))
+LOGIC_WIN = {_nm: max(40, _env_num("SUNVIW_WIN_" + _nm, _w, int)) for _nm, _w in LOGIC_WIN_DEFAULT}
+
+
 SUN_LOGICS = [
-    ("MKT2", lambda S: lg_mk(S, 2, 250, "t1")),
     ("PPM6", lambda S: lg_ppm(S, 6, 250, 1.5)),
-    ("CT2", lambda S: lg_cond(S, _f_t2, 250)),
-    ("CDT", lambda S: lg_cond(S, _f_dtt, 250)),
-    ("NBMIX", lambda S: lg_nb(S, [_nb_y3, _nb_t1b, _nb_max, _nb_min, _nb_dist], 250)),
     ("REGIME", lambda S: lg_regime(S, 20, 250)),
-    ("LAGAC", lambda S: lg_lagac(S, 16, 1500)),
-    ("SGDLR", lambda S: lg_sgdlr(S, 300)),
-    ("CTW", lambda S: lg_ctw(S)),
-    ("ARSUM", lambda S: lg_arsum(S)),
-    ("SELKEY", lambda S: lg_selkey(S)),
-    ("LSM", lambda S: lg_lsm(S)),
-    ("DECAYMIX", lambda S: lg_decaymix(S)),
-    ("CONV3", lambda S: lg_conv3(S)),
     ("BLREV", lambda S: lg_blrev(S)),
+    ("KNNH", lambda S: lg_knnh(S)),
+    ("RUNCTX", lambda S: lg_runctx(S)),
+    ("DIEMK", lambda S: lg_diemk(S)),
+    ("BAL", lambda S: lg_bal(S)),
+    ("CMIXL", lambda S: lg_cmixl(S)),
+    ("SPARSE", lambda S: lg_sparse(S)),
+    ("HMM3", lambda S: lg_hmm3(S)),
+    ("TOTK", lambda S: lg_totk(S)),
+    ("SPEC", lambda S: lg_spec(S)),
+    ("CPSEG", lambda S: lg_cpseg(S)),
 ]
 
 
 SUN_NAMES = [n for n, _ in SUN_LOGICS]
-SUN_SIG = "SEQ15v2:" + ",".join(SUN_NAMES)         # dấu vân tay bộ logic SUN (bỏ dữ liệu graded của bộ logic cũ -> không lẫn data 16 logic)
-SUN_ABSTAIN = {"LAGAC", "CTW", "ARSUM", "SELKEY", "LSM", "DECAYMIX", "CONV3"}   # logic chuyên biệt kích hoạt hiếm (qua cổng): không kích hoạt -> phiếu = đa số các logic thường (xem compute_all)
+SUN_SIG = "SEQ13v4:" + ",".join(SUN_NAMES)         # dấu vân tay bộ logic SUN (bỏ dữ liệu graded của bộ logic cũ -> không lẫn data bộ 13 logic SEQ13v4)
 
-# 15 logic là số LẺ nên đa số tất cả logic không hoà; nhưng nhóm CAO/THẤP của AF vẫn có thể chẵn và hoà -> phiếu phá hoà: lấy phiếu của logic này (mặc định PPM6; env SUNVIW_TIE_LOGIC).
+# 13 logic là số LẺ nên đa số tất cả logic không hoà; nhưng nhóm CAO/THẤP của AF vẫn có thể chẵn và hoà -> phiếu phá hoà: lấy phiếu của logic này (mặc định PPM6; env SUNVIW_TIE_LOGIC).
 SUN_TIE_LOGIC = os.environ.get("SUNVIW_TIE_LOGIC", "PPM6")
 if SUN_TIE_LOGIC not in SUN_NAMES:
     SUN_TIE_LOGIC = "PPM6" if "PPM6" in SUN_NAMES else SUN_NAMES[0]
@@ -1524,12 +1869,12 @@ AF_SWITCH_PRIO_ORDER = {"ALL": "CAO", "CAO": "ALL", "THAP": "CAO"}   # ván trư
 
 def _af_pick_mode(mvotes, cur, need, lead=False, prio=False):
     """ĐỔI CHẾ ĐỘ DỄ HƠN (AF_SWITCH): từ chế độ hiện tại `cur`, chọn chế độ cho ván này theo phiếu của 3 chế độ `mvotes` ({"ALL","CAO","THAP"} -> số logic).
-    lead=False (mặc định, đúng ý "chỉ cần N phiếu"): chế độ KHÁC có >= `need` phiếu (vd 6/15; bản gốc phải đa số 8/15) là ĐỔI, kể cả khi chế độ hiện tại đang nhiều phiếu hơn.
+    lead=False (mặc định, đúng ý "chỉ cần N phiếu"): chế độ KHÁC có >= `need` phiếu (vd 6/13; bản gốc phải đa số 7/13) là ĐỔI, kể cả khi chế độ hiện tại đang nhiều phiếu hơn.
         Nhiều chế độ khác cùng đủ `need` -> lấy chế độ nhiều phiếu nhất; bằng nhau ở đầu bảng, hoặc không chế độ khác nào đủ `need` -> GIỮ `cur`.
         prio=True (AF_SWITCH_PRIO): khi CẢ 2 chế độ còn lại cùng đủ `need` phiếu thì KHÔNG so số phiếu nữa mà ưu tiên theo chế độ ván trước:
             đang ALL -> ưu tiên CAO · đang CAO -> ưu tiên ALL · đang THẤP -> ưu tiên CAO (xem AF_SWITCH_PRIO_ORDER). Chỉ 1 chế độ đủ phiếu -> đổi sang chế độ đó như thường.
     lead=True (êm hơn): chế độ mới còn phải DẪN ĐẦU DUY NHẤT (nhiều phiếu hơn mọi chế độ khác, kể cả chế độ đang chạy) mới đổi.
-        Lưu ý: 15 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu nên với lead=True mọi `need` <= 5 cho kết quả y hệt nhau."""
+        Lưu ý: 13 logic chia cho 3 chế độ thì bên dẫn đầu luôn >= 5 phiếu nên với lead=True mọi `need` <= 5 cho kết quả y hệt nhau."""
     if lead:
         ok = {m: c for m, c in mvotes.items() if c >= need}
         if not ok:
@@ -1558,7 +1903,7 @@ def af_decision(votes, graded, cfg=SUN):
     hv / lv / av (vote gốc của nhóm CAO / nhóm THẤP / pool ALL — LƯU vào ván đã chấm) · gT / gX (phiếu TÀI / XỈU trong pool) · avg (TB WR dùng của pool, độ tin cậy) · mw (WR 3 chế độ CAO / THAP / ALL)
     demoted (True = nhóm CAO / THẤP được chọn ít hơn đa số toàn bộ logic -> đã hạ về ALL) · need_maj (số logic tối thiểu để một nhóm được dùng).
     prev (chế độ ván trước) · mvotes (phiếu 3 chế độ: ALL = logic không thuộc nhóm nào · CAO · THAP) · sw_need (số phiếu để đổi chế độ, AF_SWITCH_NEED) · switched (True = chế độ ván này khác ván trước).
-    AF_SWITCH bật: chế độ NHỚ ván trước, chế độ khác đủ sw_need phiếu (6/15) là đổi (xem _af_pick_mode); AF_SWITCH tắt: nhóm đông hơn thắng + đa số 8/15 như bản gốc.
+    AF_SWITCH bật: chế độ NHỚ ván trước, chế độ khác đủ sw_need phiếu (6/13) là đổi (xem _af_pick_mode); AF_SWITCH tắt: nhóm đông hơn thắng + đa số 7/13 như bản gốc.
     AF_GROUP_FLIPPED_ONLY: chỉ logic bị bẻ mới có group (CAO | THAP); logic không bẻ -> group None = mặc định ALL."""
     nl = len(votes)
     all_vote = vote_result(votes)
@@ -1605,7 +1950,7 @@ def af_decision(votes, graded, cfg=SUN):
             group.append("CAO" if e * 2 > wsum else ("THAP" if e * 2 < wsum else None))
     hi = [i for i, g in enumerate(group) if g == "CAO"]
     lo = [i for i, g in enumerate(group) if g == "THAP"]
-    need_maj = nl // 2 + 1                                # đa số của TOÀN BỘ logic (15 -> 8)
+    need_maj = nl // 2 + 1                                # đa số của TOÀN BỘ logic (13 -> 7)
 
     def _pv(idx):
         return vote_result([preds[i] for i in idx]) if idx else None
@@ -1616,7 +1961,7 @@ def af_decision(votes, graded, cfg=SUN):
     prev_mode = _af_prev_mode(graded)                     # chế độ của ván trước (ván đầu / ván cũ chưa lưu -> ALL)
     sw_need = max(1, min(int(cfg.AF_SWITCH_NEED), nl))
     demoted = False
-    if cfg.AF_SWITCH:                                     # ĐỔI CHẾ ĐỘ DỄ HƠN: chế độ khác đủ sw_need phiếu (mặc định 6/15) là đổi, thay vì phải đa số 8/15
+    if cfg.AF_SWITCH:                                     # ĐỔI CHẾ ĐỘ DỄ HƠN: chế độ khác đủ sw_need phiếu (mặc định 6/13) là đổi, thay vì phải đa số 7/13
         mode = _af_pick_mode(mvotes, prev_mode, sw_need, bool(cfg.AF_SWITCH_LEAD), bool(cfg.AF_SWITCH_PRIO))
         if mode == "CAO":
             pool, base = hi, hv
@@ -1627,7 +1972,7 @@ def af_decision(votes, graded, cfg=SUN):
         if mode != "ALL" and not pool:                    # đang giữ CAO / THẤP mà nhóm hết logic -> không ai vote, tạm dùng ALL ván này
             demoted = True
             mode, pool, base = "ALL", list(range(nl)), vote_result(preds)
-    else:                                                 # cách gốc: nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số (8/15) nếu AF_GROUP_NEED_MAJORITY
+    else:                                                 # cách gốc: nhóm đông hơn thắng · nhóm CAO / THẤP phải >= đa số (7/13) nếu AF_GROUP_NEED_MAJORITY
         if len(hi) > len(lo):
             mode, pool, base = "CAO", hi, hv
         elif len(lo) > len(hi):
@@ -1823,7 +2168,7 @@ def merge_graded(saved, fresh):
 
 
 def rebuild_graded(hist, saved_graded=None, cfg=SUN):
-    """Chấm lại lịch sử: dự đoán phiên k+1 từ LỊCH SỬ tới phiên k (15 logic SEQ15 cần cả chuỗi chứ không chỉ xúc xắc phiên k), chấm bằng kết quả thật.
+    """Chấm lại lịch sử: dự đoán phiên k+1 từ LỊCH SỬ tới phiên k (13 logic SEQ13v4 cần cả chuỗi chứ không chỉ xúc xắc phiên k), chấm bằng kết quả thật.
     Ván ĐÃ lưu trong saved_graded giữ nguyên, không tính lại -> nhanh và dự đoán đã đưa ra không đổi; chỉ chấm thêm các ván MỚI hơn ván đã lưu (file trống: tối đa SUN_REBUILD_MAX ván gần nhất)."""
     fresh = []
     seed = list(saved_graded) if saved_graded else []
@@ -1851,7 +2196,7 @@ def rebuild_graded(hist, saved_graded=None, cfg=SUN):
 
 def regrade_graded(graded, cfg=SUN):
     """CHẤM LẠI toàn bộ các ván đã lưu theo CONFIG HIỆN TẠI (ngưỡng AF · vùng bẻ · bẻ final · WR_*...).
-    Dùng lại `votes` (15 logic) đã lưu trong từng ván -> KHÔNG chạy lại compute_all nên rất nhanh (vài trăm ms thay vì phải đợi ván mới chạy tới).
+    Dùng lại `votes` (13 logic) đã lưu trong từng ván -> KHÔNG chạy lại compute_all nên rất nhanh (vài trăm ms thay vì phải đợi ván mới chạy tới).
     Đi từ ván cũ -> mới: ván k được chốt bằng WR của các ván đã chấm lại TRƯỚC nó (y hệt lúc chạy live, không nhìn trước đáp án).
     Giữ nguyên phiên · tổng · kết quả thật · votes; chỉ tính lại final / ok / af / mode / mflip / hv / lv / av. Ván không có votes thì giữ nguyên."""
     out = []
@@ -1934,7 +2279,7 @@ def build_result(hist, cfg=SUN, persist=None):
     detail = {
         "vote_21": {"TÀI": tai, "XỈU": len(votes) - tai},        # tên khóa giữ nguyên cho tương thích; giờ đếm trên các logic đang dùng
         "so_logic": len(votes),
-        "bo_logic": "SEQ15 (chuoi + xuc xac + tong + so phien, khong dung MD5)",
+        "bo_logic": "SEQ13v4 (chuoi + xuc xac + tong + so phien, khong dung MD5)",
         "nhom_theo": ({"ALL": "AF · da so", "CAO": "AF · WR cao", "THAP": "AF · WR thap"}[af["mode"]] if used_af
                       else {"ALL": "da so", "LOW": "WR thap", "HIGH": "WR cao"}[dec["mode"]]),
         "nhom_tai_xiu": ({"TÀI": af["gT"], "XỈU": af["gX"]} if used_af else {"TÀI": dec["gT"], "XỈU": dec["gX"]}),
@@ -1961,7 +2306,7 @@ def build_result(hist, cfg=SUN, persist=None):
             "da_so_toi_thieu": af["need_maj"] if used_af else (len(votes) // 2 + 1),
             "ha_xuong_all": af["demoted"] if used_af else False,   # True = nhóm CAO / THẤP chọn được ít hơn đa số -> đã hạ về ALL ở ván này
             "uu_tien_doi_che_do": cfg.AF_SWITCH_PRIO,                   # True = 2 chế độ còn lại cùng đủ phiếu -> ưu tiên theo chế độ ván trước (ALL->CAO · CAO->ALL · THẤP->CAO)
-            "doi_che_do_de": cfg.AF_SWITCH,                            # True = đổi chế độ ALL / CAO / THẤP chỉ cần `phieu_doi_che_do` phiếu (thay vì đa số 8/15)
+            "doi_che_do_de": cfg.AF_SWITCH,                            # True = đổi chế độ ALL / CAO / THẤP chỉ cần `phieu_doi_che_do` phiếu (thay vì đa số 7/13)
             "phieu_doi_che_do": af["sw_need"] if used_af else max(1, min(int(cfg.AF_SWITCH_NEED), len(votes))),
             "che_do_truoc": af["prev"] if used_af else None,           # chế độ của ván trước (cơ sở để xét đổi chế độ)
             "phieu_che_do": af["mvotes"] if used_af else None,         # số logic bỏ phiếu cho từng chế độ: ALL (không bẻ) · CAO · THAP
@@ -2096,7 +2441,7 @@ def _acc_rows(rows, n=10):
 
 # ─── HITCLUB (GAME 3): 2 BÀN · HTTP POLLING · MỖI BÀN MỘT FILE DATA RIÊNG ───
 # Port từ hittxthuong.js / hittxmd5.js. Mỗi bàn = 1 HitTable: poller riêng + config riêng (xem CONFIG HITCLUB) + file riêng (hit15_txthuong.json / hit15_txmd5.json
-# chứa lịch sử xúc xắc + các ván đã chấm). Dự đoán dùng bộ 15 logic SEQ15 / AF / WR của SUN qua build_result(hist, cfg, persist).
+# chứa lịch sử xúc xắc + các ván đã chấm). Dự đoán dùng bộ 13 logic SEQ13v4 / AF / WR của SUN qua build_result(hist, cfg, persist).
 def _hit_fetch_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": HIT_UA, "Accept": "application/json", "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as r:
@@ -3938,7 +4283,7 @@ _GATED_EXACT = {"/api/predictsun", "/api/predict", "/api/predicthittxthuong", "/
 # ═══════════════════════════════════════════════════════════════════════════
 #  🔌  OFF SERVER (công tắc ở trang /api/admin, CHỈ ADMIN CHÍNH bật/tắt)  —  CHỈNH Ở ĐÂY
 # ═══════════════════════════════════════════════════════════════════════════
-#   Bật OFF SERVER:  server VẪN chạy bình thường (poller quét API, nạp dữ liệu 68GB, 15 logic / WR / AF / lưu ván đã chấm không đổi) và panel HTML /api/html VẪN cập nhật dự đoán như thường,
+#   Bật OFF SERVER:  server VẪN chạy bình thường (poller quét API, nạp dữ liệu 68GB, 13 logic / WR / AF / lưu ván đã chấm không đổi) và panel HTML /api/html VẪN cập nhật dự đoán như thường,
 #   NHƯNG các endpoint DỰ ĐOÁN (/api/predictsun · /api/predict · /api/predicthittxthuong · /api/predicthittxmd5 · /api/predicttele68txmd5 · /api/predictgb68hu · /api/predictgb68md5)
 #   chỉ trả dữ liệu cho thiết bị ĐÃ ĐƯỢC ADMIN CHÍNH DUYỆT vào panel (mục "Duyệt thiết bị vào panel HTML") và request đó KHÔNG gửi key (panel không bao giờ gửi key).
 #   Admin muốn xem JSON / panel khi off: duyệt thiết bị của mình ở mục đó như mọi thiết bị khác.
@@ -5105,7 +5450,7 @@ def api_history_clear():
 def api_history_regrade():
     """TÍNH LẠI đúng/sai của TOÀN BỘ ván đã lưu theo CONFIG HIỆN TẠI: {"game": "sun" | "hittxthuong" | "hittxmd5" | "hitclub" | "tele68txmd5" | "all"}.
     Dùng khi vừa đổi config (ngưỡng AF · bẻ final · WR...) rồi khởi động lại tool: lịch sử vẫn giữ, nhưng đúng/sai được chấm lại bằng config mới ngay,
-    không phải đợi ván mới. Không chạy lại 15 logic (dùng votes đã lưu) nên nhanh. Không đụng mốc \"Xóa lịch sử\".
+    không phải đợi ván mới. Không chạy lại 13 logic (dùng votes đã lưu) nên nhanh. Không đụng mốc \"Xóa lịch sử\".
     Trả {"ok":true,"ket_qua":{"sun":{"so_van":N,"doi_du_doan":M,"truoc":{"dung","tong"},"sau":{"dung","tong"}}}}."""
     ensure_poller()
     b = request.get_json(silent=True) or {}
@@ -7497,7 +7842,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
-    ap = argparse.ArgumentParser(description="SUNVIW - API JSON (SUN + HITCLUB: 15 logic chuoi/xuc xac/tong/so phien · key theo game)")
+    ap = argparse.ArgumentParser(description="SUNVIW - API JSON (SUN + HITCLUB: 13 logic chuoi/xuc xac/tong/so phien · key theo game)")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--upstream", default=UPSTREAM_URL, help="URL API phien moi nhat (…/api/tx)")
@@ -7524,8 +7869,8 @@ def main():
     gmg.add_argument("--af-group-majority", action="store_true", help="BẬT: nhóm CAO/THẤP phải có >= đa số toàn bộ logic, không thì dùng ALL")
     gmg.add_argument("--af-no-group-majority", action="store_true", help="TẮT: nhóm đông hơn luôn được chọn dù ít logic")
     swg = ap.add_mutually_exclusive_group()
-    swg.add_argument("--af-switch", action="store_true", help="BẬT: đổi chế độ ALL/CAO/THẤP chỉ cần --af-switch-need phiếu (mặc định 6/15) thay vì đa số 8/15")
-    swg.add_argument("--af-no-switch", action="store_true", help="TẮT: quay về cách gốc (nhóm đông hơn thắng, nhóm CAO/THẤP cần đa số 8/15)")
+    swg.add_argument("--af-switch", action="store_true", help="BẬT: đổi chế độ ALL/CAO/THẤP chỉ cần --af-switch-need phiếu (mặc định 6/13) thay vì đa số 7/13")
+    swg.add_argument("--af-no-switch", action="store_true", help="TẮT: quay về cách gốc (nhóm đông hơn thắng, nhóm CAO/THẤP cần đa số 7/13)")
     ap.add_argument("--af-switch-need", type=int, default=None, help="AF: số phiếu (trên tổng số logic) để đổi sang chế độ khác (mặc định AF_SWITCH_NEED_DEFAULT = 6)")
     slg = ap.add_mutually_exclusive_group()
     slg.add_argument("--af-switch-lead", action="store_true", help="êm hơn: chế độ mới còn phải DẪN ĐẦU duy nhất (nhiều phiếu hơn cả chế độ đang chạy) mới đổi")
@@ -7660,7 +8005,7 @@ def main():
                  else f"be logic WR < {AF_FLIP_LOW:g}% hoac > {AF_FLIP_HIGH:g}%")
     print(f"AF SUN      ->  {'BAT' if AF_ENABLED else 'TAT'} · {_be_logic} (toi thieu {AF_MIN_GAMES} van) · be che do {('BAT (CAO/THAP khi WR ' + str(AF_MODE_WINDOW) + ' van gan nhat cua che do < ' + format(AF_MODE_BELOW, 'g') + '%, can ' + str(AF_MODE_MIN) + ' van)') if AF_MODE_FLIP else 'TAT'} · be rieng AF {'BAT' if AF_FLIP_FINAL else 'TAT'}")
     print(f"AF nhom     ->  chi logic bi be vao nhom CAO/THAP {'BAT (logic khong be = ALL)' if AF_GROUP_FLIPPED_ONLY else 'TAT'} · nhom phai >= da so toan bo logic (n//2+1) {'BAT (ít hon -> dung ALL)' if AF_GROUP_NEED_MAJORITY else 'TAT'}")
-    print(f"AF doi che do ->  {('BAT · chi can ' + str(AF_SWITCH_NEED) + ' phieu (tren tong so logic) de doi giua ALL / CAO / THAP, thay vi da so 8/15 · nho che do van truoc · 2 che do con lai cung du phieu: ' + ('uu tien theo van truoc (ALL->CAO · CAO->ALL · THAP->CAO)' if AF_SWITCH_PRIO else 'lay che do nhieu phieu hon')) if AF_SWITCH else 'TAT (cach goc: nhom dong hon thang, can da so 8/15)'}")
+    print(f"AF doi che do ->  {('BAT · chi can ' + str(AF_SWITCH_NEED) + ' phieu (tren tong so logic) de doi giua ALL / CAO / THAP, thay vi da so 7/13 · nho che do van truoc · 2 che do con lai cung du phieu: ' + ('uu tien theo van truoc (ALL->CAO · CAO->ALL · THAP->CAO)' if AF_SWITCH_PRIO else 'lay che do nhieu phieu hon')) if AF_SWITCH else 'TAT (cach goc: nhom dong hon thang, can da so 7/13)'}")
     print(f"be final AF ->  moi che do {'BAT' if AF_FLIP_FINAL else 'TAT'} · CAO+THAP gop {'BAT (ALL giu nguyen)' if AF_FLIP_FINAL_CT else 'TAT'} · chi CAO {'BAT' if AF_FLIP_FINAL_CAO else 'TAT'} · chi THAP {'BAT' if AF_FLIP_FINAL_THAP else 'TAT'} · chi ALL {'BAT (CAO/THAP giu nguyen)' if AF_FLIP_FINAL_ALL else 'TAT'}")
     print(f"xoa lich su ->  nut o panel {'BAT' if HIST_CLEAR_ENABLED else 'TAT'} · chi an lich su hien thi (khong dung toi logic / WR / AF) · file moc {HIST_CLEAR_PATH}")
     print(f"OFF SERVER  ->  {'DANG BAT (tool ngoai khong nhan duoc du doan, chi panel / admin nhan)' if offsrv_state()['off'] else 'tat'} · bat / tat o trang /api/admin (chi admin chinh) · file {OFFSRV_PATH}")

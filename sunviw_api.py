@@ -651,20 +651,20 @@ TELE68_TXMD5_CFG = TableCfg("tele68txmd5", _hit_env("TELE68TXMD5_", {
     "TIE_LOGIC": "PPM6",
     "CONSEC_CHECK": True,
     # WR có trọng số
-    "WR_WINDOW": 3, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
+    "WR_WINDOW": 5, "WR_DECAY": 0.95, "WR_FLOOR": 1.0, "WR_WEIGHT_NEWEST": 1.0, "WR_FLIP_WEIGHT": False, "WR_MIN_GAMES": 1,
     # bẻ final (dùng khi AF tắt)
     "FLIP_FINAL": False,
     # AF: bước 1 bẻ logic
     "AF_ENABLED": True, "AF_FLIP_LOW": 37, "AF_FLIP_HIGH": 63,
-    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 6, "AF_FLIP_LOW_MAX": 34, "AF_FLIP_HIGH_MIN": 70, "AF_FLIP_HIGH_MAX": 100,
-    "AF_MIN_GAMES": 3,
+    "AF_FLIP_BAND": True, "AF_FLIP_LOW_MIN": 34, "AF_FLIP_LOW_MAX": 42, "AF_FLIP_HIGH_MIN": 58, "AF_FLIP_HIGH_MAX": 68,
+    "AF_MIN_GAMES": 8,
     # AF: bước 2 nhóm CAO/THẤP
     "AF_GROUP_FLIPPED_ONLY": True, "AF_GROUP_NEED_MAJORITY": True,
-    "AF_SWITCH": True, "AF_SWITCH_NEED": 5, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": False,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/12 phiếu (thay vì đa số 7/12) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
+    "AF_SWITCH": True, "AF_SWITCH_NEED": 5, "AF_SWITCH_LEAD": False, "AF_SWITCH_PRIO": True,       # đổi chế độ ALL / CAO / THẤP chỉ cần 6/12 phiếu (thay vì đa số 7/12) — AF_SWITCH=False = về cách gốc · AF_SWITCH_LEAD=True = chế độ mới phải dẫn đầu mới đổi
     # AF: bước 3 bẻ theo WR chế độ (BẬT cho LC79/Tele68: WR chế độ < AF_MODE_BELOW % -> đảo final TÀI<->XỈU)
     "AF_MODE_FLIP": False, "AF_MODE_WINDOW": 9, "AF_MODE_MIN": 7, "AF_MODE_BELOW": 45,
     # AF: bẻ final riêng
-    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": True, "AF_FLIP_FINAL_ALL": True,   # bộ backtest 2x300 ván (ALL nhiều ván nhất + WR ALL cao nhất): CHỈ bẻ final ALL (CAO/THẤP giữ nguyên)
+    "AF_FLIP_FINAL": False, "AF_FLIP_FINAL_CT": False, "AF_FLIP_FINAL_CAO": False, "AF_FLIP_FINAL_THAP": False, "AF_FLIP_FINAL_ALL": True,   # bộ backtest 300 ván (ALL cao nhất + ALL nhiều ván nhất): KHÔNG bẻ final chế độ nào
     # đánh giá đúng/sai + số ván lưu
     "EVAL_WINDOW": 500, "PERSIST_KEEP": 300,
 }))

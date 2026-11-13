@@ -3312,17 +3312,13 @@ KEYS_PATH = os.environ.get("SUNVIW_KEYS_PATH", _data_path("sunviw_keys.json"))
 KEY_GATE_API = _env_bool("SUNVIW_GATE_API", True)
 KEY_START_ON_ACTIVATE = _env_bool("SUNVIW_KEY_START_ON_ACTIVATE", True)   # True (mặc định) = key mới tạo CHƯA tính hạn; hạn chỉ bắt đầu chạy từ lần dùng THÀNH CÔNG đầu tiên (kích hoạt). False = như cũ (tính từ lúc tạo)
 KEY_DAYS = (1, 3, 7, 30, 60, 90)                     # hạn key cho phép khi TẠO (ngày) = 1 ngày · 3 ngày · 1 tuần · 1 tháng · 2 tháng · 3 tháng. Key cũ có hạn khác (2/14/180/365 ngày) vẫn dùng + hiển thị bình thường
-# ⏱ KEY GIỜ: ngoài gói theo ngày, admin tạo được key tính theo GIỜ (POST /api/admin/keys/create {"hours": N}). N = số nguyên KEY_HOURS_MIN..KEY_HOURS_MAX.
-#    KEY_HOURS_PRESETS = các mốc gợi ý hiện thành nút bấm nhanh ở trang admin. Key giờ cũng chỉ bắt đầu tính hạn từ lần dùng thành công đầu tiên (như key ngày).
-#    Key giờ CHƯA có giá trong KEY_PRICE (bảng giá theo ngày) -> không cộng vào doanh thu, chỉ đếm ở "chưa có giá". Muốn tính tiền thì thêm bảng giá theo giờ.
-KEY_HOURS_PRESETS = (1, 2, 3, 6, 12, 24)
-KEY_HOURS_MIN, KEY_HOURS_MAX = 1, 720                 # 720 giờ = 30 ngày
 # 💰 GIÁ BÁN KEY (VNĐ) theo số ngày của gói — dùng để TỰ TÍNH DOANH THU khi key được KÍCH HOẠT (áp dụng cho cả key Sun · Hit · LC79).
 #    Gói không có trong bảng (60 / 90 ngày, hoặc key cũ 2 / 14 / 180 / 365 ngày) = chưa có giá -> không tính vào doanh thu (chỉ đếm riêng ở "chưa có giá"). Muốn tính thêm gói nào thì thêm vào đây.
 #    Giá được CHỐT vào sổ doanh thu ngay lúc kích hoạt -> sau này đổi bảng giá không làm đổi doanh thu cũ. Doanh thu chỉ ADMIN CHÍNH xem được (GET /api/admin/revenue + khối "Doanh thu" ở /api/admin).
 KEY_PRICE = {1: 10000, 3: 25000, 7: 75000, 30: 250000}
 REV_KEEP_SEC = 400 * 86400                            # sổ doanh thu giữ tối đa bấy lâu (đủ cho doanh thu hôm nay / tuần này / 30 ngày)
 VN_UTC_OFFSET = 7 * 3600                              # giờ Việt Nam (UTC+7): mốc 00:00 để RESET doanh thu NGÀY / TUẦN (Railway chạy giờ UTC nên KHÔNG dùng giờ máy chủ)
+KEY_HOURS_MAX = 720                                   # key tạo THEO GIỜ: tối đa 720 giờ (= 30 ngày) mỗi key; ít nhất 1 giờ
 KEY_MAX_TOTAL = 5000                                  # trần số key lưu trong file
 ADMIN_SESSION_SEC = 12 * 3600                         # phiên đăng nhập admin sống bao lâu
 LOGIN_MAX_FAIL = 8                                    # sai quá N lần trong LOGIN_LOCK_SEC -> khóa IP đó LOGIN_LOCK_SEC giây
@@ -3539,35 +3535,34 @@ def _add_time(rec, secs, now):
         rec["exp"] = max(int(rec.get("exp") or 0), int(now)) + int(secs)
 
 
-def _plan_secs(rec):
-    """Độ dài gói của key theo GIÂY. Key giờ lưu sẵn "secs" (= giờ x 3600); key ngày (kể cả key cũ chưa có "secs") = days x 86400. Không đọc được -> 0."""
+def _pkg_sec(rec):
+    """Thời lượng GÓI của key (giây): key tạo THEO GIỜ có trường "hours" -> hours * 3600; key theo ngày -> days * 86400 (tối thiểu 1 ngày như cũ)."""
     try:
-        s = int(rec.get("secs") or 0)
+        h = int(rec.get("hours") or 0)
     except (TypeError, ValueError):
-        s = 0
-    if s > 0:
-        return s
+        h = 0
+    if h > 0:
+        return h * 3600
     try:
-        return max(0, int(rec.get("days") or 0)) * 86400
+        return max(1, int(rec.get("days") or 1)) * 86400
     except (TypeError, ValueError):
-        return 0
+        return 86400
 
 
 def _activate(rec, now):
-    """Kích hoạt lần đầu: bắt đầu tính hạn từ `now` (exp = now + độ dài gói + giờ tặng thêm). Trả True nếu VỪA kích hoạt (nơi gọi phải _kv_save)."""
+    """Kích hoạt lần đầu: bắt đầu tính hạn từ `now` (exp = now + thời lượng gói: giờ hoặc ngày). Trả True nếu VỪA kích hoạt (nơi gọi phải _kv_save)."""
     if _activated(rec):
         return False
-    plan = _plan_secs(rec) or 86400                      # giữ như cũ: gói lỗi / thiếu days -> tối thiểu 1 ngày
     rec["act"] = now
-    rec["exp"] = now + plan + _bonus(rec)
+    rec["exp"] = now + _pkg_sec(rec) + _bonus(rec)
     return True
 
 
 def _left_sec(rec, now):
-    """Số giây còn lại; key chưa kích hoạt = trọn gói (độ dài gói + giờ tặng thêm)."""
+    """Số giây còn lại; key chưa kích hoạt = trọn gói (giờ hoặc ngày)."""
     if _activated(rec):
         return max(0, int(rec.get("exp") or 0) - int(now))
-    return _plan_secs(rec) + _bonus(rec)
+    return _pkg_sec(rec) + _bonus(rec)
 
 
 def _max_dev(rec):
@@ -4678,16 +4673,14 @@ def api_admin_keys():
                     key=lambda x: -(x["gan_nhat"] or 0))
         act = _activated(r)
         rows.append({"key": k, "loai": r.get("type"), "nguoi_tao": r.get("by_name"), "tao_luc": r.get("created"), "het_han": (r["exp"] if act else None),
-                     "con_lai": _left_sec(r, now), "het": _is_expired(r, now), "ngay": r.get("days"), "gio": (r.get("hours") or None), "goi_giay": _plan_secs(r),
-                     "ghi_chu": r.get("note", ""), "cong_gio": _bonus(r),                 # gio != None: key GIỜ (gói tính theo giờ, "ngay" = 0)
+                     "con_lai": _left_sec(r, now), "het": _is_expired(r, now), "ngay": r.get("days"), "gio": (r.get("hours") or None), "ghi_chu": r.get("note", ""), "cong_gio": _bonus(r),
                      "kich_hoat": act, "kich_hoat_luc": (r.get("act") or None),               # kich_hoat=False: chưa ai dùng -> hạn chưa chạy
                      "dung_boi": r.get("owner"), "da_tao": made.get(r.get("owner"), 0) if r.get("type") == "sub" else None,
                      "max_dev": _max_dev(r), "so_dev": len(devs), "dung_luc": r.get("last"), "ip_cuoi": r.get("last_ip"), "thiet_bi": tb,
                      "game": _key_game(r) if r.get("type") == "user" else None,                                   # sun | hit | all (key cũ chưa gán game)
                      "game_cu": r.get("type") == "user" and str(r.get("game") or "").lower() not in KEY_GAMES + _KEY_DEAD_GAMES})   # True = key tạo trước khi có chia game
     rows.sort(key=lambda x: -(x["tao_luc"] or 0))
-    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "so_tb": list(KEY_DEV_OPTIONS),
-                  "gio": list(KEY_HOURS_PRESETS), "gio_min": KEY_HOURS_MIN, "gio_max": KEY_HOURS_MAX,
+    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "gio_max": KEY_HOURS_MAX, "so_tb": list(KEY_DEV_OPTIONS),
                   "games": [{"id": g, "ten": KEY_GAME_LABEL[g]} for g in KEY_CREATE_GAMES], "keys": rows})
 
 
@@ -4720,19 +4713,17 @@ def api_admin_keys_create():
     if kind == "user" and game not in KEY_CREATE_GAMES:       # key người dùng PHẢI chọn đúng 1 game (ở server này chỉ lc79)
         return _json({"ok": False, "loi": "game cua key phai la lc79"}, 400)
     hours = 0
-    if b.get("hours") is not None:                      # KEY GIỜ: {"hours": N} (số nguyên KEY_HOURS_MIN..KEY_HOURS_MAX) — ưu tiên hơn "days"
-        hv = b.get("hours")
-        if isinstance(hv, bool) or not isinstance(hv, (int, float, str)):
+    if b.get("hours") is not None:                       # tạo key THEO GIỜ: {"hours": N} (1..KEY_HOURS_MAX, số nguyên) — không gửi "days"
+        h = b.get("hours")
+        if isinstance(h, bool) or (isinstance(h, float) and h != int(h)):
             return _json({"ok": False, "loi": "so gio khong hop le"}, 400)
         try:
-            f = float(hv)
-            hours = int(f) if f == int(f) else 0
+            hours = int(h)
         except (TypeError, ValueError, OverflowError):
             hours = 0
-        if not KEY_HOURS_MIN <= hours <= KEY_HOURS_MAX:
-            return _json({"ok": False, "loi": f"so gio phai la so nguyen tu {KEY_HOURS_MIN} den {KEY_HOURS_MAX}"}, 400)
-        days = 0
-        plan = hours * 3600
+        if not 1 <= hours <= KEY_HOURS_MAX:
+            return _json({"ok": False, "loi": f"so gio phai tu 1 den {KEY_HOURS_MAX}"}, 400)
+        days = 0                                         # days = 0 -> khong co gia trong KEY_PRICE (key theo gio khong tinh vao doanh thu)
     else:
         try:
             days = int(b.get("days"))
@@ -4740,7 +4731,6 @@ def api_admin_keys_create():
             days = 0
         if days not in KEY_DAYS:
             return _json({"ok": False, "loi": "han key khong hop le"}, 400)
-        plan = days * 86400
     try:
         mdev = int(b.get("max_dev", KEY_DEV_DEFAULT))
     except (TypeError, ValueError):
@@ -4763,11 +4753,10 @@ def api_admin_keys_create():
         made = []
         for _ in range(cnt):
             k = _new_key("AD" if kind == "sub" else KEY_PREFIX[game], d["keys"])
-            d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": (0 if KEY_START_ON_ACTIVATE else now + plan + bonus),
+            d["keys"][k] = {"type": kind, "by": s["r"], "by_name": s["n"], "created": now, "exp": (0 if KEY_START_ON_ACTIVATE else now + (hours * 3600 if hours else days * 86400) + bonus),
                             "days": days, "note": note, "owner": None, "max_dev": mdev, "devs": {}}
             if hours:
-                d["keys"][k]["hours"] = hours            # key GIỜ: days = 0, độ dài gói = secs (xem _plan_secs)
-                d["keys"][k]["secs"] = plan
+                d["keys"][k]["hours"] = hours
             if bonus:
                 d["keys"][k]["bonus"] = bonus
             if KEY_START_ON_ACTIVATE:
@@ -4779,8 +4768,7 @@ def api_admin_keys_create():
             _kv_save(d)
         except OSError as e:
             return _json({"ok": False, "loi": f"khong ghi duoc file key: {e}"}, 500)
-    return _json({"ok": True, "keys": made, "het_han": (None if KEY_START_ON_ACTIVATE else now + plan), "tinh_han_tu_kich_hoat": KEY_START_ON_ACTIVATE, "ngay": days, "gio": hours or None,
-                  "max_dev": mdev, "game": game if kind == "user" else None})
+    return _json({"ok": True, "keys": made, "het_han": (None if KEY_START_ON_ACTIVATE else now + (hours * 3600 if hours else days * 86400)), "tinh_han_tu_kich_hoat": KEY_START_ON_ACTIVATE, "ngay": days, "gio": hours or None, "max_dev": mdev, "game": game if kind == "user" else None})
 
 
 @app.route("/api/admin/keys/delete", methods=["POST"])
@@ -5155,10 +5143,6 @@ h2{font-size:15px;margin:0 0 10px}
 .cd{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:14px;margin-bottom:12px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--mu)}
-[hidden]{display:none!important}
-.chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
-.chips button{padding:3px 9px;font-size:12px;border-radius:99px}
-.chips button.on{border-color:var(--ac);color:var(--ac);font-weight:600}
 input,select,textarea,button{font:inherit;color:inherit}
 input,select,textarea{background:var(--bg);border:1px solid var(--ln);border-radius:9px;padding:7px 9px;min-width:0}
 textarea{width:100%;resize:vertical}
@@ -5197,7 +5181,7 @@ const now=()=>Math.floor(Date.now()/1000);
 const fmt=t=>t?new Date(t*1000).toLocaleString('vi-VN'):'—';
 function left(s){s=Math.max(0,Math.floor(s));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'n '+h+'g':h?h+'g '+m+'p':m+'p'}
 function toast(m,bad){const e=document.createElement('div');if(bad)e.className='e';e.textContent=m;$('#ts').appendChild(e);setTimeout(()=>e.remove(),2800)}
-let S=null,KEYS=[],DAYS=[1,3,7,30,60,90],HOURS=[1,2,3,6,12,24],HMAX=720,DEVO=[1,2,3,5,10,20,50],LT=0,OPEN=new Set(),SEL=new Set(),FILTER='all',BUSY=false;
+let S=null,KEYS=[],HMAX=720,DAYS=[1,3,7,30,60,90],DEVO=[1,2,3,5,10,20,50],LT=0,OPEN=new Set(),SEL=new Set(),FILTER='all',BUSY=false;
 try{S=JSON.parse(sessionStorage.getItem('lcs')||'null')}catch(e){S=null}
 const isM=()=>S&&S.role==='main';
 /* ── gọi API: ký HMAC từng request (X-Ts / X-Nonce / X-Sig) giống hệt trang admin gốc ── */
@@ -5234,15 +5218,14 @@ function shell(){
   $('#app').innerHTML=`<h1><span>LC79 · Quản lý key</span><span class="mu s" style="flex:none">${esc(S.name)} · ${S.role==='main'?'admin chính':'admin phụ'}</span><button id="lo">Thoát</button></h1>
 <div class="cd"><h2>Tạo key LC (dùng được cả bàn MD5 + bàn Hũ)</h2>
 <div class="row">
-<label>Tính hạn theo<select id="cu"><option value="day">Ngày</option><option value="hour">Giờ</option></select></label>
+<label>Tính theo<select id="cu"><option value="day">Ngày</option><option value="hour">Giờ</option></select></label>
 <label id="lbd">Hạn (ngày)<select id="cd">${DAYS.map(d=>`<option value="${d}">${d} ngày</option>`).join('')}</select></label>
-<label id="lbh" hidden>Số giờ (1–${HMAX})<input id="ch" type="number" min="1" max="${HMAX}" step="1" value="${HOURS[0]}" style="width:90px"></label>
+<label id="lbh" hidden>Số giờ<input id="ch" type="number" min="1" max="${HMAX}" value="1" style="width:90px"></label>
 <label>Số thiết bị<select id="cm">${DEVO.map(d=>`<option value="${d}">${d}</option>`).join('')}</select></label>
 <label>Số lượng<input id="cc" type="number" min="1" max="20" value="1" style="width:70px"></label>
 <label style="flex:1;min-width:140px">Ghi chú<input id="cn" maxlength="40" placeholder="tên khách (tuỳ chọn)"></label>
 <button class="pr" id="mk">Tạo key</button></div>
-<div class="chips" id="hq" hidden>${HOURS.map(h=>`<button type="button" data-h="${h}">${h} giờ</button>`).join('')}</div>
-<div class="mu s" style="margin:8px 0 4px">Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên (key giờ cũng vậy). Key mới:</div>
+<div class="mu s" style="margin:8px 0 4px">Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên. Key mới:</div>
 <textarea id="out" readonly placeholder="Key vừa tạo sẽ hiện ở đây"></textarea>
 <div class="row" style="margin-top:6px"><button id="cp">Copy</button></div></div>
 <div class="cd"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Danh sách key</h2>
@@ -5254,15 +5237,12 @@ ${isM()?'<div class="cd" id="rv"></div><div class="cd"><h2>Bàn LC (MD5 + Hũ)</
   $('#lo').onclick=logout;$('#mk').onclick=createKeys;$('#rf').onclick=()=>loadKeys();$('#dl').onclick=delSel;
   if($('#dx'))$('#dx').onclick=delExpired;
   $('#fl').onchange=e=>{FILTER=e.target.value;paintKeys()};
-  const hrSync=()=>{const hr=$('#cu').value==='hour';$('#lbd').hidden=hr;$('#lbh').hidden=!hr;$('#hq').hidden=!hr;const v=$('#ch').value;[...$('#hq').children].forEach(x=>x.classList.toggle('on',x.dataset.h===v))};
-  $('#cu').onchange=hrSync;$('#ch').oninput=hrSync;
-  $('#hq').onclick=e=>{const h=e.target.dataset&&e.target.dataset.h;if(!h)return;$('#ch').value=h;hrSync()};
-  hrSync();
+  $('#cu').onchange=()=>{const h=$('#cu').value==='hour';$('#lbd').hidden=h;$('#lbh').hidden=!h;if(h)$('#ch').focus()};
   $('#cp').onclick=()=>{const t=$('#out');t.select();try{document.execCommand('copy');toast('Đã copy')}catch(e){}};
   $('#kb').onclick=rowClick}
 async function boot(){shell();await loadKeys();if(isM()){loadRv();loadTables();loadNotice()}}
 /* ── key ── */
-async function loadKeys(){const j=await api('/api/admin/keys');if(!S)return;if(j.ok){KEYS=j.keys;LT=now();DAYS=j.ngay||DAYS;HOURS=j.gio||HOURS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO;const h=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>h.has(k)))}else toast(j.loi||'Lỗi tải key',1);paintKeys()}
+async function loadKeys(){const j=await api('/api/admin/keys');if(!S)return;if(j.ok){KEYS=j.keys;LT=now();DAYS=j.ngay||DAYS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO;const h=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>h.has(k)))}else toast(j.loi||'Lỗi tải key',1);paintKeys()}
 function stOf(r){if(r.kich_hoat===false)return['wait','Chờ kích hoạt',r.con_lai];const l=Math.max(0,r.het_han-now());return l<=0?['ex','Hết hạn',0]:['ok','Còn hạn',l]}
 function paintKeys(){
   const q=KEYS.filter(r=>{const s=stOf(r)[0];return FILTER==='all'||(FILTER==='live'?s!=='ex':s===FILTER)});
@@ -5270,7 +5250,7 @@ function paintKeys(){
   $('#kb').innerHTML=q.map(r=>{
     const[s,l,sec]=stOf(r),dv=r.thiet_bi||[];
     let h=`<tr><td><input type="checkbox" data-sel="${esc(r.key)}"${SEL.has(r.key)?' checked':''}></td>
-<td><span class="mono">${esc(r.key)}</span><div class="mu s">${r.loai==='sub'?'admin phụ'+(r.dung_boi?' · '+esc(r.dung_boi):''):r.gio?'gói '+esc(r.gio)+' giờ':'gói '+esc(r.ngay)+' ngày'}${r.ghi_chu?' · '+esc(r.ghi_chu):''}${r.cong_gio?' · +'+Math.round(r.cong_gio/3600)+'g':''}</div></td>
+<td><span class="mono">${esc(r.key)}</span><div class="mu s">${r.loai==='sub'?'admin phụ'+(r.dung_boi?' · '+esc(r.dung_boi):''):(r.gio?'gói '+esc(r.gio)+' giờ':'gói '+esc(r.ngay)+' ngày')}${r.ghi_chu?' · '+esc(r.ghi_chu):''}${r.cong_gio?' · +'+Math.round(r.cong_gio/3600)+'g':''}</div></td>
 <td><span class="bd ${s}">${l}</span><div class="mu s">${s==='wait'?'trọn gói '+left(sec):s==='ok'?'còn '+left(sec)+' · tới '+fmt(r.het_han):''}</div></td>
 <td>${r.so_dev}/${r.max_dev}</td><td class="s">${fmt(r.dung_luc)}<div class="mu">${esc(r.ip_cuoi||'')}</div></td>
 <td><div class="acts"><button data-a="tb" data-k="${esc(r.key)}">Máy</button><button data-a="addh" data-k="${esc(r.key)}">+1 giờ</button><button data-a="add" data-k="${esc(r.key)}">+1 ngày</button><button data-a="rs" data-k="${esc(r.key)}">Reset máy</button><button class="dg" data-a="del" data-k="${esc(r.key)}">Xóa</button></div></td></tr>`;
@@ -5280,18 +5260,19 @@ async function rowClick(e){
   const c=e.target;if(c.dataset&&c.dataset.sel){c.checked?SEL.add(c.dataset.sel):SEL.delete(c.dataset.sel);return}
   const a=c.dataset&&c.dataset.a;if(!a)return;const k=c.dataset.k;
   if(a==='tb'){OPEN.has(k)?OPEN.delete(k):OPEN.add(k);return paintKeys()}
-  if(a==='add'||a==='addh'){const hr=a==='addh',j=await api('/api/admin/keys/add-time',{key:k,amount:1,unit:hr?'hour':'day'});toast(j.ok?(hr?'Đã +1 giờ':'Đã +1 ngày'):j.loi||'Lỗi',!j.ok);return loadKeys()}
+  if(a==='addh'){const j=await api('/api/admin/keys/add-time',{key:k,amount:1,unit:'hour'});toast(j.ok?'Đã +1 giờ':j.loi||'Lỗi',!j.ok);return loadKeys()}
+  if(a==='add'){const j=await api('/api/admin/keys/add-time',{key:k,amount:1,unit:'day'});toast(j.ok?'Đã +1 ngày':j.loi||'Lỗi',!j.ok);return loadKeys()}
   if(a==='rs'){if(!confirm('Gỡ TOÀN BỘ thiết bị khỏi key này?'))return;const j=await api('/api/admin/keys/reset-dev',{key:k});toast(j.ok?'Đã gỡ '+j.da_go+' thiết bị':j.loi||'Lỗi',!j.ok);return loadKeys()}
   if(a==='rmdev'){const j=await api('/api/admin/keys/reset-dev',{key:k,hwid:c.dataset.h});toast(j.ok?'Đã gỡ thiết bị':j.loi||'Lỗi',!j.ok);return loadKeys()}
   if(a==='del'){if(!confirm('Xóa key '+k+' ?'))return;const j=await api('/api/admin/keys/delete',{key:k});toast(j.ok?'Đã xóa':j.loi||'Lỗi',!j.ok);return loadKeys()}}
 async function createKeys(){
-  const body={type:'user',game:'lc79',max_dev:+$('#cm').value,count:+$('#cc').value||1,note:$('#cn').value};
-  if($('#cu').value==='hour'){const h=Number($('#ch').value);if(!Number.isInteger(h)||h<1||h>HMAX)return toast('Số giờ phải là số nguyên từ 1 đến '+HMAX,1);body.hours=h}
-  else body.days=+$('#cd').value;
-  const b=$('#mk');b.disabled=true;
-  const j=await api('/api/admin/keys/create',body);
+  const b=$('#mk'),hr=$('#cu').value==='hour';
+  const dur=hr?{hours:parseInt($('#ch').value,10)}:{days:+$('#cd').value};
+  if(hr&&!(dur.hours>=1&&dur.hours<=HMAX))return toast('Số giờ phải từ 1 đến '+HMAX,1);
+  b.disabled=true;
+  const j=await api('/api/admin/keys/create',Object.assign({type:'user',game:'lc79',max_dev:+$('#cm').value,count:+$('#cc').value||1,note:$('#cn').value},dur));
   b.disabled=false;if(!j.ok)return toast(j.loi||'Không tạo được key',1);
-  $('#out').value=j.keys.join('\n');toast('Đã tạo '+j.keys.length+' key '+(j.gio?j.gio+' giờ':j.ngay+' ngày'));loadKeys()}
+  $('#out').value=j.keys.join('\n');toast('Đã tạo '+j.keys.length+' key');loadKeys()}
 async function delSel(){
   const ks=[...SEL];if(!ks.length)return toast('Chưa chọn key nào',1);if(!confirm('Xóa '+ks.length+' key đã chọn?'))return;
   const j=await api('/api/admin/keys/delete',{keys:ks});toast(j.ok?'Đã xóa '+j.da_xoa+' key':j.loi||'Lỗi',!j.ok);SEL.clear();loadKeys()}

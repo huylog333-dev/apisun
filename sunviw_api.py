@@ -21,6 +21,9 @@ Endpoint (tool khách — đều đòi KEY LC + HWID: header X-User-Key + X-HWID
 
 Quản trị (CHỈ qua đường BÍ MẬT /<ADMIN_SLUG> — slug in ra log lúc khởi động; đặt SUNVIW_ADMIN_PATH để tự chọn; /api/admin* gọi trực tiếp từ ngoài luôn 404):
     GET  /<slug>                      trang tạo key tạm (1 ô nhập: mật khẩu admin chính / key admin phụ) — tạo · xem · xóa · cộng ngày · gỡ thiết bị · off server · tính lại · thông báo
+                                      ADMIN PHỤ CHỈ ĐƯỢC TẠO KEY (key người dùng lc79, hạn / số thiết bị / số lượng / ghi chú). Mọi chức năng còn lại của admin chính — xem danh sách key · xóa · cộng giờ ·
+                                      gỡ thiết bị · doanh thu · off server · thông báo · tính lại / ẩn / xóa data · health · IP · tạo key admin phụ · tặng thêm giờ lúc tạo — ad phụ KHÔNG thấy trên giao diện
+                                      và server từ chối (403) nếu gọi thẳng API. Key vừa tạo chỉ hiện 1 lần trong phản hồi tạo key (ad phụ không xem lại được; ad chính xem đủ + biết ai tạo ở cột người tạo).
     Mọi request admin phải kèm phiên + chữ ký HMAC (X-Admin-Token + X-Ts / X-Nonce / X-Sig) y hệt bản gốc → CẦN HTTPS (hoặc localhost) để trình duyệt ký được.
     (admin chính, qua phiên ký) GET /api/admin/health · GET /api/ips · POST /api/history/clear|regrade|wipe · GET /api/predictlc*?detail=1&hist=N (xem đủ chi tiết AF / WR từng logic)
 
@@ -3680,9 +3683,7 @@ def _path_game(p):
 WRONG_GAME_MSG = "Key này chỉ dùng cho game"
 
 
-def _own_user_key(s, r):
-    """Admin phụ chỉ động được vào key NGƯỜI DÙNG do chính mình tạo; admin chính động được mọi key."""
-    return s["r"] == "main" or (r.get("type") == "user" and r.get("by") == "sub" and r.get("by_name") == s["n"])
+# (ĐÃ BỎ _own_user_key: admin phụ KHÔNG còn quyền xem / xóa / cộng giờ / gỡ thiết bị key nào — kể cả key do chính mình tạo. Chỉ còn quyền TẠO key.)
 
 
 # ─ phiên đăng nhập admin (SEC2): token NGẪU NHIÊN 256-bit, server chỉ lưu SHA-256 của nó (không có khoá ký nào để lộ / giả mạo) ─
@@ -4653,9 +4654,20 @@ def _need_admin():
     return s, (None if s else _json({"ok": False, "loi": "chua dang nhap / phien het han"}, 401))
 
 
+@app.route("/api/admin/keys/options")
+def api_admin_keys_options():
+    """Tuỳ chọn của form TẠO KEY (hạn ngày / số giờ tối đa / số thiết bị / game) — KHÔNG kèm danh sách key. Admin chính + admin phụ đều gọi được."""
+    s, err = _need_admin()
+    if err:
+        return err
+    return _json({"ok": True, "role": s["r"], "name": s["n"], "ngay": list(KEY_DAYS), "gio_max": KEY_HOURS_MAX, "so_tb": list(KEY_DEV_OPTIONS),
+                  "games": [{"id": g, "ten": KEY_GAME_LABEL[g]} for g in KEY_CREATE_GAMES]})
+
+
 @app.route("/api/admin/keys")
 def api_admin_keys():
-    s, err = _need_admin()
+    """Danh sách key + thiết bị + trạng thái. CHỈ ADMIN CHÍNH — admin phụ không xem được key nào."""
+    s, err = _need_main("chi admin chinh moi xem duoc danh sach key")
     if err:
         return err
     now = time.time()
@@ -4666,8 +4678,8 @@ def api_admin_keys():
             made[r.get("by_name")] = made.get(r.get("by_name"), 0) + 1
     rows = []
     for k, r in keys.items():
-        if not _lc_visible(r) or (s["r"] != "main" and not _own_user_key(s, r)):
-            continue                                    # admin phụ chỉ thấy key người dùng do chính mình tạo
+        if not _lc_visible(r):
+            continue
         devs = r.get("devs") if isinstance(r.get("devs"), dict) else {}
         tb = sorted(({"hw": h, "lan_dau": v.get("first"), "gan_nhat": v.get("last"), "ip": v.get("ip"), "ua": v.get("ua", "")} for h, v in devs.items()),
                     key=lambda x: -(x["gan_nhat"] or 0))
@@ -4701,6 +4713,7 @@ def api_admin_revenue():
 
 @app.route("/api/admin/keys/create", methods=["POST"])
 def api_admin_keys_create():
+    """TẠO key. Admin chính: key người dùng + key admin phụ (+ tặng thêm giờ). Admin phụ: CHỈ key người dùng lc79 (hạn / số thiết bị / số lượng / ghi chú), không tặng thêm giờ."""
     s, err = _need_admin()
     if err:
         return err
@@ -4742,6 +4755,8 @@ def api_admin_keys_create():
     except (TypeError, ValueError):
         cnt = 1
     note = re.sub(r"[\x00-\x1f\x7f]", " ", str(b.get("note") or "")).strip()[:40]
+    if s["r"] != "main" and (b.get("bonus_amount") or b.get("bonus_hours")):     # tặng thêm giờ = chức năng cộng giờ của admin chính -> ad phụ không có quyền
+        return _json({"ok": False, "loi": "chi admin chinh moi tang them duoc thoi gian"}, 403)
     bonus = _parse_dur(b, "bonus_amount", "bonus_unit", "bonus_hours")      # tặng thêm thời gian ngay lúc tạo (cộng vào hạn khi key kích hoạt)
     if (b.get("bonus_amount") or b.get("bonus_hours")) and not bonus:
         return _json({"ok": False, "loi": "thoi gian tang them khong hop le"}, 400)
@@ -4773,8 +4788,8 @@ def api_admin_keys_create():
 
 @app.route("/api/admin/keys/delete", methods=["POST"])
 def api_admin_keys_delete():
-    """Xóa 1 key {"key": "..."} · NHIỀU key {"keys": ["...", ...]} (admin phụ: key không phải của mình bị bỏ qua, đếm ở "bo_qua") · {"expired": true} (admin chính: dọn key hết hạn)."""
-    s, err = _need_admin()
+    """Xóa 1 key {"key": "..."} · NHIỀU key {"keys": ["...", ...]} (key không tồn tại bị bỏ qua, đếm ở "bo_qua") · {"expired": true} (dọn key hết hạn). CHỈ ADMIN CHÍNH."""
+    s, err = _need_main("chi admin chinh moi xoa duoc key")
     if err:
         return err
     b = request.get_json(silent=True) or {}
@@ -4783,26 +4798,17 @@ def api_admin_keys_delete():
     with _kv_lock:
         d = _kv_load()
         keys = d["keys"]
-        if b.get("expired") and s["r"] == "main":        # dọn mọi key hết hạn
+        if b.get("expired"):                             # dọn mọi key hết hạn
             dead = [k for k, r in keys.items() if _is_expired(r, now) and _lc_visible(r)]
         else:
             lst = b.get("keys") if isinstance(b.get("keys"), list) else [b.get("key")]
             want = list(dict.fromkeys(x for x in (_norm_key(v) for v in lst[:KEY_MAX_TOTAL]) if x))
             if not want:
                 return _json({"ok": False, "loi": "chua chon key nao"}, 400)
-            dead, miss, denied = [], 0, 0
-            for k in want:
-                r = keys.get(k)
-                if not r:
-                    miss += 1
-                elif not _own_user_key(s, r):
-                    denied += 1
-                else:
-                    dead.append(k)
-            skipped = miss + denied
+            dead = [k for k in want if keys.get(k)]
+            skipped = len(want) - len(dead)
             if not dead:
-                return (_json({"ok": False, "loi": "chi xoa duoc key do ban tao"}, 403) if denied
-                        else _json({"ok": False, "loi": "khong thay key"}, 404))
+                return _json({"ok": False, "loi": "khong thay key"}, 404)
         for k in dead:
             keys.pop(k, None)
         try:
@@ -4816,8 +4822,8 @@ def api_admin_keys_delete():
 @app.route("/api/admin/keys/reset-ip", methods=["POST"])    # tên cũ — giữ để tool đã viết từ trước không hỏng
 def api_admin_keys_reset_dev():
     """Gỡ thiết bị đã gắn của 1 key: {"key": "..."} = gỡ TOÀN BỘ (máy nào dùng key trước sẽ được gắn lại) · thêm "hwid" = chỉ gỡ thiết bị đó.
-    Admin chính: mọi key · admin phụ: key người dùng do mình tạo. Phiên admin phụ chạy trên thiết bị bị gỡ chết ngay vì _tok_check đòi HWID vẫn đang gắn."""
-    s, err = _need_admin()
+    CHỈ ADMIN CHÍNH (mọi key). Phiên admin phụ chạy trên thiết bị bị gỡ chết ngay vì _tok_check đòi HWID vẫn đang gắn."""
+    s, err = _need_main("chi admin chinh moi go duoc thiet bi")
     if err:
         return err
     b = request.get_json(silent=True) or {}
@@ -4832,8 +4838,6 @@ def api_admin_keys_reset_dev():
         rec = d["keys"].get(k)
         if not rec:
             return _json({"ok": False, "loi": "khong thay key"}, 404)
-        if not _own_user_key(s, rec):
-            return _json({"ok": False, "loi": "chi reset duoc key do ban tao"}, 403)
         devs = rec.get("devs") if isinstance(rec.get("devs"), dict) else {}
         if hw:
             if hw not in devs:
@@ -4857,9 +4861,9 @@ def api_admin_keys_reset_dev():
 @app.route("/api/admin/keys/add-time", methods=["POST"])
 def api_admin_keys_add_time():
     """CỘNG GIỜ cho key: {"key": "..."} hoặc {"keys": [...]} + {"amount": N, "unit": "hour"|"day"|"week"|"month"} (tháng = 30 ngày; "hours": N vẫn nhận).
-    Admin chính: mọi key (kể cả key admin phụ) · admin phụ: key người dùng do chính mình tạo. Key đã hết hạn được tính lại từ bây giờ.
+    CHỈ ADMIN CHÍNH (mọi key, kể cả key admin phụ). Key đã hết hạn được tính lại từ bây giờ.
     Key chưa kích hoạt: giờ cộng được giữ lại và áp dụng khi key kích hoạt. Không đổi doanh thu (giá đã chốt lúc kích hoạt)."""
-    s, err = _need_admin()
+    s, err = _need_main("chi admin chinh moi cong duoc gio")
     if err:
         return err
     b = request.get_json(silent=True) or {}
@@ -4878,7 +4882,7 @@ def api_admin_keys_add_time():
         d = _kv_load()
         for k in want:
             r = d["keys"].get(k)
-            if not r or not _own_user_key(s, r):
+            if not r:
                 skipped += 1
                 continue
             if _bonus(r) + secs > BONUS_MAX_SEC:
@@ -4888,7 +4892,7 @@ def api_admin_keys_add_time():
             act = _activated(r)
             out[k] = {"het_han": (int(r["exp"]) if act else None), "con_lai": _left_sec(r, now), "het": _is_expired(r, now), "kich_hoat": act, "cong_gio": _bonus(r)}
         if not out:
-            return _json({"ok": False, "loi": "khong cong gio duoc (chi cong cho key do ban tao)"}, 403 if skipped else 404)
+            return _json({"ok": False, "loi": "khong cong gio duoc (khong thay key hoac da cong toi da)"}, 403 if skipped else 404)
         try:
             _kv_save(d)
         except OSError as e:
@@ -4897,12 +4901,14 @@ def api_admin_keys_add_time():
     return _json({"ok": True, "da_cong": len(out), "bo_qua": skipped, "giay": secs, "ket_qua": out})
 
 
-def _need_main():
+def _need_main(msg="chi admin chinh moi duyet duoc thiet bi vao panel"):
+    """Chỉ admin CHÍNH (phiên hợp lệ + chữ ký request). Admin phụ -> 403. Trả (session, None) hoặc (None, response lỗi)."""
     s, err = _need_admin()
     if err:
         return None, err
     if s["r"] != "main":
-        return None, _json({"ok": False, "loi": "chi admin chinh moi duyet duoc thiet bi vao panel"}, 403)
+        _audit("sub_denied", role=s["r"])               # ghi nhật ký (KHÔNG ghi key / token): ad phụ gọi thẳng API ngoài quyền
+        return None, _json({"ok": False, "loi": msg}, 403)
     return s, None
 
 
@@ -5226,21 +5232,24 @@ function shell(){
 <label style="flex:1;min-width:140px">Ghi chú<input id="cn" maxlength="40" placeholder="tên khách (tuỳ chọn)"></label>
 <button class="pr" id="mk">Tạo key</button></div>
 <div class="mu s" style="margin:8px 0 4px">Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên. Key mới:</div>
+${isM()?'':'<div class="s" style="color:var(--wa);margin-bottom:4px">Admin phụ chỉ tạo được key. Hãy copy key ngay — tải lại trang sẽ không xem lại được.</div>'}
 <textarea id="out" readonly placeholder="Key vừa tạo sẽ hiện ở đây"></textarea>
 <div class="row" style="margin-top:6px"><button id="cp">Copy</button></div></div>
-<div class="cd"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Danh sách key</h2>
+${isM()?`<div class="cd"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Danh sách key</h2>
 <div class="row"><select id="fl"><option value="all">Tất cả</option><option value="live">Còn hạn</option><option value="wait">Chờ kích hoạt</option><option value="exp">Hết hạn</option></select>
 <button id="rf">Tải lại</button><button id="dl" class="dg">Xóa đã chọn</button>${isM()?'<button id="dx" class="dg">Dọn key hết hạn</button>':''}</div></div>
 <div style="overflow-x:auto"><table><thead><tr><th></th><th>Key</th><th>Trạng thái</th><th>Thiết bị</th><th>Dùng gần nhất</th><th></th></tr></thead><tbody id="kb"></tbody></table></div>
-<div class="mu s" id="kc" style="margin-top:6px"></div></div>
+<div class="mu s" id="kc" style="margin-top:6px"></div></div>`:''}
 ${isM()?'<div class="cd" id="rv"></div><div class="cd"><h2>Bàn LC (MD5 + Hũ)</h2><div class="tb" id="tbl"></div></div><div class="cd" id="nt"></div>':''}`;
-  $('#lo').onclick=logout;$('#mk').onclick=createKeys;$('#rf').onclick=()=>loadKeys();$('#dl').onclick=delSel;
-  if($('#dx'))$('#dx').onclick=delExpired;
-  $('#fl').onchange=e=>{FILTER=e.target.value;paintKeys()};
+  $('#lo').onclick=logout;$('#mk').onclick=createKeys;
+  if($('#kb')){$('#rf').onclick=()=>loadKeys();$('#dl').onclick=delSel;
+    if($('#dx'))$('#dx').onclick=delExpired;
+    $('#fl').onchange=e=>{FILTER=e.target.value;paintKeys()};
+    $('#kb').onclick=rowClick}
   $('#cu').onchange=()=>{const h=$('#cu').value==='hour';$('#lbd').hidden=h;$('#lbh').hidden=!h;if(h)$('#ch').focus()};
-  $('#cp').onclick=()=>{const t=$('#out');t.select();try{document.execCommand('copy');toast('Đã copy')}catch(e){}};
-  $('#kb').onclick=rowClick}
-async function boot(){shell();await loadKeys();if(isM()){loadRv();loadTables();loadNotice()}}
+  $('#cp').onclick=()=>{const t=$('#out');t.select();try{document.execCommand('copy');toast('Đã copy')}catch(e){}}}
+async function loadOpts(){const j=await api('/api/admin/keys/options');if(j&&j.ok){DAYS=j.ngay||DAYS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO}}
+async function boot(){await loadOpts();if(!S)return;shell();if(isM()){await loadKeys();loadRv();loadTables();loadNotice()}}
 /* ── key ── */
 async function loadKeys(){const j=await api('/api/admin/keys');if(!S)return;if(j.ok){KEYS=j.keys;LT=now();DAYS=j.ngay||DAYS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO;const h=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>h.has(k)))}else toast(j.loi||'Lỗi tải key',1);paintKeys()}
 function stOf(r){if(r.kich_hoat===false)return['wait','Chờ kích hoạt',r.con_lai];const l=Math.max(0,r.het_han-now());return l<=0?['ex','Hết hạn',0]:['ok','Còn hạn',l]}
@@ -5272,7 +5281,7 @@ async function createKeys(){
   b.disabled=true;
   const j=await api('/api/admin/keys/create',Object.assign({type:'user',game:'lc79',max_dev:+$('#cm').value,count:+$('#cc').value||1,note:$('#cn').value},dur));
   b.disabled=false;if(!j.ok)return toast(j.loi||'Không tạo được key',1);
-  $('#out').value=j.keys.join('\n');toast('Đã tạo '+j.keys.length+' key');loadKeys()}
+  const ks=j.keys.join('\n');$('#out').value=isM()?ks:($('#out').value?$('#out').value+'\n':'')+ks;toast('Đã tạo '+j.keys.length+' key');if(isM())loadKeys()}
 async function delSel(){
   const ks=[...SEL];if(!ks.length)return toast('Chưa chọn key nào',1);if(!confirm('Xóa '+ks.length+' key đã chọn?'))return;
   const j=await api('/api/admin/keys/delete',{keys:ks});toast(j.ok?'Đã xóa '+j.da_xoa+' key':j.loi||'Lỗi',!j.ok);SEL.clear();loadKeys()}

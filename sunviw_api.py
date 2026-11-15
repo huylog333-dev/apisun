@@ -23,7 +23,9 @@ Quản trị (CHỈ qua đường BÍ MẬT /<ADMIN_SLUG> — slug in ra log lú
     GET  /<slug>                      trang tạo key tạm (1 ô nhập: mật khẩu admin chính / key admin phụ) — tạo · xem · xóa · cộng ngày · gỡ thiết bị · off server · tính lại · thông báo
                                       ADMIN PHỤ CHỈ ĐƯỢC TẠO KEY (key người dùng lc79, hạn / số thiết bị / số lượng / ghi chú). Mọi chức năng còn lại của admin chính — xem danh sách key · xóa · cộng giờ ·
                                       gỡ thiết bị · doanh thu · off server · thông báo · tính lại / ẩn / xóa data · health · IP · tạo key admin phụ · tặng thêm giờ lúc tạo — ad phụ KHÔNG thấy trên giao diện
-                                      và server từ chối (403) nếu gọi thẳng API. Key vừa tạo chỉ hiện 1 lần trong phản hồi tạo key (ad phụ không xem lại được; ad chính xem đủ + biết ai tạo ở cột người tạo).
+                                      và server từ chối (403) nếu gọi thẳng API.
+                                      ADMIN CHÍNH tạo KEY ADMIN PHỤ ngay trên trang này (ô "Loại key"): có hạn ngày / giờ + số thiết bị như key LC79, hạn chỉ tính từ lần đăng nhập đầu, KHÔNG tính vào doanh thu.
+                                      Ô đăng nhập duy nhất tự nhận diện: mật khẩu admin chính -> vai trò admin chính · key admin phụ (AD-…) -> vai trò admin phụ (lần đầu nhập thêm username). Key vừa tạo chỉ hiện 1 lần trong phản hồi tạo key (ad phụ không xem lại được; ad chính xem đủ + biết ai tạo ở cột người tạo).
     Mọi request admin phải kèm phiên + chữ ký HMAC (X-Admin-Token + X-Ts / X-Nonce / X-Sig) y hệt bản gốc → CẦN HTTPS (hoặc localhost) để trình duyệt ký được.
     (admin chính, qua phiên ký) GET /api/admin/health · GET /api/ips · POST /api/history/clear|regrade|wipe · GET /api/predictlc*?detail=1&hist=N (xem đủ chi tiết AF / WR từng logic)
 
@@ -5205,8 +5207,8 @@ async function api(p,body){
 /* ── đăng nhập ── */
 let NEEDUN=false;
 function loginView(msg){$('#app').innerHTML=`<div class="lo cd"><h1><span>LC79 · Quản lý key</span></h1>
-<div class="mu s">Nhập mật khẩu admin chính (hoặc key admin phụ).</div>
-<input id="k" type="password" autocomplete="off" spellcheck="false" placeholder="Mật khẩu admin / key admin phụ" autofocus>
+<div class="mu s">Nhập mật khẩu admin chính hoặc key admin phụ — hệ thống tự nhận diện.</div>
+<input id="k" type="password" autocomplete="off" spellcheck="false" placeholder="Mật khẩu admin chính / key admin phụ (AD-…)" autofocus>
 <input id="un" maxlength="20" placeholder="Username cho key admin phụ mới" hidden>
 <button class="pr" id="go">Vào</button><div id="res" class="s"></div></div>`;
   if(msg)$('#res').textContent=msg;
@@ -5215,15 +5217,16 @@ async function login(){
   if(BUSY)return;const k=$('#k').value.trim();if(!k){$('#res').textContent='Chưa nhập gì.';return}
   BUSY=true;$('#go').disabled=true;const body={key:k};if(NEEDUN)body.username=$('#un').value.trim();
   const j=await api('/api/admin/login',body);BUSY=false;$('#go').disabled=false;
-  if(j.ok){S={token:j.token,sk:j.sk,role:j.role,name:j.name};sessionStorage.setItem('lcs',JSON.stringify(S));return boot()}
+  if(j.ok){S={token:j.token,sk:j.sk,role:j.role,name:j.name};sessionStorage.setItem('lcs',JSON.stringify(S));toast('Đã nhận diện: '+(j.role==='main'?'admin chính':'admin phụ · '+j.name));return boot()}
   if(j.need_username){NEEDUN=true;$('#un').hidden=false;$('#un').focus()}
   $('#res').textContent=j.loi||'Không vào được.'}
 async function logout(){await api('/api/admin/logout',{});S=null;sessionStorage.removeItem('lcs');loginView()}
 /* ── khung chính ── */
 function shell(){
   $('#app').innerHTML=`<h1><span>LC79 · Quản lý key</span><span class="mu s" style="flex:none">${esc(S.name)} · ${S.role==='main'?'admin chính':'admin phụ'}</span><button id="lo">Thoát</button></h1>
-<div class="cd"><h2>Tạo key LC (dùng được cả bàn MD5 + bàn Hũ)</h2>
+<div class="cd"><h2 id="h2c">Tạo key LC (dùng được cả bàn MD5 + bàn Hũ)</h2>
 <div class="row">
+${isM()?'<label>Loại key<select id="ct"><option value="user">Key LC79 (khách)</option><option value="sub">Key admin phụ</option></select></label>':''}
 <label>Tính theo<select id="cu"><option value="day">Ngày</option><option value="hour">Giờ</option></select></label>
 <label id="lbd">Hạn (ngày)<select id="cd">${DAYS.map(d=>`<option value="${d}">${d} ngày</option>`).join('')}</select></label>
 <label id="lbh" hidden>Số giờ<input id="ch" type="number" min="1" max="${HMAX}" value="1" style="width:90px"></label>
@@ -5231,35 +5234,39 @@ function shell(){
 <label>Số lượng<input id="cc" type="number" min="1" max="20" value="1" style="width:70px"></label>
 <label style="flex:1;min-width:140px">Ghi chú<input id="cn" maxlength="40" placeholder="tên khách (tuỳ chọn)"></label>
 <button class="pr" id="mk">Tạo key</button></div>
-<div class="mu s" style="margin:8px 0 4px">Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên. Key mới:</div>
+<div class="mu s" id="hn" style="margin:8px 0 4px">Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên. Key mới:</div>
 ${isM()?'':'<div class="s" style="color:var(--wa);margin-bottom:4px">Admin phụ chỉ tạo được key. Hãy copy key ngay — tải lại trang sẽ không xem lại được.</div>'}
 <textarea id="out" readonly placeholder="Key vừa tạo sẽ hiện ở đây"></textarea>
 <div class="row" style="margin-top:6px"><button id="cp">Copy</button></div></div>
 ${isM()?`<div class="cd"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Danh sách key</h2>
-<div class="row"><select id="fl"><option value="all">Tất cả</option><option value="live">Còn hạn</option><option value="wait">Chờ kích hoạt</option><option value="exp">Hết hạn</option></select>
+<div class="row"><select id="fl"><option value="all">Tất cả</option><option value="sub">Key admin phụ</option><option value="user">Key khách</option><option value="live">Còn hạn</option><option value="wait">Chờ kích hoạt</option><option value="exp">Hết hạn</option></select>
 <button id="rf">Tải lại</button><button id="dl" class="dg">Xóa đã chọn</button>${isM()?'<button id="dx" class="dg">Dọn key hết hạn</button>':''}</div></div>
 <div style="overflow-x:auto"><table><thead><tr><th></th><th>Key</th><th>Trạng thái</th><th>Thiết bị</th><th>Dùng gần nhất</th><th></th></tr></thead><tbody id="kb"></tbody></table></div>
 <div class="mu s" id="kc" style="margin-top:6px"></div></div>`:''}
 ${isM()?'<div class="cd" id="rv"></div><div class="cd"><h2>Bàn LC (MD5 + Hũ)</h2><div class="tb" id="tbl"></div></div><div class="cd" id="nt"></div>':''}`;
-  $('#lo').onclick=logout;$('#mk').onclick=createKeys;
+  $('#lo').onclick=logout;$('#mk').onclick=createKeys;if($('#ct'))$('#ct').onchange=kindUI;
   if($('#kb')){$('#rf').onclick=()=>loadKeys();$('#dl').onclick=delSel;
     if($('#dx'))$('#dx').onclick=delExpired;
     $('#fl').onchange=e=>{FILTER=e.target.value;paintKeys()};
     $('#kb').onclick=rowClick}
   $('#cu').onchange=()=>{const h=$('#cu').value==='hour';$('#lbd').hidden=h;$('#lbh').hidden=!h;if(h)$('#ch').focus()};
   $('#cp').onclick=()=>{const t=$('#out');t.select();try{document.execCommand('copy');toast('Đã copy')}catch(e){}}}
+function kindUI(){const sb=$('#ct')&&$('#ct').value==='sub';
+  $('#h2c').textContent=sb?'Tạo key ADMIN PHỤ (chỉ được vào trang này để tạo key khách)':'Tạo key LC (dùng được cả bàn MD5 + bàn Hũ)';
+  $('#hn').textContent=sb?'Hạn key admin phụ bắt đầu tính từ lần đăng nhập thành công đầu tiên (giống key LC79). Người nhận nhập key vào ô đăng nhập của trang này, đặt username là xong. Key mới:':'Hạn chỉ bắt đầu tính từ lần dùng thành công đầu tiên. Key mới:';
+  $('#cn').placeholder=sb?'tên người giữ key (tuỳ chọn)':'tên khách (tuỳ chọn)'}
 async function loadOpts(){const j=await api('/api/admin/keys/options');if(j&&j.ok){DAYS=j.ngay||DAYS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO}}
 async function boot(){await loadOpts();if(!S)return;shell();if(isM()){await loadKeys();loadRv();loadTables();loadNotice()}}
 /* ── key ── */
 async function loadKeys(){const j=await api('/api/admin/keys');if(!S)return;if(j.ok){KEYS=j.keys;LT=now();DAYS=j.ngay||DAYS;HMAX=j.gio_max||HMAX;DEVO=j.so_tb||DEVO;const h=new Set(KEYS.map(r=>r.key));SEL=new Set([...SEL].filter(k=>h.has(k)))}else toast(j.loi||'Lỗi tải key',1);paintKeys()}
 function stOf(r){if(r.kich_hoat===false)return['wait','Chờ kích hoạt',r.con_lai];const l=Math.max(0,r.het_han-now());return l<=0?['ex','Hết hạn',0]:['ok','Còn hạn',l]}
 function paintKeys(){
-  const q=KEYS.filter(r=>{const s=stOf(r)[0];return FILTER==='all'||(FILTER==='live'?s!=='ex':s===FILTER)});
+  const q=KEYS.filter(r=>{const s=stOf(r)[0];if(FILTER==='sub')return r.loai==='sub';if(FILTER==='user')return r.loai!=='sub';return FILTER==='all'||(FILTER==='live'?s!=='ex':s===FILTER)});
   $('#kc').textContent=q.length+' / '+KEYS.length+' key';
   $('#kb').innerHTML=q.map(r=>{
     const[s,l,sec]=stOf(r),dv=r.thiet_bi||[];
     let h=`<tr><td><input type="checkbox" data-sel="${esc(r.key)}"${SEL.has(r.key)?' checked':''}></td>
-<td><span class="mono">${esc(r.key)}</span><div class="mu s">${r.loai==='sub'?'admin phụ'+(r.dung_boi?' · '+esc(r.dung_boi):''):(r.gio?'gói '+esc(r.gio)+' giờ':'gói '+esc(r.ngay)+' ngày')}${r.ghi_chu?' · '+esc(r.ghi_chu):''}${r.cong_gio?' · +'+Math.round(r.cong_gio/3600)+'g':''}</div></td>
+<td><span class="mono">${esc(r.key)}</span><div class="mu s">${r.loai==='sub'?'<b>admin phụ</b>'+(r.dung_boi?' · '+esc(r.dung_boi)+' · đã tạo '+(r.da_tao||0)+' key':' · chưa ai dùng')+' · '+(r.gio?'gói '+esc(r.gio)+' giờ':'gói '+esc(r.ngay)+' ngày'):(r.gio?'gói '+esc(r.gio)+' giờ':'gói '+esc(r.ngay)+' ngày')}${r.ghi_chu?' · '+esc(r.ghi_chu):''}${r.cong_gio?' · +'+Math.round(r.cong_gio/3600)+'g':''}</div></td>
 <td><span class="bd ${s}">${l}</span><div class="mu s">${s==='wait'?'trọn gói '+left(sec):s==='ok'?'còn '+left(sec)+' · tới '+fmt(r.het_han):''}</div></td>
 <td>${r.so_dev}/${r.max_dev}</td><td class="s">${fmt(r.dung_luc)}<div class="mu">${esc(r.ip_cuoi||'')}</div></td>
 <td><div class="acts"><button data-a="tb" data-k="${esc(r.key)}">Máy</button><button data-a="addh" data-k="${esc(r.key)}">+1 giờ</button><button data-a="add" data-k="${esc(r.key)}">+1 ngày</button><button data-a="rs" data-k="${esc(r.key)}">Reset máy</button><button class="dg" data-a="del" data-k="${esc(r.key)}">Xóa</button></div></td></tr>`;
@@ -5275,13 +5282,13 @@ async function rowClick(e){
   if(a==='rmdev'){const j=await api('/api/admin/keys/reset-dev',{key:k,hwid:c.dataset.h});toast(j.ok?'Đã gỡ thiết bị':j.loi||'Lỗi',!j.ok);return loadKeys()}
   if(a==='del'){if(!confirm('Xóa key '+k+' ?'))return;const j=await api('/api/admin/keys/delete',{key:k});toast(j.ok?'Đã xóa':j.loi||'Lỗi',!j.ok);return loadKeys()}}
 async function createKeys(){
-  const b=$('#mk'),hr=$('#cu').value==='hour';
+  const b=$('#mk'),hr=$('#cu').value==='hour',sub=isM()&&$('#ct')&&$('#ct').value==='sub';
   const dur=hr?{hours:parseInt($('#ch').value,10)}:{days:+$('#cd').value};
   if(hr&&!(dur.hours>=1&&dur.hours<=HMAX))return toast('Số giờ phải từ 1 đến '+HMAX,1);
   b.disabled=true;
-  const j=await api('/api/admin/keys/create',Object.assign({type:'user',game:'lc79',max_dev:+$('#cm').value,count:+$('#cc').value||1,note:$('#cn').value},dur));
+  const j=await api('/api/admin/keys/create',Object.assign({type:sub?'sub':'user',game:'lc79',max_dev:+$('#cm').value,count:+$('#cc').value||1,note:$('#cn').value},dur));
   b.disabled=false;if(!j.ok)return toast(j.loi||'Không tạo được key',1);
-  const ks=j.keys.join('\n');$('#out').value=isM()?ks:($('#out').value?$('#out').value+'\n':'')+ks;toast('Đã tạo '+j.keys.length+' key');if(isM())loadKeys()}
+  const ks=j.keys.join('\n');$('#out').value=isM()?ks:($('#out').value?$('#out').value+'\n':'')+ks;toast('Đã tạo '+j.keys.length+(sub?' key admin phụ':' key'));if(isM())loadKeys()}
 async function delSel(){
   const ks=[...SEL];if(!ks.length)return toast('Chưa chọn key nào',1);if(!confirm('Xóa '+ks.length+' key đã chọn?'))return;
   const j=await api('/api/admin/keys/delete',{keys:ks});toast(j.ok?'Đã xóa '+j.da_xoa+' key':j.loi||'Lỗi',!j.ok);SEL.clear();loadKeys()}
